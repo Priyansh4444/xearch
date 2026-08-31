@@ -1,0 +1,16 @@
+[package]
+name = "xearch-indexer"
+version = "0.1.0"
+edition = "2021"
+description = "Offline indexer: JSONL ingress -> tokenized/scored batches -> Convex"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+unicode-normalization = "0.1"   # NFKC — the one Unicode dependency both twins rely on via the standard
+ureq = { version = "2", features = ["json"] }  # simple blocking HTTP to Convex; async is not earning its keep here
+clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+# golden tests read shared/fixtures/*.jsonl relative to workspace root

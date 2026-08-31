@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "comment": "Shared aspect lexicon — single source of truth for indexer (Rust) and query side (TS). Single-word triggers marked weak:true require a co-occurring content token (ASPECTS.md G5). $+digits handled in tokenizer, not here (RISKS T4).",
+  "aspects": {
+    "~price": {
+      "strong": ["pricing", "overpriced", "underpriced", "price tag", "too expensive", "so expensive", "dirt cheap", "rip off", "ripoff", "paywall", "subscription cost"],
+      "weak": ["cheap", "expensive", "cost", "costs", "afford", "free", "budget", "pricey"]
+    },
+    "~perf": {
+      "strong": ["blazing fast", "so slow", "performance hit", "benchmarks", "benchmark", "latency", "throughput", "frame rate", "fps drops"],
+      "weak": ["fast", "slow", "snappy", "laggy", "sluggish", "speed"]
+    },
+    "~quality": {
+      "strong": ["keeps crashing", "crashes constantly", "rock solid", "build quality", "fell apart", "stopped working"],
+      "weak": ["broken", "buggy", "crash", "reliable", "solid", "flaky", "janky"]
+    },
+    "~spec": {
+      "strong": ["spec sheet", "battery life", "screen size", "how tall", "how big", "how heavy", "dimensions"],
+      "weak": ["height", "weight", "size", "specs", "resolution"]
+    },
+    "~release": {
+      "strong": ["just shipped", "just launched", "release date", "now available", "coming soon", "early access"],
+      "weak": ["launch", "shipped", "released", "announcement", "announced"]
+    },
+    "~drama": {
+      "strong": ["main character", "ratio'd", "getting ratioed", "community note", "deleted the tweet"],
+      "weak": ["drama", "controversy", "beef", "feud", "scandal"]
+    },
+    "~compare": {
+      "strong": ["compared to", "better than", "worse than", "switched from", "instead of"],
+      "weak": ["vs", "versus", "alternative", "alternatives", "comparison"]
+    },
+    "~howto": {
+      "strong": ["how to", "step by step", "tutorial", "walkthrough", "guide to"],
+      "weak": ["tutorial", "guide", "setup", "install"]
+    },
+    "~opinion": {
+      "strong": ["hot take", "unpopular opinion", "controversial opinion", "change my mind"],
+      "weak": ["take", "opinion", "thoughts"]
+    },
+    "~security": {
+      "strong": ["data breach", "zero day", "0day", "got hacked", "security hole", "cve"],
+      "weak": ["hacked", "breach", "vulnerability", "exploit", "leak"]
+    }
+  }
+}

@@ -1,0 +1,8 @@
+node_modules/
+convex/_generated/
+indexer/target/
+checkpoint.json
+quarantine/
+data/
+done/
+.env*

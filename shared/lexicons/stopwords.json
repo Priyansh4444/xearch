@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "comment": "Dropped at index AND query time (must stay identical or recall silently dies). Deliberately tiny: aggressive stoplists hurt phrase-ish queries. Glue *phrases* (\"tweets about\", \"show me\") are Tier B's job, not this list.",
+  "stopwords": [
+    "a", "an", "the", "is", "are", "was", "were", "be", "been",
+    "of", "to", "in", "on", "at", "by", "for", "with", "and", "or",
+    "it", "its", "this", "that", "these", "those", "i", "you", "he",
+    "she", "we", "they", "my", "your", "his", "her", "our", "their",
+    "do", "does", "did", "have", "has", "had", "not", "no", "so",
+    "just", "very", "too", "rt"
+  ]
+}
