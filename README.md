@@ -51,7 +51,7 @@ Suggested order (dependencies, not a schedule): tokenizer twins vs golden fixtur
 ## Running
 
 ```sh
-npm install && npx convex dev   # generates convex/_generated, deploys schema
-npm test                        # TS golden tests
+pnpm install && pnpm dev        # generates convex/_generated, deploys schema
+pnpm test                       # TS golden tests
 cd indexer && cargo test        # Rust golden tests (same fixture)
 ```

@@ -172,7 +172,7 @@ there is no "call the parser yourself" endpoint to misuse.
   deep; call chains stay ≤ 3 files.
 - We accept **feedback/Tier C being eventually consistent** (table-mediated) in
   exchange for never blocking first paint.
-- We accept **`_generated` imports that don't resolve until `npx convex dev` runs**
+- We accept **`_generated` imports that don't resolve until `pnpm dev` runs**
   — the scaffold is a contract, not yet a deployment.
 
 ## Alternatives considered

@@ -2,6 +2,7 @@
   "name": "xearch",
   "private": true,
   "version": "0.1.0",
+  "packageManager": "pnpm@11.10.0",
   "description": "Search engine for tweets on Convex — see DESIGN.md / ARCHITECTURE.md",
   "scripts": {
     "dev": "convex dev",
