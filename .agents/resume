@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Xearch has no local backing services or wake-time authentication to repair.
+exit 0

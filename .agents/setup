@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+run_step() {
+  local label="$1"
+  shift
+  local started=$SECONDS
+  printf '\n==> %s\n' "$label"
+  "$@"
+  printf '<== %s (%ss)\n' "$label" "$((SECONDS - started))"
+}
+
+command -v node >/dev/null || {
+  echo "Node.js 20 or newer is required but was not found." >&2
+  exit 1
+}
+command -v npm >/dev/null || {
+  echo "npm is required to install the pinned pnpm version but was not found." >&2
+  exit 1
+}
+
+node -e 'const major = Number(process.versions.node.split(".")[0]); if (major < 20) process.exit(1)' || {
+  echo "Node.js 20 or newer is required." >&2
+  exit 1
+}
+
+pnpm_version="$(node -p 'require("./package.json").packageManager.split("@")[1]')"
+if [ "$(pnpm --version 2>/dev/null || true)" != "$pnpm_version" ]; then
+  run_step "Install pnpm $pnpm_version" \
+    npm install --global --force "pnpm@$pnpm_version"
+fi
+
+run_step "Install Node dependencies" \
+  pnpm install --frozen-lockfile --prefer-offline
+
+# A previous orb snapshot may contain rustup even when this process's inherited
+# PATH predates its installation.
+if [ -f "$HOME/.cargo/env" ]; then
+  # shellcheck disable=SC1091
+  source "$HOME/.cargo/env"
+fi
+
+if ! command -v cargo >/dev/null 2>&1; then
+  run_step "Install the Rust toolchain" \
+    sh -c 'curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable'
+
+  # rustup cannot update the environment of this already-running script.
+  # shellcheck disable=SC1091
+  source "$HOME/.cargo/env"
+fi
+
+cargo_profile_marker="# xearch Rust toolchain"
+if ! grep -Fqx "$cargo_profile_marker" "$HOME/.bash_profile" 2>/dev/null; then
+  cat >> "$HOME/.bash_profile" <<'EOF'
+
+# xearch Rust toolchain
+[ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
+EOF
+fi
+
+run_step "Build the Rust indexer" \
+  cargo build --locked --manifest-path indexer/Cargo.toml
+
+printf '\nOrb setup complete in %ss.\n' "$SECONDS"
