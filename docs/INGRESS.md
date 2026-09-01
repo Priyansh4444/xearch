@@ -4,7 +4,8 @@ The indexer consumes **JSONL files in a watched directory** (or stdin in `tail`
 mode). One JSON object per line, UTF-8, LF. Two record kinds discriminated by
 `"kind"`. However the collector obtains data — API, export, scrape, synthetic — it
 lands in this shape and nothing downstream knows the difference. Rust types:
-`indexer/src/model.rs` (serde is the validator).
+`indexer/src/model.rs` (serde is the validator). Source priority, tested field
+mappings, fallbacks, and the repost policy live in `docs/COLLECTION.md`.
 
 ## 1. Tweet record
 
