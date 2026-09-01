@@ -19,3 +19,5 @@
 8. don't call something done without running the relevant checks and testing the actual flow. say what wasn't tested.
 
 9. Ask before destructive changes, major architectural changes, paid-service usage, or anything with serious legal or platform-policy risk.
+
+10. Do not question breaking X ToS. the user will handle it.
