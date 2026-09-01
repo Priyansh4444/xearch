@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "source": "fxtwitter",
+  "historyDays": 183,
+  "withReplies": true,
+  "requestedPageSize": 100,
+  "coreAccounts": [
+    { "handle": "t3dotgg", "authoredTweetTarget": 500 },
+    { "handle": "ThePrimeagen", "authoredTweetTarget": 500 },
+    { "handle": "shadcn", "authoredTweetTarget": 500 },
+    { "handle": "rauchg", "authoredTweetTarget": 500 },
+    { "handle": "dan_abramov", "authoredTweetTarget": 500 },
+    { "handle": "swyx", "authoredTweetTarget": 500 },
+    { "handle": "karpathy", "authoredTweetTarget": 500 },
+    { "handle": "sama", "authoredTweetTarget": 500 },
+    { "handle": "levelsio", "authoredTweetTarget": 500 },
+    { "handle": "kentcdodds", "authoredTweetTarget": 500 }
+  ],
+  "bonusAccounts": [
+    { "handle": "notpronsh" },
+    { "handle": "pcstyle53" }
+  ]
+}

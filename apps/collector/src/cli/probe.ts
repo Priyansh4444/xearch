@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
-import { FxTwitterClient } from "./fxtwitter.ts";
-import { runTimelineProbe, type ProbeOptions, type ProbeReport } from "./probe-lib.ts";
+import { FxTwitterClient } from "../acquisition/fxtwitter.ts";
+import { runTimelineProbe, type ProbeOptions, type ProbeReport } from "../probe/run.ts";
 
 const DEFAULT_BASE_URL = "https://api.fxtwitter.com";
 

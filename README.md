@@ -17,6 +17,13 @@ upgrades itself as smarter interpretations land.
 ## Layout
 
 ```
+apps/
+  collector/         TypeScript acquisition + normalization
+    src/
+      acquisition/   FxTwitter HTTP, retries, and response envelopes
+      probe/         resumable source-reliability probe
+      cli/           executable entry points
+    tests/           collector-owned tests
 convex/            all serving state + query-side logic
   schema.ts        tables + indexes (each index is named in a ReadPlan)
   engine/          PURE domain library — no ctx, unit-testable
@@ -31,9 +38,8 @@ convex/            all serving state + query-side logic
   tierC.ts         LLM semantic layer (action, cached)
   answers.ts       AI answer mode (explicit user action only)
   vector.ts        ladder L4 semantic rescue + image search
-collector/         FxTwitter source reliability tooling
-  fxtwitter.ts     bounded-retry API client
-  probe.ts         resumable profile-timeline probe CLI
+config/
+  collection/      language-neutral collection run definitions
 indexer/           Rust, stateless — crashes are boring
   src/model.rs     ingress + wire types               [contracts #1, #2]
   src/tokenizer.rs tokenizer twin A                   [contract #4]

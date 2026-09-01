@@ -10,5 +10,11 @@
     "skipLibCheck": true,
     "types": ["node"]
   },
-  "include": ["collector/**/*.ts", "convex/**/*.ts", "tests/**/*.ts", "shared/**/*.json"]
+  "include": [
+    "apps/**/*.ts",
+    "config/**/*.json",
+    "convex/**/*.ts",
+    "tests/**/*.ts",
+    "shared/**/*.json"
+  ]
 }

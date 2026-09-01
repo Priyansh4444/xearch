@@ -6,7 +6,7 @@ import type {
   TimelineClient,
   TimelineRequest,
   TimelineResponse,
-} from "./fxtwitter.ts";
+} from "../acquisition/fxtwitter.ts";
 
 const CHECKPOINT_VERSION = 1;
 

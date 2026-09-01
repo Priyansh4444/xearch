@@ -6,8 +6,8 @@ import {
   FxTwitterClient,
   type TimelineClient,
   type TimelineRequest,
-} from "../collector/fxtwitter.ts";
-import { runTimelineProbe } from "../collector/probe-lib.ts";
+} from "../src/acquisition/fxtwitter.ts";
+import { runTimelineProbe } from "../src/probe/run.ts";
 
 const temporaryDirectories: string[] = [];
 

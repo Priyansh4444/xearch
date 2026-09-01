@@ -68,7 +68,7 @@ Their accepted records are additional to the 5,000-tweet core milestone.
 seed handles
   → TypeScript profile resolution
   → TypeScript cursor pagination and raw-page checkpoints
-  → Rust raw-response validation and normalization
+  → TypeScript raw-response validation and normalization
   → ingress/records.jsonl + rejections/records.jsonl
   → finalized manifest and archive under data/old/
 ```
@@ -85,7 +85,7 @@ seed handles
 - stop an account at its quota, six months of history, or cursor exhaustion
 - retain provider responses without converting missing values to defaults
 
-### Rust normalization responsibilities
+### TypeScript normalization responsibilities
 
 - consume only retained raw pages; normalization does not make network requests
 - validate the FxTwitter fields used by `docs/COLLECTION.md`
@@ -96,6 +96,18 @@ seed handles
 - emit each complete author before the first accepted tweet that references it
 - reject incomplete candidates with all applicable stable reason codes
 - produce deterministic output from the same raw pages and configuration
+
+Normalization must remain replaceable:
+
+- acquisition and normalization communicate only through files in the run layout
+- provider-to-ingress mapping is pure and has no filesystem, CLI, or HTTP access
+- filesystem traversal, manifest updates, and JSONL writing wrap the pure mapping
+- committed provider fixtures define byte-for-byte expected ingress and rejection
+  output
+- no acquisition code imports normalization implementation details
+
+A future Rust normalizer must be able to consume the same raw pages and
+configuration and produce the same JSONL contracts without changing acquisition.
 
 ### Initial rejection reason codes
 
@@ -149,19 +161,18 @@ duplicates and required-field gaps. Its NASA trial and observed limitations are 
 `docs/COLLECTION.md`.
 
 The probe is evidence, not the finished pilot collector. It still addresses a
-handle directly, writes under `data/collection-probes/`, analyzes provider fields
-in TypeScript, and has no profile-resolution, Rust-normalization, rejection,
-manifest-finalization, or archive workflow.
+handle directly, writes under `data/collection-probes/`, and has no
+profile-resolution, normalization, rejection, manifest-finalization, or archive
+workflow.
 
 ## Todos
 
 ### Contract and configuration
 
-- [ ] Add a versioned pilot seed configuration containing the ten core and two
+- [x] Add a versioned pilot seed configuration containing the ten core and two
       bonus handles, quotas, and six-month limit.
 - [ ] Define and test the run-id, manifest, checkpoint, and rejection schemas.
 - [ ] Record the FxTwitter API version and OpenAPI specification URL in manifests.
-- [ ] Install and pin the Rust toolchain used by normalization and CI.
 
 ### Acquisition
 
@@ -176,7 +187,7 @@ manifest-finalization, or archive workflow.
 - [ ] Detect cursor exhaustion, repetition, and non-advancement explicitly.
 - [ ] Finalize terminal acquisition state without deleting partial raw data.
 
-### Rust normalization
+### TypeScript normalization
 
 - [ ] Define the minimal provider response types needed by the documented mappings.
 - [ ] Read all retained pages in deterministic account/page order.
@@ -188,6 +199,9 @@ manifest-finalization, or archive workflow.
 - [ ] Write valid ingress JSONL without partially accepted records.
 - [ ] Write structured rejection JSONL with stable, additive reason codes.
 - [ ] Feed normalization counts and output metadata into `manifest.json`.
+- [ ] Keep pure provider mapping independent from HTTP, filesystem, and CLI code.
+- [ ] Verify normalization output byte-for-byte against committed golden fixtures
+      so a future Rust implementation has an executable compatibility target.
 
 ### Archival and integrity
 

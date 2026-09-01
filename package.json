@@ -6,7 +6,7 @@
   "packageManager": "pnpm@11.10.0",
   "description": "Search engine for tweets on Convex — see DESIGN.md / ARCHITECTURE.md",
   "scripts": {
-    "collect:probe": "node collector/probe.ts",
+    "collect:probe": "node apps/collector/src/cli/probe.ts",
     "dev": "convex dev",
     "test": "vitest run",
     "test:golden": "vitest run tests/tokenizer.golden.test.ts"

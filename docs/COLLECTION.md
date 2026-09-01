@@ -18,9 +18,10 @@ The current implementation milestone is [the collection pilot](collection/01-pil
    repost count, and leave `retweetOfTweetId` null.
 5. Missing data stays missing. The collector never turns an unavailable count into
    zero just to pass validation.
-6. TypeScript owns acquisition: HTTP, retries, cursors, checkpoints, and raw-page
-   archival. Rust owns normalization: provider validation, deduplication, ingress
-   JSONL, and structured rejections.
+6. TypeScript owns collection, split into acquisition and normalization stages.
+   Acquisition owns HTTP, retries, cursors, checkpoints, and raw-page archival.
+   Normalization owns provider validation, deduplication, ingress JSONL, and
+   structured rejections.
 
 This is a hackathon collector: small, focused, and best-effort. Acquisition is
 checkpointed after every page so interrupted runs can resume without losing or
@@ -286,12 +287,19 @@ in a separate enrichment path, not the tweet ingress record.
 
 The TypeScript acquisition layer writes source responses, checkpoints, and
 acquisition metadata. It does not interpret a response into ingress records. The
-Rust normalization layer reads retained raw pages and writes:
+TypeScript normalization stage reads retained raw pages and writes:
 
 - deduplicated author and tweet JSONL matching `docs/INGRESS.md`
 - author records before the first accepted tweet that references them
 - structured rejection JSONL for every candidate that cannot satisfy ingress
 - normalization counts and file integrity data for the run manifest
+
+Acquisition and normalization communicate only through the documented on-disk
+run layout. Normalization is deterministic and does not import the HTTP client or
+make network requests. Its core mappings accept provider-shaped values and return
+ingress records or rejection reasons without filesystem access. This boundary lets
+a future Rust command replace normalization without changing acquisition,
+checkpoints, raw files, manifests, ingress JSONL, or rejection JSONL.
 
 Neither collection layer calculates:
 
