@@ -1,4 +1,4 @@
-{"text": "The pricing on these Linux boxes is OUTRAGEOUS lol", "tokens": ["pricing", "these", "linux", "boxes", "outrageous", "lol"], "hasLink": false, "note": "lowercase, stopwords dropped"}
+{"text": "The pricing on these Linux boxes is OUTRAGEOUS lol", "tokens": ["pricing", "linux", "boxes", "outrageous", "lol"], "hasLink": false, "note": "lowercase, stopwords dropped"}
 {"text": "Check https://t.co/abc123 out! #Convex is live", "tokens": ["check", "out", "#convex", "convex", "live"], "hasLink": true, "note": "URL stripped to hasLink; hashtag kept AND bare word emitted"}
 {"text": "@theo ships $TSLA takes for $99", "tokens": ["@theo", "theo", "ships", "$tsla", "tsla", "takes", "99"], "hasLink": false, "note": "mention dual-emit; $+letters cashtag dual-emit; $+digits -> bare number ($ handled by aspect emitter)"}
 {"text": "caf\u00e9 r\u00e9sum\u00e9 na\u00efve", "tokens": ["caf\u00e9", "r\u00e9sum\u00e9", "na\u00efve"], "hasLink": false, "note": "NFKC + lowercase preserves accents"}

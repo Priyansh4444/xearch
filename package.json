@@ -1,10 +1,12 @@
 {
   "name": "xearch",
   "private": true,
+  "type": "module",
   "version": "0.1.0",
   "packageManager": "pnpm@11.10.0",
   "description": "Search engine for tweets on Convex — see DESIGN.md / ARCHITECTURE.md",
   "scripts": {
+    "collect:probe": "node collector/probe.ts",
     "dev": "convex dev",
     "test": "vitest run",
     "test:golden": "vitest run tests/tokenizer.golden.test.ts"

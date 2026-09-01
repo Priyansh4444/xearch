@@ -12,6 +12,7 @@ upgrades itself as smarter interpretations land.
 4. [docs/PARSER.md](docs/PARSER.md) — the Loose Parser made concrete (schema, prompt, evals)
 5. [docs/ASPECTS.md](docs/ASPECTS.md) — aspect tokens: gripes, prior art, escalation plan
 6. [docs/INGRESS.md](docs/INGRESS.md) — what data collection must deliver (JSONL contract)
+7. [docs/COLLECTION.md](docs/COLLECTION.md) — collection goals, sources, mappings, and retention
 
 ## Layout
 
@@ -30,6 +31,9 @@ convex/            all serving state + query-side logic
   tierC.ts         LLM semantic layer (action, cached)
   answers.ts       AI answer mode (explicit user action only)
   vector.ts        ladder L4 semantic rescue + image search
+collector/         FxTwitter source reliability tooling
+  fxtwitter.ts     bounded-retry API client
+  probe.ts         resumable profile-timeline probe CLI
 indexer/           Rust, stateless — crashes are boring
   src/model.rs     ingress + wire types               [contracts #1, #2]
   src/tokenizer.rs tokenizer twin A                   [contract #4]
@@ -53,5 +57,6 @@ Suggested order (dependencies, not a schedule): tokenizer twins vs golden fixtur
 ```sh
 pnpm install && pnpm dev        # generates convex/_generated, deploys schema
 pnpm test                       # TS golden tests
+pnpm collect:probe NASA         # probe a resumable FxTwitter profile timeline
 cd indexer && cargo test        # Rust golden tests (same fixture)
 ```
