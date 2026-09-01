@@ -6,3 +6,4 @@ quarantine/
 data/
 done/
 .env*
+.amp/portals/*
