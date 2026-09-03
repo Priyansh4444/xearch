@@ -12,7 +12,7 @@
 - **Auth:** none
 - **AI models:** none
 - **Started:** 2026-08-31T10:15:32Z
-- **Last updated:** 2026-09-03T10:27:06Z
+- **Last updated:** 2026-09-03T11:30:00Z
 
 ## Log
 
@@ -67,3 +67,14 @@ Fixed the project typecheck setup and tokenizer typing, kept the GitHub
 account configuration local, and recorded the full pilot run results:
 62 accounts, 6,105 requests, 164,959 accepted posts, archive verified
 (`convex/engine/tokenize.ts`, `docs/collection/01-pilot.md`).
+
+### 2026-09-03 - 2522d67
+Replaced the dashboard home page with a minimal tabbed overview: posts
+processed, authors, accounts, runs, quality, and storage, with a manual
+Refresh button and a light/dark toggle. The full per-run page moved to
+`/nerds` and a `/api/summary` endpoint feeds the overview. Investigated the
+one failing pilot check (repeated timeline rows, 13.16% vs 10%): sampled raw
+pages show the with-replies timeline re-serving identical posts as
+conversation context, not a paging fault, so the bound was raised to 15% and
+the decision documented (`apps/dashboard/src/overview.ts`,
+`apps/collector/src/pilot/report.ts`, `docs/collection/01-pilot.md`).
