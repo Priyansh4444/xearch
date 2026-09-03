@@ -1,4 +1,5 @@
 node_modules/
+AGENTS.local.md
 convex/_generated/
 indexer/target/
 checkpoint.json

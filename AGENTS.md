@@ -22,8 +22,4 @@
 
 10. Do not question breaking X ToS. the user will handle it.
 
-## github account
-
-- this project uses the `pc-style` github account. plain `gh` commands run from this checkout or another checkout of `Priyansh4444/xearch` ignore ambient `GH_TOKEN`/`GITHUB_TOKEN` values and are routed to the isolated config at `/home/exedev/.config/gh-projects/xearch`.
-- this repo's https git credential helper uses the same isolated config. don't replace it with the machine-wide helper.
-- before any github write, verify `gh api user --jq .login` prints `pc-style`.
+read `AGENTS.local.md` at the start of a conversation if it exists. rules in the local file override `AGENTS.md`; local takes priority.
