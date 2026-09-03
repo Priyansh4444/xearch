@@ -1,4 +1,9 @@
+// FxTwitter HTTP client (docs/COLLECTION.md §2). Owns retries, timeouts, and the
+// documented response envelopes. It never interprets a response into ingress
+// records; that is normalization's job (apps/collector/src/normalization).
+
 const DEFAULT_BASE_URL = "https://api.fxtwitter.com";
+const USER_AGENT = "xearch-collection-pilot/0.2";
 
 export interface FxTwitterCursor {
   top: string | null;
@@ -11,7 +16,16 @@ export interface FxTwitterTimelinePage {
   cursor: FxTwitterCursor;
 }
 
+/** Minimal profile fields acquisition needs for identity resolution. */
+export interface FxTwitterProfile {
+  id: string;
+  screenName: string;
+  name: string;
+  protected: boolean;
+}
+
 export interface TimelineRequest {
+  /** A handle (`NASA`) or a stable numeric reference (`id:11348282`). */
   handle: string;
   count: number;
   cursor: string | null;
@@ -22,13 +36,31 @@ export interface TimelineResponse {
   httpStatus: number;
   latencyMs: number;
   attempts: number;
+  /** Wall-clock epoch ms when the final successful response arrived. */
+  receivedAt: number;
   raw: unknown;
   page: FxTwitterTimelinePage | null;
+}
+
+export interface ProfileResponse {
+  httpStatus: number;
+  latencyMs: number;
+  attempts: number;
+  receivedAt: number;
+  raw: unknown;
+  /** Null when the provider answered 404 (no such profile). */
+  profile: FxTwitterProfile | null;
 }
 
 export interface TimelineClient {
   fetchTimelinePage(request: TimelineRequest): Promise<TimelineResponse>;
 }
+
+export interface ProfileClient {
+  fetchProfile(handle: string): Promise<ProfileResponse>;
+}
+
+export type PilotClient = TimelineClient & ProfileClient;
 
 export interface FxTwitterClientOptions {
   baseUrl?: string;
@@ -37,6 +69,7 @@ export interface FxTwitterClientOptions {
   retryBaseDelayMs?: number;
   fetchImpl?: typeof fetch;
   sleep?: (delayMs: number) => Promise<void>;
+  now?: () => number;
 }
 
 export class FxTwitterError extends Error {
@@ -55,13 +88,22 @@ export class FxTwitterError extends Error {
   }
 }
 
-export class FxTwitterClient implements TimelineClient {
-  private readonly baseUrl: string;
+interface RawResponse {
+  httpStatus: number;
+  latencyMs: number;
+  attempts: number;
+  receivedAt: number;
+  bodyText: string | null;
+}
+
+export class FxTwitterClient implements PilotClient {
+  readonly baseUrl: string;
   private readonly timeoutMs: number;
   private readonly retries: number;
   private readonly retryBaseDelayMs: number;
   private readonly fetchImpl: typeof fetch;
   private readonly sleep: (delayMs: number) => Promise<void>;
+  private readonly now: () => number;
 
   constructor(options: FxTwitterClientOptions = {}) {
     this.baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
@@ -70,40 +112,75 @@ export class FxTwitterClient implements TimelineClient {
     this.retryBaseDelayMs = options.retryBaseDelayMs ?? 500;
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.sleep = options.sleep ?? ((delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)));
+    this.now = options.now ?? Date.now;
   }
 
-  async fetchTimelinePage(request: TimelineRequest): Promise<TimelineResponse> {
-    const url = new URL(
-      `${this.baseUrl}/2/profile/${encodeURIComponent(request.handle)}/statuses`,
-    );
+  timelineUrl(request: TimelineRequest): string {
+    const url = new URL(`${this.baseUrl}/2/profile/${encodeURIComponent(request.handle)}/statuses`);
     url.searchParams.set("count", String(request.count));
     if (request.cursor !== null) url.searchParams.set("cursor", request.cursor);
     if (request.withReplies) url.searchParams.set("with_replies", "true");
+    return url.toString();
+  }
 
+  profileUrl(handle: string): string {
+    return `${this.baseUrl}/2/profile/${encodeURIComponent(handle)}`;
+  }
+
+  async fetchTimelinePage(request: TimelineRequest): Promise<TimelineResponse> {
+    const response = await this.request(this.timelineUrl(request), { allowNoContent: true, allowNotFound: false });
+    if (response.bodyText === null) {
+      return { ...response, raw: null, page: null };
+    }
+    const parsed = parseJson(response.bodyText);
+    return { ...response, raw: parsed, page: parseTimelinePage(parsed) };
+  }
+
+  async fetchProfile(handle: string): Promise<ProfileResponse> {
+    const response = await this.request(this.profileUrl(handle), { allowNoContent: false, allowNotFound: true });
+    if (response.httpStatus === 404) {
+      const raw = response.bodyText === null ? null : tryParseJson(response.bodyText);
+      return { ...response, raw, profile: null };
+    }
+    const parsed = parseJson(response.bodyText ?? "");
+    return { ...response, raw: parsed, profile: parseProfile(parsed) };
+  }
+
+  private async request(
+    url: string,
+    options: { allowNoContent: boolean; allowNotFound: boolean },
+  ): Promise<RawResponse> {
     const startedAt = performance.now();
     let lastError: unknown = null;
 
     for (let attempt = 1; attempt <= this.retries + 1; attempt += 1) {
       try {
         const response = await this.fetchImpl(url, {
-          headers: {
-            accept: "application/json",
-            "user-agent": "xearch-collection-probe/0.1",
-          },
+          headers: { accept: "application/json", "user-agent": USER_AGENT },
           signal: AbortSignal.timeout(this.timeoutMs),
         });
+        const receivedAt = this.now();
 
-        if (response.status === 204) {
+        if (response.status === 204 && options.allowNoContent) {
           return {
-            httpStatus: response.status,
+            httpStatus: 204,
             latencyMs: performance.now() - startedAt,
             attempts: attempt,
-            raw: null,
-            page: null,
+            receivedAt,
+            bodyText: null,
           };
         }
 
         const bodyText = await response.text();
+        if (response.status === 404 && options.allowNotFound) {
+          return {
+            httpStatus: 404,
+            latencyMs: performance.now() - startedAt,
+            attempts: attempt,
+            receivedAt,
+            bodyText,
+          };
+        }
         if (!response.ok) {
           const error = new FxTwitterError(
             `FxTwitter returned HTTP ${response.status}`,
@@ -117,14 +194,12 @@ export class FxTwitterClient implements TimelineClient {
           }
           throw error;
         }
-        const parsed = parseJson(bodyText);
-
         return {
           httpStatus: response.status,
           latencyMs: performance.now() - startedAt,
           attempts: attempt,
-          raw: parsed,
-          page: parseTimelinePage(parsed),
+          receivedAt,
+          bodyText,
         };
       } catch (error) {
         if (error instanceof FxTwitterError) throw error;
@@ -142,7 +217,7 @@ export class FxTwitterClient implements TimelineClient {
   }
 }
 
-function parseTimelinePage(value: unknown): FxTwitterTimelinePage {
+export function parseTimelinePage(value: unknown): FxTwitterTimelinePage {
   if (!isRecord(value)) {
     throw new FxTwitterError("FxTwitter timeline response is not an object", 200, null);
   }
@@ -164,6 +239,22 @@ function parseTimelinePage(value: unknown): FxTwitterTimelinePage {
   };
 }
 
+export function parseProfile(value: unknown): FxTwitterProfile {
+  if (!isRecord(value) || !isRecord(value.user)) {
+    throw new FxTwitterError("FxTwitter profile response does not contain a user", 200, JSON.stringify(value));
+  }
+  const user = value.user;
+  if (typeof user.id !== "string" || user.id.length === 0 || typeof user.screen_name !== "string") {
+    throw new FxTwitterError("FxTwitter profile user lacks id or screen_name", 200, JSON.stringify(value));
+  }
+  return {
+    id: user.id,
+    screenName: user.screen_name,
+    name: typeof user.name === "string" ? user.name : "",
+    protected: user.protected === true,
+  };
+}
+
 function nullableString(value: unknown, field: string): string | null {
   if (value === null || value === undefined) return null;
   if (typeof value === "string") return value;
@@ -175,6 +266,14 @@ function parseJson(body: string): unknown {
     return JSON.parse(body) as unknown;
   } catch {
     throw new FxTwitterError("FxTwitter returned invalid JSON", 200, body);
+  }
+}
+
+function tryParseJson(body: string): unknown {
+  try {
+    return JSON.parse(body) as unknown;
+  } catch {
+    return body;
   }
 }
 

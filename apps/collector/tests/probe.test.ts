@@ -148,6 +148,7 @@ function timelineResponse(results: unknown[], bottom: string | null) {
     httpStatus: 200,
     latencyMs: 25,
     attempts: 1,
+    receivedAt: 1_700_000_000_000,
     raw,
     page: raw,
   };

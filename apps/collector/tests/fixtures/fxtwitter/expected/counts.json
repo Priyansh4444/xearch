@@ -1,0 +1,81 @@
+{
+  "candidates": {
+    "timeline": 16,
+    "embedded": 3
+  },
+  "accepted": {
+    "total": 10,
+    "timeline": 8,
+    "embedded": 2
+  },
+  "rejected": {
+    "total": 6,
+    "timeline": 5,
+    "embedded": 1,
+    "byReason": {
+      "empty_text": 1,
+      "missing_author_counts": 1,
+      "missing_author_verification": 1,
+      "invalid_media": 1,
+      "invalid_response_shape": 1,
+      "missing_metric": 1,
+      "conflicting_tweet_text": 1
+    }
+  },
+  "timelineRowsRepeatedWithinAccount": 1,
+  "duplicates": 2,
+  "metricsRefreshed": 2,
+  "skippedOutsideWindow": 1,
+  "tombstoneQuotes": 1,
+  "authors": 5,
+  "oldestCreatedAt": 1600000000000,
+  "newestCreatedAt": 1700095000000,
+  "perAccount": [
+    {
+      "userId": "100",
+      "handle": "seed",
+      "authoredAccepted": 6,
+      "coverageFloor": 3,
+      "coverageFloorReached": true
+    },
+    {
+      "userId": "200",
+      "handle": "other",
+      "authoredAccepted": 1,
+      "coverageFloor": 3,
+      "coverageFloorReached": false
+    }
+  ],
+  "perAuthor": [
+    {
+      "authorId": "100",
+      "handle": "seed",
+      "accepted": 6,
+      "share": 0.6
+    },
+    {
+      "authorId": "200",
+      "handle": "other",
+      "accepted": 1,
+      "share": 0.1
+    },
+    {
+      "authorId": "300",
+      "handle": "quoted",
+      "accepted": 1,
+      "share": 0.1
+    },
+    {
+      "authorId": "400",
+      "handle": "original",
+      "accepted": 1,
+      "share": 0.1
+    },
+    {
+      "authorId": "500",
+      "handle": "context",
+      "accepted": 1,
+      "share": 0.1
+    }
+  ]
+}

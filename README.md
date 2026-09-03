@@ -13,17 +13,21 @@ upgrades itself as smarter interpretations land.
 5. [docs/ASPECTS.md](docs/ASPECTS.md) — aspect tokens: gripes, prior art, escalation plan
 6. [docs/INGRESS.md](docs/INGRESS.md) — what data collection must deliver (JSONL contract)
 7. [docs/COLLECTION.md](docs/COLLECTION.md) — collection goals, sources, mappings, and retention
+8. [docs/collection/01-pilot.md](docs/collection/01-pilot.md) — the 62-account pilot: accounts, stop rules, run lifecycle, commands
 
 ## Layout
 
 ```
 apps/
-  collector/         TypeScript acquisition + normalization
+  collector/         TypeScript collection (docs/collection/01-pilot.md)
     src/
-      acquisition/   FxTwitter HTTP, retries, and response envelopes
+      acquisition/   FxTwitter HTTP, retries, profile + timeline envelopes
+      config/        pilot config parsing (pinned ids, cohorts)
+      pilot/         run layout, checkpoint/manifest, acquire, lifecycle, report
+      normalization/ pure provider -> ingress mapping + deterministic normalizer
       probe/         resumable source-reliability probe
-      cli/           executable entry points
-    tests/           collector-owned tests
+      cli/           executable entry points (pilot, probe)
+    tests/           collector tests + provider-shaped golden fixtures
 convex/            all serving state + query-side logic
   schema.ts        tables + indexes (each index is named in a ReadPlan)
   engine/          PURE domain library — no ctx, unit-testable
@@ -64,5 +68,11 @@ Suggested order (dependencies, not a schedule): tokenizer twins vs golden fixtur
 pnpm install && pnpm dev        # generates convex/_generated, deploys schema
 pnpm test                       # TS golden tests
 pnpm collect:probe NASA         # probe a resumable FxTwitter profile timeline
+pnpm collect:pilot acquire --accounts theo --label smoke   # resumable pilot run
+apps/collector/scripts/acquire-detached.sh --run <id>      # long runs: detached, logs in data/logs/
+pnpm collect:pilot normalize <run-id>                      # validate, report, archive
+pnpm collect:pilot verify <run-id>                         # byte-for-byte re-normalization
+pnpm collect:sync [run-id]                                 # mirror data/old to R2 (needs .env.r2)
+pnpm typecheck                  # tsc over apps/, convex/, tests/
 cd indexer && cargo test        # Rust golden tests (same fixture)
 ```

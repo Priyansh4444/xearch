@@ -1,0 +1,2 @@
+{"kind":"duplicate","tweetId":"1005","firstSeen":{"accountUserId":"100","page":1,"origin":"timeline"},"again":{"accountUserId":"100","page":2,"origin":"timeline"},"metricsRefreshed":true}
+{"kind":"duplicate","tweetId":"1001","firstSeen":{"accountUserId":"100","page":1,"origin":"timeline"},"again":{"accountUserId":"200","page":1,"origin":"timeline"},"metricsRefreshed":true}

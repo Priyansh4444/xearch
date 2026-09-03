@@ -43,60 +43,83 @@ unstructured tweet count:
 - produce only records that satisfy `docs/INGRESS.md`; preserve and report every
   rejected candidate without fabricating missing values
 
-Scale is staged. The first gate is the 5,000-tweet AI/developer pilot, not one
-million tweets. Later gates must be justified by observed rows per request,
-latency, duplicate rate, rejection rate, cursor depth, and provider failures.
-One-hop graph discovery may be added after manually seeded collection is reliable;
-it is not part of the pilot.
+Scale is staged. The first gate is the 62-account AI/developer pilot in
+[collection/01-pilot.md](collection/01-pilot.md), not one million tweets. Later
+gates must be justified by observed rows per request, latency, repeated-row rate,
+rejection rate, cursor depth, and provider failures. One-hop graph discovery
+(gate 2) starts only after the pilot's interaction and per-author-share
+measurements exist; it is documented in the pilot file and not implemented.
 
 ### Account identity
 
-Configuration uses human-readable handles. At the beginning of a run, acquisition
-resolves each handle through `GET /2/profile/{handle}` and records:
+Configuration uses human-readable handles plus a pinned numeric `expectedUserId`.
+At the beginning of a run, acquisition resolves each handle through
+`GET /2/profile/{handle}` and records:
 
 - requested handle
 - provider-returned handle
 - numeric user id
 
-Timeline checkpoints and subsequent requests use `id:<numeric_user_id>`, which is
-stable across handle changes. A changed or missing identity is a visible run error,
-not a reason to merge two accounts silently.
+Timeline requests use `id:<numeric_user_id>`, which is stable across handle
+changes. A returned id that differs from the pinned id pauses that account with
+`identity_mismatch`; the run never merges two identities or collects the wrong
+person because a handle resolved "successfully". A legitimate rename is an explicit
+config change that keeps the pinned id.
 
 ### Run lifecycle and retention
 
-Active and resumable runs live under `data/runs/<run-id>/`. Completed, failed, and
-explicitly abandoned runs are moved as complete directories to
-`data/old/<run-id>/`. Both roots are ignored by Git.
+Active and resumable runs live under `data/runs/<run-id>/`. Terminal runs
+(`completed`, `partial`, `abandoned`, `failed`) are moved as complete directories
+to `data/old/<run-id>/` once their outputs and digests are finalized. Both roots
+are ignored by Git. Archived means immutable and finalized, not successful; the
+manifest's `acceptance` block says whether the run met the pilot criteria.
 
 Each run contains:
 
 ```text
 data/runs/<run-id>/
-  manifest.json
-  checkpoint.json
-  raw/
-    <numeric-user-id>/
-      <page-number>.json
-  ingress/
-    records.jsonl
-  rejections/
-    records.jsonl
+  config.json                  exact configuration snapshot used by the run
+  checkpoint.json              acquisition state, atomic, single source of truth
+  manifest.json                projection of the checkpoint + normalization + archive
+  raw/<numeric-user-id>/
+    profile.json, profile.meta.json
+    <page-number>.json         unchanged provider body
+    <page-number>.meta.json    receivedAt, request, HTTP status, attempts, latency,
+                               row count, output cursor
+    <page-number>.error.json   retained provider failure, when one paused the account
+  raw/_unresolved/<handle>/    profiles that failed the identity check
+  ingress/records.jsonl
+  rejections/records.jsonl
+  duplicates/records.jsonl
+  skips/records.jsonl
+  report.json
 ```
 
-`manifest.json` is updated throughout the run and finalized before archival. It
-records:
+`manifest.json` records:
 
-- run id, lifecycle status, source, source API version, and specification URL
-- requested handles, resolved handles, numeric ids, and collection options
-- start/completion timestamps, cursor state, page counts, and stop reasons
-- returned, accepted, rejected, duplicate, author, and tweet counts
-- oldest/newest tweet timestamps and rejection counts grouped by stable reason code
+- run id, acquisition status, source, API version, and specification URL
+- collector Git revision, dirty flag, and configuration hash
+- creation time, history cutoff, coverage floor
+- per account: requested and resolved handle, numeric id, cohort, state, pages,
+  requests, retries, rows, authored date range, stop or pause reason, abandon reason
+- normalization counts by candidate origin and rejection reason, duplicate,
+  refresh, skip, tombstone, and author counts, per-account coverage, per-author share
 - every retained file's relative path, byte size, and SHA-256 digest
-- the collector revision/configuration needed to explain the output
+- acceptance result with reasons
 
-Raw responses are the audit trail. Rejection records reference a raw filename,
-page, candidate id when available, and all applicable reason codes; they do not
-duplicate the provider payload.
+Archived runs are mirrored to the Cloudflare R2 bucket `xearch-runs` with
+`pnpm collect:sync [run-id]` (`apps/collector/scripts/sync-runs.sh`, rclone over
+the S3 API, credentials in the gitignored `.env.r2`). R2 holds raw pages and
+outputs because they are the audit trail, not serving state; Convex only ever
+receives normalized ingress records through the indexer. The bucket layout mirrors
+`data/old/<run-id>/` exactly, so the manifest digests verify the mirror too.
+
+Raw responses are the audit trail. `metricsAt` for every candidate is the
+`receivedAt` of its page sidecar, so re-normalizing an archived run reproduces the
+output byte for byte; `pnpm collect:pilot verify <run-id>` checks exactly that.
+Rejection records reference a raw file, page, result index, candidate origin,
+parent id, and candidate id when available, plus all applicable reason codes; they
+do not duplicate the provider payload.
 
 ## 2. Tested sources
 
