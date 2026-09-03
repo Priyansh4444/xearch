@@ -1,7 +1,10 @@
 // Read-only dashboard for collection pilot runs stored in the xearch-runs R2 bucket.
+// Routes: / (overview, see overview.ts), /nerds (full per-run detail), /api/summary, /api/runs.
 // Live runs are pushed to _live/<run-id>/ by apps/collector/scripts/push-status.sh;
 // archived runs are mirrored to <run-id>/ by apps/collector/scripts/sync-runs.sh.
 // Only manifest.json and report.json are ever read; raw pages are never loaded.
+
+import { buildSummary, renderOverviewHtml } from "./overview";
 
 // Minimal R2 binding types (no @cloudflare/workers-types dependency).
 interface R2Object {
@@ -26,8 +29,8 @@ interface Env {
 }
 
 // Shapes mirrored from apps/collector/src/pilot/manifest.ts and report.ts (only fields used here).
-type AccountState = "pending" | "active" | "paused" | "completed" | "abandoned";
-interface ManifestAccount {
+export type AccountState = "pending" | "active" | "paused" | "completed" | "abandoned";
+export interface ManifestAccount {
   requestedHandle: string;
   resolvedHandle: string | null;
   cohort: string;
@@ -41,7 +44,7 @@ interface ManifestAccount {
   abandonReason: string | null;
   lastError: string | null;
 }
-interface Manifest {
+export interface Manifest {
   runId: string;
   createdAt: number;
   updatedAt: number;
@@ -61,18 +64,18 @@ interface Manifest {
   archive: { archivedAt: number; files: { path: string; bytes: number }[] } | null;
   acceptance: { passed: boolean; reasons: string[] };
 }
-interface ThresholdCheck {
+export interface ThresholdCheck {
   name: string;
   value: number | string | null;
   bound: string;
   passed: boolean | null;
 }
-interface Report {
+export interface Report {
   generatedAt: number;
   thresholds: { passed: boolean; checks: ThresholdCheck[] };
 }
 
-interface RunSummary {
+export interface RunSummary {
   runId: string;
   kind: "live" | "archived";
   error: string | null;
@@ -99,7 +102,7 @@ interface RunSummary {
   accountRows: ManifestAccount[];
 }
 
-interface Snapshot {
+export interface Snapshot {
   generatedAt: number;
   bucket: { objects: number; bytes: number };
   runs: RunSummary[];
@@ -118,9 +121,21 @@ export default {
           headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
         });
       }
+      if (url.pathname === "/api/summary") {
+        const snapshot = await buildSnapshot(env.xearch_runs);
+        return new Response(JSON.stringify(buildSummary(snapshot)), {
+          headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
+        });
+      }
       if (url.pathname === "/") {
         const snapshot = await buildSnapshot(env.xearch_runs);
-        return new Response(renderHtml(snapshot), {
+        return new Response(renderOverviewHtml(buildSummary(snapshot)), {
+          headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
+        });
+      }
+      if (url.pathname === "/nerds") {
+        const snapshot = await buildSnapshot(env.xearch_runs);
+        return new Response(renderNerdsHtml(snapshot), {
           headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
         });
       }
@@ -432,7 +447,7 @@ function renderRun(run: RunSummary, now: number): string {
   return `<section class="run">${head}${progress}${stats}${acceptance}${normalization}${thresholds}${accountsTable}</section>`;
 }
 
-function renderHtml(snapshot: Snapshot): string {
+function renderNerdsHtml(snapshot: Snapshot): string {
   const now = snapshot.generatedAt;
   const live = snapshot.runs.filter((run) => run.kind === "live");
   const archived = snapshot.runs.filter((run) => run.kind === "archived");
@@ -446,7 +461,7 @@ function renderHtml(snapshot: Snapshot): string {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="refresh" content="60">
-<title>xearch collection runs</title>
+<title>xearch · stats for nerds</title>
 <style>
 :root { color-scheme: light dark; --bg: #f7f7f8; --fg: #1a1a1a; --dim: #6b6b70; --card: #fff; --line: #e2e2e6; --ok: #2f9e44; --warn: #e8a317; --bad: #d64545; --live: #3b82f6; }
 @media (prefers-color-scheme: dark) { :root { --bg: #0f1115; --fg: #e6e6ea; --dim: #8a8a94; --card: #181b22; --line: #2a2e38; --ok: #4ade80; --warn: #fbbf24; --bad: #f87171; --live: #60a5fa; } }
@@ -487,9 +502,10 @@ code { font-size: .85em; }
 </head>
 <body>
 <header>
-  <h1>xearch collection runs</h1>
+  <h1>xearch · stats for nerds</h1>
   <span class="dim">bucket: ${fmtInt(snapshot.bucket.objects)} objects · ${esc(fmtBytes(snapshot.bucket.bytes))}</span>
   <span class="dim">rendered ${esc(fmtDate(now))}</span>
+  <a href="/">overview</a>
   <a href="/api/runs">json</a>
 </header>
 ${body}

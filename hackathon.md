@@ -12,7 +12,7 @@
 - **Auth:** none
 - **AI models:** none
 - **Started:** 2026-08-31T10:15:32Z
-- **Last updated:** 2026-09-01T01:54:58Z
+- **Last updated:** 2026-09-03T10:27:06Z
 
 ## Log
 
@@ -42,3 +42,28 @@ docs to match (`package.json`, `pnpm-workspace.yaml`, `pnpm-lock.yaml`).
 Added agent workspace setup and resume scripts, aligned them with pnpm, and
 committed the indexer's Cargo lockfile (`.agents/setup`, `.agents/resume`,
 `indexer/Cargo.lock`).
+
+### 2026-09-01 - 2622c48
+Added the first resumable collection pilot: an FxTwitter client, a probe
+library and CLI, pilot documentation, and probe tests
+(`collector/fxtwitter.ts`, `collector/probe.ts`, `docs/collection/01-pilot.md`,
+`tests/collector.probe.test.ts`).
+
+### 2026-09-01 - 9b8e685
+Moved the collector into `apps/collector` with `acquisition`, `cli`, and
+`probe` modules, added the pilot config with its tests, and updated the
+collection docs (`apps/collector/src/`, `config/collection/pilot.json`).
+
+### 2026-09-03 - 0d88f0d
+Built the full collection pilot: 62 configured accounts, resumable runs with
+checkpoints and manifests, normalization into ingress records, archive
+digests and verification, a pilot report with smoke thresholds, and gate-2
+account discovery. Added a read-only Cloudflare Worker dashboard over the
+`xearch-runs` R2 bucket (`apps/collector/src/pilot/`, `apps/dashboard/`,
+`apps/collector/tests/pilot-run.test.ts`).
+
+### 2026-09-03 - e1779c2
+Fixed the project typecheck setup and tokenizer typing, kept the GitHub
+account configuration local, and recorded the full pilot run results:
+62 accounts, 6,105 requests, 164,959 accepted posts, archive verified
+(`convex/engine/tokenize.ts`, `docs/collection/01-pilot.md`).

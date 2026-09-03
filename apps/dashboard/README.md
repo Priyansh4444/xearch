@@ -2,10 +2,12 @@
 
 Read-only Cloudflare Worker that shows collection pilot runs from the `xearch-runs` R2 bucket: live runs (pushed while `pnpm collect:pilot` is acquiring) and archived runs (mirrored by `pnpm collect:sync`), their progress, acceptance, normalization counts, smoke thresholds, and how much data each holds.
 
-- `/` server-rendered HTML, refreshes every 60s
-- `/api/runs` the same data as JSON
+- `/` minimal overview with tabs (Overview, Runs, Quality, Storage). Manual refresh only via the Refresh button; light/dark follows the system with a toggle persisted in `localStorage`. The page embeds the initial summary and re-fetches `/api/summary` on refresh (`src/overview.ts`).
+- `/nerds` "stats for nerds": the full per-run detail page (progress, normalization, thresholds, accounts), auto-refreshes every 60s
+- `/api/summary` the overview data as JSON (totals summed over distinct runs; a run present both live and archived counts once, archived wins)
+- `/api/runs` the full per-run data as JSON
 
-It only ever reads `<run-id>/manifest.json`, `<run-id>/report.json`, and `_live/<run-id>/{manifest,report}.json`, plus a bucket listing for the object/byte total. Raw pages are never loaded. There are no npm dependencies; wrangler bundles `src/index.ts` directly.
+It only ever reads `<run-id>/manifest.json`, `<run-id>/report.json`, and `_live/<run-id>/{manifest,report}.json`, plus a bucket listing for the object/byte total. Raw pages are never loaded. There are no npm dependencies; wrangler bundles `src/index.ts` (and its import `src/overview.ts`) directly.
 
 ## Deploy
 
@@ -13,6 +15,8 @@ It only ever reads `<run-id>/manifest.json`, `<run-id>/report.json`, and `_live/
 cd apps/dashboard
 wrangler deploy          # needs `wrangler login` once; binding xearch_runs -> bucket xearch-runs
 ```
+
+Local run: `wrangler dev --local` (add `--compatibility-date <date your wrangler supports>` if your wrangler is older than the date in `wrangler.toml`) and seed the local bucket with `wrangler r2 object put xearch-runs/<run-id>/manifest.json --file ... --local`.
 
 Typecheck from the repo root with `node_modules/.bin/tsc -p apps/dashboard/tsconfig.json` (uses the root TypeScript install; R2 types are declared inline in `src/index.ts`).
 
