@@ -3,7 +3,7 @@
 // advances. Failures pause one account; they never masquerade as completion.
 
 import { join } from "node:path";
-import { FxTwitterError, type PilotClient, type TimelineResponse } from "../acquisition/fxtwitter.ts";
+import { FxTwitterError, type PilotClient, type TimelineFetchResult } from "../acquisition/fxtwitter.ts";
 import type { PilotConfig } from "../config/pilot.ts";
 import type { PageMeta } from "../normalization/normalize.ts";
 import { isRecord, timestampMilliseconds } from "../normalization/mapping.ts";
@@ -193,7 +193,7 @@ async function fetchOnePage(
   };
   account.requests += 1;
 
-  let response: TimelineResponse;
+  let response: TimelineFetchResult;
   try {
     response = await client.fetchTimelinePage(request);
   } catch (error) {

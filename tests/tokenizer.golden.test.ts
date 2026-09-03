@@ -6,10 +6,10 @@ import { join } from "node:path";
 import { tokenize } from "../convex/engine/tokenize";
 
 interface GoldenCase {
+  name: string;
   text: string;
   tokens: string[];
   hasLink: boolean;
-  note: string;
 }
 
 const fixture = readFileSync(
@@ -20,7 +20,7 @@ const fixture = readFileSync(
 describe("tokenizer golden parity", () => {
   for (const line of fixture.split("\n").filter((l) => l.trim().length > 0)) {
     const c = JSON.parse(line) as GoldenCase;
-    it(c.note, () => {
+    it(c.name, () => {
       const got = tokenize(c.text);
       expect(got.tokens).toEqual(c.tokens);
       expect(got.hasLink).toBe(c.hasLink);
