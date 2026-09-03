@@ -53,7 +53,7 @@ export function tokenize(raw: string): Tokenized {
   };
 
   while (i < chars.length) {
-    const c = chars[i];
+    const c = chars[i]!;
     if (c === "#" || c === "@" || c === "$") {
       const [run, next] = takeWordRun(chars, i + 1);
       if (run.length === 0) {
@@ -95,7 +95,7 @@ function takeWordRun(chars: string[], start: number): [string, number] {
   let i = start;
   let out = "";
   while (i < chars.length) {
-    const c = chars[i];
+    const c = chars[i]!;
     if (WORD_RE.test(c) && !CJK_RE.test(c)) {
       out += c;
       i += 1;
@@ -103,7 +103,7 @@ function takeWordRun(chars: string[], start: number): [string, number] {
       (c === "'" || c === "\u2019") &&
       out.length > 0 &&
       i + 1 < chars.length &&
-      WORD_RE.test(chars[i + 1])
+      WORD_RE.test(chars[i + 1]!)
     ) {
       out += "'"; // normalize curly apostrophe
       i += 1;
@@ -119,8 +119,8 @@ function takeRun(
 ): [string, number] {
   let i = start;
   let out = "";
-  while (i < chars.length && pred(chars[i])) {
-    out += chars[i];
+  while (i < chars.length && pred(chars[i]!)) {
+    out += chars[i]!;
     i += 1;
   }
   return [out, i];
@@ -128,9 +128,9 @@ function takeRun(
 
 function cjkBigrams(run: string): string[] {
   const cs = Array.from(run);
-  if (cs.length === 1) return [cs[0]];
+  if (cs.length === 1) return [cs[0]!];
   const out: string[] = [];
-  for (let i = 0; i + 1 < cs.length; i++) out.push(cs[i] + cs[i + 1]);
+  for (let i = 0; i + 1 < cs.length; i++) out.push(cs[i]! + cs[i + 1]!);
   return out;
 }
 
