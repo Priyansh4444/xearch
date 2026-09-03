@@ -5,9 +5,16 @@
     "moduleResolution": "Bundler",
     "strict": true,
     "noUncheckedIndexedAccess": true,
+    "allowImportingTsExtensions": true,
     "resolveJsonModule": true,
     "skipLibCheck": true,
     "types": ["node"]
   },
-  "include": ["convex/**/*.ts", "tests/**/*.ts", "shared/**/*.json"]
+  "include": [
+    "apps/**/*.ts",
+    "config/**/*.json",
+    "convex/**/*.ts",
+    "tests/**/*.ts",
+    "shared/**/*.json"
+  ]
 }

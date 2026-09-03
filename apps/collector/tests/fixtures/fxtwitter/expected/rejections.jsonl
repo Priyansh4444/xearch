@@ -1,0 +1,6 @@
+{"kind":"rejection","accountUserId":"100","page":1,"rawFile":"raw/100/000001.json","index":6,"origin":"timeline","parentId":null,"candidateId":"1006","reasons":["empty_text"]}
+{"kind":"rejection","accountUserId":"100","page":1,"rawFile":"raw/100/000001.json","index":7,"origin":"timeline","parentId":null,"candidateId":"1007","reasons":["missing_author_counts","missing_author_verification"]}
+{"kind":"rejection","accountUserId":"100","page":1,"rawFile":"raw/100/000001.json","index":8,"origin":"timeline","parentId":null,"candidateId":"1008","reasons":["invalid_media"]}
+{"kind":"rejection","accountUserId":"100","page":1,"rawFile":"raw/100/000001.json","index":9,"origin":"timeline","parentId":null,"candidateId":null,"reasons":["invalid_response_shape"]}
+{"kind":"rejection","accountUserId":"100","page":2,"rawFile":"raw/100/000002.json","index":2,"origin":"embedded","parentId":"1010","candidateId":"9004","reasons":["missing_metric"]}
+{"kind":"rejection","accountUserId":"200","page":1,"rawFile":"raw/200/000001.json","index":2,"origin":"timeline","parentId":null,"candidateId":"1002","reasons":["conflicting_tweet_text"]}

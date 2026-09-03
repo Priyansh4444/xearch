@@ -1,13 +1,19 @@
 {
   "name": "xearch",
   "private": true,
+  "type": "module",
   "version": "0.1.0",
   "packageManager": "pnpm@11.10.0",
   "description": "Search engine for tweets on Convex — see DESIGN.md / ARCHITECTURE.md",
   "scripts": {
+    "collect:pilot": "node apps/collector/src/cli/pilot.ts",
+    "collect:probe": "node apps/collector/src/cli/probe.ts",
+    "collect:push-status": "bash apps/collector/scripts/push-status.sh",
+    "collect:sync": "bash apps/collector/scripts/sync-runs.sh",
     "dev": "convex dev",
     "test": "vitest run",
-    "test:golden": "vitest run tests/tokenizer.golden.test.ts"
+    "test:golden": "vitest run tests/tokenizer.golden.test.ts",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "convex": "^1.17.0"

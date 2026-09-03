@@ -7,3 +7,5 @@ data/
 done/
 .env*
 .amp/portals/*
+!.env.r2.example
+.wrangler/

@@ -4,6 +4,7 @@
 gets the public data needed to satisfy it.
 
 The collector calls providers directly. It does not depend on `x-md`.
+The current implementation milestone is [the collection pilot](collection/01-pilot.md).
 
 ## 1. Decision
 
@@ -17,14 +18,126 @@ The collector calls providers directly. It does not depend on `x-md`.
    repost count, and leave `retweetOfTweetId` null.
 5. Missing data stays missing. The collector never turns an unavailable count into
    zero just to pass validation.
+6. TypeScript owns collection, split into acquisition and normalization stages.
+   Acquisition owns HTTP, retries, cursors, checkpoints, and raw-page archival.
+   Normalization owns provider validation, deduplication, ingress JSONL, and
+   structured rejections.
 
-This is a hackathon collector: small, focused, and best-effort. It still writes
-checkpointed JSONL so interrupted runs can resume without duplicating data.
+This is a hackathon collector: small, focused, and best-effort. Acquisition is
+checkpointed after every page so interrupted runs can resume without losing or
+duplicating work. Normalization is deterministic over the archived raw pages.
+
+### Final goal
+
+The final collector should build a dense, useful corpus rather than maximize an
+unstructured tweet count:
+
+- collect at least one million accepted, globally unique tweets once measured
+  source throughput and historical depth show that target is feasible
+- concentrate the corpus across 3–5 deliberately selected communities so search
+  queries and interaction graphs have useful depth
+- include replies, quotes, media, and months of history instead of collecting only
+  isolated recent posts
+- keep every source request reproducible through raw-page retention, manifests,
+  stable account ids, and content hashes
+- produce only records that satisfy `docs/INGRESS.md`; preserve and report every
+  rejected candidate without fabricating missing values
+
+Scale is staged. The first gate is the 62-account AI/developer pilot in
+[collection/01-pilot.md](collection/01-pilot.md), not one million tweets. Later
+gates must be justified by observed rows per request, latency, repeated-row rate,
+rejection rate, cursor depth, and provider failures. One-hop graph discovery
+(gate 2) starts only after the pilot's interaction and per-author-share
+measurements exist; it is documented in the pilot file and not implemented.
+
+### Account identity
+
+Configuration uses human-readable handles plus a pinned numeric `expectedUserId`.
+At the beginning of a run, acquisition resolves each handle through
+`GET /2/profile/{handle}` and records:
+
+- requested handle
+- provider-returned handle
+- numeric user id
+
+Timeline requests use `id:<numeric_user_id>`, which is stable across handle
+changes. A returned id that differs from the pinned id pauses that account with
+`identity_mismatch`; the run never merges two identities or collects the wrong
+person because a handle resolved "successfully". A legitimate rename is an explicit
+config change that keeps the pinned id.
+
+### Run lifecycle and retention
+
+Active and resumable runs live under `data/runs/<run-id>/`. Terminal runs
+(`completed`, `partial`, `abandoned`, `failed`) are moved as complete directories
+to `data/old/<run-id>/` once their outputs and digests are finalized. Both roots
+are ignored by Git. Archived means immutable and finalized, not successful; the
+manifest's `acceptance` block says whether the run met the pilot criteria.
+
+Each run contains:
+
+```text
+data/runs/<run-id>/
+  config.json                  exact configuration snapshot used by the run
+  checkpoint.json              acquisition state, atomic, single source of truth
+  manifest.json                projection of the checkpoint + normalization + archive
+  raw/<numeric-user-id>/
+    profile.json, profile.meta.json
+    <page-number>.json         unchanged provider body
+    <page-number>.meta.json    receivedAt, request, HTTP status, attempts, latency,
+                               row count, output cursor
+    <page-number>.error.json   retained provider failure, when one paused the account
+  raw/_unresolved/<handle>/    profiles that failed the identity check
+  ingress/records.jsonl
+  rejections/records.jsonl
+  duplicates/records.jsonl
+  skips/records.jsonl
+  report.json
+```
+
+`manifest.json` records:
+
+- run id, acquisition status, source, API version, and specification URL
+- collector Git revision, dirty flag, and configuration hash
+- creation time, history cutoff, coverage floor
+- per account: requested and resolved handle, numeric id, cohort, state, pages,
+  requests, retries, rows, authored date range, stop or pause reason, abandon reason
+- normalization counts by candidate origin and rejection reason, duplicate,
+  refresh, skip, tombstone, and author counts, per-account coverage, per-author share
+- every retained file's relative path, byte size, and SHA-256 digest
+- acceptance result with reasons
+
+Archived runs are mirrored to the Cloudflare R2 bucket `xearch-runs` with
+`pnpm collect:sync [run-id]` (`apps/collector/scripts/sync-runs.sh`, rclone over
+the S3 API, credentials in the gitignored `.env.r2`). R2 holds raw pages and
+outputs because they are the audit trail, not serving state; Convex only ever
+receives normalized ingress records through the indexer. The bucket layout mirrors
+`data/old/<run-id>/` exactly, so the manifest digests verify the mirror too.
+
+Raw responses are the audit trail. `metricsAt` for every candidate is the
+`receivedAt` of its page sidecar, so re-normalizing an archived run reproduces the
+output byte for byte; `pnpm collect:pilot verify <run-id>` checks exactly that.
+Rejection records reference a raw file, page, result index, candidate origin,
+parent id, and candidate id when available, plus all applicable reason codes; they
+do not duplicate the provider payload.
 
 ## 2. Tested sources
 
 Tests ran on 2026-08-31 from the development machine. Latency is one observed
 round trip, not an SLA.
+
+The source contract is the [FxTwitter API documentation](https://docs.fxembed.com/api/twitter)
+and its [OpenAPI 3.0 document](https://api.fxtwitter.com/2/openapi.json). In
+particular, `GET /2/profile/{handle}/statuses` documents:
+
+- `count` from 1–100
+- pagination with the preceding response's `cursor.bottom`
+- optional replies through `with_replies`
+- `204 No Content` when a first-page `since` query has no newer posts
+
+The OpenAPI schema is a baseline, not proof that every upstream response contains
+every ingress field. For example, `APIUser.verification` is documented but is not
+in the schema's required list, while our author ingress requires `verified`.
 
 | Source | Request | Result | Latency |
 |---|---|---|---:|
@@ -42,6 +155,43 @@ round trip, not an SLA.
 
 FxTwitter endpoints use `https://api.fxtwitter.com`. The syndication endpoint uses
 `https://cdn.syndication.twimg.com`. Neither requires collector credentials.
+
+### Timeline reliability probe
+
+Run the resumable probe before depending on a profile timeline:
+
+```sh
+pnpm collect:probe NASA --pages 10 --count 100 \
+  --out data/collection-probes/nasa
+```
+
+It writes exact provider responses under `raw/`, an atomic `checkpoint.json`, and
+a `report.json`. Running the same command and output directory again resumes from
+the saved bottom cursor. The checkpoint rejects changes to the handle, source URL,
+page size, or reply mode so incompatible runs cannot be combined accidentally.
+Transient network errors, HTTP 429s, and HTTP 5xx responses use bounded retries.
+
+A 20-page NASA run on 2026-09-01 observed:
+
+| Measurement | Result |
+|---|---:|
+| Returned rows | 457 |
+| Unique tweet ids | 444 |
+| Duplicate rows across page boundaries | 13 (2.84%) |
+| Rows per page despite `count=100` | 10–29 (mean 22.9) |
+| Request latency | 906–1,947 ms (mean 1,176 ms) |
+| Cursor behavior | 20 distinct advancing bottom cursors |
+| Retry count | None needed |
+| Time depth reached | 2026-05-26 through 2026-09-01 |
+| Required-field gaps | One media-only post had empty `text` |
+
+The run proves cursor pagination and checkpoint resume over this sample. It does
+not establish a rate limit, maximum historical depth, availability SLA, or that a
+million-tweet corpus is feasible. `count=100` is only a requested page size; the
+upstream timeline returned far fewer rows. A separate `count=1` request still
+returned 22 rows, so callers must not depend on FxTwitter honoring an exact page
+size. Empty-text media posts cannot satisfy the current ingress quality gate and
+must be skipped or handled by an explicit contract change, not silently invented.
 
 ## 3. Tweet mapping
 
@@ -158,13 +308,29 @@ in a separate enrichment path, not the tweet ingress record.
 
 ## 7. Collector boundary
 
-The collector writes source data and collection metadata. It does not calculate:
+The TypeScript acquisition layer writes source responses, checkpoints, and
+acquisition metadata. It does not interpret a response into ingress records. The
+TypeScript normalization stage reads retained raw pages and writes:
+
+- deduplicated author and tweet JSONL matching `docs/INGRESS.md`
+- author records before the first accepted tweet that references them
+- structured rejection JSONL for every candidate that cannot satisfy ingress
+- normalization counts and file integrity data for the run manifest
+
+Acquisition and normalization communicate only through the documented on-disk
+run layout. Normalization is deterministic and does not import the HTTP client or
+make network requests. Its core mappings accept provider-shaped values and return
+ingress records or rejection reasons without filesystem access. This boundary lets
+a future Rust command replace normalization without changing acquisition,
+checkpoints, raw files, manifests, ingress JSONL, or rejection JSONL.
+
+Neither collection layer calculates:
 
 - tokens, term frequencies, postings, or document frequencies
 - static scores, score buckets, propagated boosts, or authority
 - text or media embeddings
 - query cache, feedback, answers, or config metadata
 
-Those remain owned by the indexer and Convex functions. Provider responses should
-be retained in raw staging files so a mapping bug can be fixed without fetching the
-same post again.
+Those remain owned by the indexer and Convex functions. End-to-end compatibility
+will be tested through the real indexer loading workflow when that workflow is
+implemented; the pilot does not add a temporary substitute for it.

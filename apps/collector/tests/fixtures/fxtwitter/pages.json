@@ -1,0 +1,234 @@
+{
+  "description": "Provider-shaped FxTwitter timeline pages for the normalization golden test. Seed 100 (@seed) has two pages; seed 200 (@other) has one page that repeats a seed-100 tweet with newer metrics and one with conflicting text. cutoffAt for the test is 1700000000000 (ms).",
+  "cutoffAt": 1700000000000,
+  "coverageFloor": 3,
+  "accounts": [
+    { "userId": "100", "handle": "seed" },
+    { "userId": "200", "handle": "other" }
+  ],
+  "pages": [
+    {
+      "accountUserId": "100",
+      "page": 1,
+      "receivedAt": 1700100000000,
+      "results": [
+        {
+          "type": "status",
+          "id": "1001",
+          "text": "plain post with a #tag and a link",
+          "raw_text": {
+            "text": "plain post with a #tag and a link https://t.co/abc",
+            "facets": [
+              { "type": "hashtag", "indices": [18, 22], "original": "tag" },
+              { "type": "url", "indices": [34, 50], "original": "https://t.co/abc", "replacement": "https://example.com/page" }
+            ]
+          },
+          "created_timestamp": 1700090000,
+          "likes": 5, "reposts": 1, "quotes": 0, "replies": 2, "lang": "en",
+          "replying_to": null, "quote": null, "reposted_by": null,
+          "media": null,
+          "author": { "id": "100", "screen_name": "Seed", "name": "Seed Account", "followers": 10, "following": 3, "joined": "Thu Oct 13 01:18:04 +0000 2016", "verification": { "verified": true }, "description": "seed bio", "avatar_url": "https://example.com/seed.jpg" }
+        },
+        {
+          "type": "status",
+          "id": "1002",
+          "text": "@friend a reply",
+          "raw_text": { "text": "@friend a reply", "facets": [ { "type": "mention", "indices": [0, 7], "original": "friend" } ] },
+          "created_timestamp": 1700080000,
+          "likes": 0, "reposts": 0, "quotes": 0, "replies": 0, "lang": "en",
+          "replying_to": { "screen_name": "friend", "status": "555", "url": "https://x.com/friend/status/555" },
+          "quote": null, "reposted_by": null,
+          "media": { "all": [] },
+          "author": { "id": "100", "screen_name": "Seed", "name": "Seed Account", "followers": 10, "following": 3, "joined": "Thu Oct 13 01:18:04 +0000 2016", "verification": { "verified": true } }
+        },
+        {
+          "type": "status",
+          "id": "1003",
+          "text": "quoting something good",
+          "created_timestamp": 1700070000,
+          "likes": 7, "reposts": 2, "quotes": 1, "replies": 0, "lang": "en",
+          "replying_to": null, "reposted_by": null, "media": null,
+          "quote": {
+            "type": "status",
+            "id": "9001",
+            "text": "the quoted original",
+            "created_timestamp": 1690000000,
+            "likes": 100, "reposts": 20, "quotes": 5, "replies": 9, "lang": "en",
+            "replying_to": null, "quote": null, "reposted_by": null,
+            "media": { "all": [ { "type": "photo", "url": "https://pbs.example.com/q.jpg" } ] },
+            "author": { "id": "300", "screen_name": "Quoted", "name": "Quoted Person", "followers": 1000, "following": 50, "joined": "Sat Jan 01 00:00:00 +0000 2011", "verification": { "verified": false } }
+          },
+          "author": { "id": "100", "screen_name": "Seed", "name": "Seed Account", "followers": 10, "following": 3, "joined": "Thu Oct 13 01:18:04 +0000 2016", "verification": { "verified": true } }
+        },
+        {
+          "type": "status",
+          "id": "1004",
+          "text": "quoting a hidden post",
+          "created_timestamp": 1700060000,
+          "likes": 1, "reposts": 0, "quotes": 0, "replies": 0,
+          "replying_to": null, "reposted_by": null, "media": null,
+          "quote": { "type": "tombstone", "provider": "twitter", "reason": "private", "id": "9002", "url": "https://x.com/i/status/9002" },
+          "author": { "id": "100", "screen_name": "Seed", "name": "Seed Account", "followers": 10, "following": 3, "joined": "Thu Oct 13 01:18:04 +0000 2016", "verification": { "verified": true } }
+        },
+        {
+          "type": "status",
+          "id": "8001",
+          "text": "an old original the seed reposted",
+          "created_timestamp": 1600000000,
+          "likes": 50, "reposts": 30, "quotes": 2, "replies": 4, "lang": "en",
+          "replying_to": null, "quote": null,
+          "reposted_by": { "id": "100", "screen_name": "Seed", "name": "Seed Account" },
+          "media": null,
+          "author": { "id": "400", "screen_name": "Original", "name": "Original Author", "followers": 20, "following": 20, "joined": "Sat Jan 01 00:00:00 +0000 2011", "verification": { "verified": false } }
+        },
+        {
+          "type": "status",
+          "id": "1005",
+          "text": "video and gif and photo",
+          "created_timestamp": 1700050000,
+          "likes": 0, "reposts": 0, "quotes": 0, "replies": 0, "lang": "en",
+          "replying_to": null, "quote": null, "reposted_by": null,
+          "media": { "all": [
+            { "type": "video", "url": "https://video.example.com/v.mp4", "formats": [ { "url": "https://video.example.com/v-low.mp4" } ] },
+            { "type": "gif", "url": "https://video.example.com/g.mp4" },
+            { "type": "photo", "url": "https://pbs.example.com/p.jpg" },
+            { "type": "mosaic_photo", "url": "https://pbs.example.com/p.jpg" }
+          ] },
+          "author": { "id": "100", "screen_name": "Seed", "name": "Seed Account", "followers": 10, "following": 3, "joined": "Thu Oct 13 01:18:04 +0000 2016", "verification": { "verified": true } }
+        },
+        {
+          "type": "status",
+          "id": "1006",
+          "text": "",
+          "created_timestamp": 1700040000,
+          "likes": 3, "reposts": 0, "quotes": 0, "replies": 0,
+          "replying_to": null, "quote": null, "reposted_by": null,
+          "media": { "all": [ { "type": "photo", "url": "https://pbs.example.com/only.jpg" } ] },
+          "author": { "id": "100", "screen_name": "Seed", "name": "Seed Account", "followers": 10, "following": 3, "joined": "Thu Oct 13 01:18:04 +0000 2016", "verification": { "verified": true } }
+        },
+        {
+          "type": "status",
+          "id": "1007",
+          "text": "author without verification or counts",
+          "created_timestamp": 1700030000,
+          "likes": 3, "reposts": 0, "quotes": 0, "replies": 0,
+          "replying_to": null, "quote": null, "reposted_by": null, "media": null,
+          "author": { "id": "100", "screen_name": "Seed", "name": "Seed Account", "joined": "Thu Oct 13 01:18:04 +0000 2016" }
+        },
+        {
+          "type": "status",
+          "id": "1008",
+          "text": "unknown media type",
+          "created_timestamp": 1700020000,
+          "likes": 3, "reposts": 0, "quotes": 0, "replies": 0,
+          "replying_to": null, "quote": null, "reposted_by": null,
+          "media": { "all": [ { "type": "hologram", "url": "https://example.com/h" } ] },
+          "author": { "id": "100", "screen_name": "Seed", "name": "Seed Account", "followers": 10, "following": 3, "joined": "Thu Oct 13 01:18:04 +0000 2016", "verification": { "verified": true } }
+        },
+        "not an object at all"
+      ]
+    },
+    {
+      "accountUserId": "100",
+      "page": 2,
+      "receivedAt": 1700100005000,
+      "results": [
+        {
+          "type": "status",
+          "id": "1005",
+          "text": "video and gif and photo",
+          "created_timestamp": 1700050000,
+          "likes": 9, "reposts": 9, "quotes": 9, "replies": 9, "lang": "en",
+          "replying_to": null, "quote": null, "reposted_by": null,
+          "media": { "all": [
+            { "type": "video", "url": "https://video.example.com/v.mp4" },
+            { "type": "gif", "url": "https://video.example.com/g.mp4" },
+            { "type": "photo", "url": "https://pbs.example.com/p.jpg" }
+          ] },
+          "author": { "id": "100", "screen_name": "Seed", "name": "Seed Account", "followers": 11, "following": 3, "joined": "Thu Oct 13 01:18:04 +0000 2016", "verification": { "verified": true } }
+        },
+        {
+          "type": "status",
+          "id": "1009",
+          "text": "an authored post older than the cutoff",
+          "created_timestamp": 1699000000,
+          "likes": 3, "reposts": 0, "quotes": 0, "replies": 0, "lang": "en",
+          "replying_to": null, "reposted_by": null, "media": null,
+          "quote": {
+            "type": "status",
+            "id": "9003",
+            "text": "context quoted by an out-of-window post",
+            "created_timestamp": 1698000000,
+            "likes": 1, "reposts": 0, "quotes": 0, "replies": 0, "lang": "en",
+            "replying_to": null, "quote": null, "reposted_by": null, "media": null,
+            "author": { "id": "500", "screen_name": "Context", "name": "Context Person", "followers": 5, "following": 5, "joined": "Sat Jan 01 00:00:00 +0000 2011", "verification": { "verified": false } }
+          },
+          "author": { "id": "100", "screen_name": "Seed", "name": "Seed Account", "followers": 11, "following": 3, "joined": "Thu Oct 13 01:18:04 +0000 2016", "verification": { "verified": true } }
+        },
+        {
+          "type": "status",
+          "id": "1010",
+          "text": "quote whose embedded target is incomplete",
+          "created_timestamp": 1700010000,
+          "likes": 3, "reposts": 0, "quotes": 0, "replies": 0, "lang": "en",
+          "replying_to": null, "reposted_by": null, "media": null,
+          "quote": {
+            "type": "status",
+            "id": "9004",
+            "text": "embedded but missing metrics",
+            "created_timestamp": 1699990000,
+            "replying_to": null, "quote": null, "reposted_by": null, "media": null,
+            "author": { "id": "600", "screen_name": "Thin", "name": "Thin Author", "followers": 5, "following": 5, "joined": "Sat Jan 01 00:00:00 +0000 2011", "verification": { "verified": false } }
+          },
+          "author": { "id": "100", "screen_name": "Seed", "name": "Seed Account", "followers": 11, "following": 3, "joined": "Thu Oct 13 01:18:04 +0000 2016", "verification": { "verified": true } }
+        }
+      ]
+    },
+    {
+      "accountUserId": "200",
+      "page": 1,
+      "receivedAt": 1700100010000,
+      "results": [
+        {
+          "type": "status",
+          "id": "2001",
+          "text": "other seed's own post",
+          "created_timestamp": 1700095000,
+          "likes": 2, "reposts": 0, "quotes": 0, "replies": 0, "lang": "en",
+          "replying_to": null, "quote": null, "reposted_by": null, "media": null,
+          "author": { "id": "200", "screen_name": "Other", "name": "Other Seed", "followers": 7, "following": 7, "joined": "Sat Jan 01 00:00:00 +0000 2011", "verification": { "verified": false } }
+        },
+        {
+          "type": "status",
+          "id": "1001",
+          "text": "plain post with a #tag and a link",
+          "raw_text": {
+            "text": "plain post with a #tag and a link https://t.co/abc",
+            "facets": [
+              { "type": "hashtag", "indices": [18, 22], "original": "tag" },
+              { "type": "url", "indices": [34, 50], "original": "https://t.co/abc", "replacement": "https://example.com/page" }
+            ]
+          },
+          "created_timestamp": 1700090000,
+          "likes": 50, "reposts": 10, "quotes": 1, "replies": 20, "lang": "en",
+          "replying_to": null, "quote": null,
+          "reposted_by": { "id": "200", "screen_name": "Other", "name": "Other Seed" },
+          "media": null,
+          "author": { "id": "100", "screen_name": "Seed", "name": "Seed Account", "followers": 12, "following": 3, "joined": "Thu Oct 13 01:18:04 +0000 2016", "verification": { "verified": true }, "description": "seed bio, updated" }
+        },
+        {
+          "type": "status",
+          "id": "1002",
+          "text": "@friend a reply (edited text)",
+          "created_timestamp": 1700080000,
+          "likes": 0, "reposts": 0, "quotes": 0, "replies": 0, "lang": "en",
+          "replying_to": { "screen_name": "friend", "status": "555" },
+          "quote": null,
+          "reposted_by": { "id": "200", "screen_name": "Other", "name": "Other Seed" },
+          "media": null,
+          "author": { "id": "100", "screen_name": "Seed", "name": "Seed Account", "followers": 12, "following": 3, "joined": "Thu Oct 13 01:18:04 +0000 2016", "verification": { "verified": true } }
+        }
+      ]
+    }
+  ]
+}
