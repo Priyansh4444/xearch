@@ -428,8 +428,8 @@ Rules (implemented in `apps/collector/src/pilot/discover.ts`):
 - [x] Smoke run `theo`: acquire, kill mid-run, resume, normalize, verify.
 - [x] Smoke run `ampcode`: uninterrupted, normalize, verify (reached `history_cutoff`, see Measurements).
 - [x] Inspect every smoke rejection; confirm thresholds.
-- [ ] Run all 62 accounts, normalize, verify.
-- [ ] Record measured request count, latency, repeated rows, rejection reasons,
+- [x] Run all 62 accounts, normalize, verify.
+- [x] Record measured request count, latency, repeated rows, rejection reasons,
       historical depth, coverage-floor results, and per-author share below.
 
 ## Measurements
@@ -489,4 +489,32 @@ Consequences that do hold:
 
 ### Full run
 
-_To be filled from `report.json` of the 62-account run._
+Run `2026-09-03T06-45-44Z-full` completed all 62 accounts and passed archive
+verification: 12,211 retained-file digests matched, and all four normalized outputs
+were byte-identical on re-normalization. The run made 6,105 requests with no
+retries and retained 6,039 timeline pages.
+
+| Measurement | Full run |
+|---|---:|
+| Requests / retries | 6,105 / 0 |
+| Pages | 6,039 |
+| Rows returned | 195,866 |
+| Mean rows per non-terminal page | 32.9 |
+| Latency mean / p95 | 679 ms / 1,257 ms |
+| Stop reasons | 52 `history_cutoff`, 10 `cursor_exhausted` |
+| Accepted (timeline / embedded) | 164,959 (151,315 / 13,644) |
+| Rejected | 2,565 (2,539 `empty_text`, 26 `conflicting_tweet_text`) |
+| Timeline / embedded rejection rate | 0.93% / 2.60% |
+| Repeated rows within account | 25,772 (13.16%) |
+| Duplicates recorded / metrics refreshed | 55,833 / 45,964 |
+| Outside-window skips | 1,316 |
+| Authors emitted | 22,811 |
+| Top author share | `theo` 2.22% (3,654 posts) |
+| Coverage floor 500 reached | 49 of 62 accounts |
+
+The acceptance contract passed, and seven of the eight enforced threshold checks
+passed (the embedded rejection rate is reported but not thresholded). The only failure
+was repeated timeline rows within an account: 13.16% against the 10% ceiling.
+This is provider paging duplication rather than duplicate ingress output; global
+deduplication collapsed 55,833 candidates. The result is suitable for the next
+human decision, but the pilot does not pass its full performance gate as written.
