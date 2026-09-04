@@ -4,6 +4,8 @@ A search engine for tweets, better than the bird's. Convex holds every byte of
 serving state; a Rust indexer feeds it 24/7; React 19 renders a reactive SERP that
 upgrades itself as smarter interpretations land.
 
+Xearch is an experimental research project and is not affiliated with X.
+
 ## Read in this order
 
 1. [DESIGN.md](DESIGN.md) — what we're building and why (algorithms, ranking, scale)

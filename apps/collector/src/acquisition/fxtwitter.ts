@@ -32,7 +32,7 @@ export interface TimelineRequest {
   withReplies: boolean;
 }
 
-export interface TimelineResponse {
+export interface TimelineFetchResult {
   httpStatus: number;
   latencyMs: number;
   attempts: number;
@@ -53,7 +53,7 @@ export interface ProfileResponse {
 }
 
 export interface TimelineClient {
-  fetchTimelinePage(request: TimelineRequest): Promise<TimelineResponse>;
+  fetchTimelinePage(request: TimelineRequest): Promise<TimelineFetchResult>;
 }
 
 export interface ProfileClient {
@@ -127,7 +127,7 @@ export class FxTwitterClient implements PilotClient {
     return `${this.baseUrl}/2/profile/${encodeURIComponent(handle)}`;
   }
 
-  async fetchTimelinePage(request: TimelineRequest): Promise<TimelineResponse> {
+  async fetchTimelinePage(request: TimelineRequest): Promise<TimelineFetchResult> {
     const response = await this.request(this.timelineUrl(request), { allowNoContent: true, allowNotFound: false });
     if (response.bodyText === null) {
       return { ...response, raw: null, page: null };
@@ -221,7 +221,14 @@ export function parseTimelinePage(value: unknown): FxTwitterTimelinePage {
   if (!isRecord(value)) {
     throw new FxTwitterError("FxTwitter timeline response is not an object", 200, null);
   }
-  if (!Number.isFinite(value.code) || !Array.isArray(value.results) || !isRecord(value.cursor)) {
+  if (
+    typeof value.code !== "number" ||
+    !Number.isFinite(value.code) ||
+    !Array.isArray(value.results) ||
+    !isRecord(value.cursor) ||
+    !isNullableString(value.cursor.top) ||
+    !isNullableString(value.cursor.bottom)
+  ) {
     throw new FxTwitterError(
       "FxTwitter timeline response does not match the documented envelope",
       200,
@@ -230,11 +237,11 @@ export function parseTimelinePage(value: unknown): FxTwitterTimelinePage {
   }
 
   return {
-    code: value.code as number,
+    code: value.code,
     results: value.results,
     cursor: {
-      top: nullableString(value.cursor.top, "cursor.top"),
-      bottom: nullableString(value.cursor.bottom, "cursor.bottom"),
+      top: value.cursor.top ?? null,
+      bottom: value.cursor.bottom ?? null,
     },
   };
 }
@@ -253,12 +260,6 @@ export function parseProfile(value: unknown): FxTwitterProfile {
     name: typeof user.name === "string" ? user.name : "",
     protected: user.protected === true,
   };
-}
-
-function nullableString(value: unknown, field: string): string | null {
-  if (value === null || value === undefined) return null;
-  if (typeof value === "string") return value;
-  throw new FxTwitterError(`FxTwitter ${field} is not a string or null`, 200, null);
 }
 
 function parseJson(body: string): unknown {
@@ -299,6 +300,10 @@ function exponentialDelayMs(attempt: number, baseDelayMs: number): number {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isNullableString(value: unknown): value is string | null | undefined {
+  return value === null || value === undefined || typeof value === "string";
 }
 
 function errorMessage(error: unknown): string {
