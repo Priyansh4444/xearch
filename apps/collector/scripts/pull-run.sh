@@ -78,6 +78,14 @@ if (!manifest.archive) {
 }
 let checked = 0;
 const failures = [];
+for (const required of ["report.json", "ingress/records.jsonl"]) {
+  if (!manifest.archive.files.some((file) => file.path === required)) {
+    throw new Error(`Missing archive digest for required file: ${required}`);
+  }
+  if (!statSync(join(dest, required)).isFile()) {
+    throw new Error(`Missing required file: ${required}`);
+  }
+}
 for (const file of manifest.archive.files) {
   let buffer;
   try {

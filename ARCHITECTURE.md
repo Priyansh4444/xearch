@@ -32,7 +32,7 @@ const serp = useQuery(api.search.search, {
 const hints = useQuery(api.search.suggest, { prefix: "conv" });      // typeahead
 
 const vote = useMutation(api.feedback.vote);                          // 👍/👎
-vote({ queryKey: serp.queryKey, tweetId, vote: 1, sessionId });
+vote({ queryKey: serp.queryKey, tweetId, vote: 1 }); // requires trusted Convex identity
 
 // Answer mode — explicit user action only; streams via subscription
 const req = useAction(api.answers.request);                           // kick off

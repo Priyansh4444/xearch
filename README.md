@@ -68,10 +68,18 @@ with bounded reads, and the deterministic reranker with live feedback votes.
 toggle against Convex full-text baseline. Remaining build list: tierC →
 vectors/answers → indexer tail/refresh (Tweepcred, boost propagation).
 
+The branch's review fixes are documented in [docs/SEARCH-REVIEW.md](docs/SEARCH-REVIEW.md).
+They have not been deployed. Voting now requires trusted Convex identity; no auth
+provider is configured, so anonymous users have no voting controls. Corrected
+aspect mapping changes the indexer config hash and requires a deliberate reindex
+in a separate deployment, not a checkpoint deletion against the existing corpus.
+
 ## Running
 
 ```sh
-pnpm install && pnpm dev        # generates convex/_generated, deploys schema
+pnpm install                    # generated Convex bindings are committed
+pnpm codegen                    # regenerate bindings after backend changes; needs deployment access
+pnpm dev                        # deploy/watch backend only when intentionally changing the deployment
 pnpm test                       # TS golden tests
 pnpm collect:probe NASA         # probe a resumable FxTwitter profile timeline
 pnpm collect:pilot acquire --accounts theo --label smoke   # resumable pilot run
@@ -87,6 +95,6 @@ pnpm web                        # the SERP at http://localhost:5173 (uses .env.l
 cd indexer && cargo build --release && cd ..
 indexer/target/release/xearch-indexer \
   --data-dir data/old/<run-id>/ingress --checkpoint ./checkpoint.json backfill
-pnpm typecheck                  # tsc over apps/, convex/, tests/
+pnpm typecheck                  # offline tsc over apps/, convex/, tests/ (no deployment needed)
 cd indexer && cargo test        # Rust golden tests (same fixture)
 ```

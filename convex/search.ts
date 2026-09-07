@@ -4,7 +4,7 @@
 import { query } from "./_generated/server";
 import type { QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import { tierA, tierB, type TierBDeps } from "./engine/parse";
 import { tokenize } from "./engine/tokenize";
 import {
@@ -14,9 +14,26 @@ import {
   type ReadPlan,
   MIN_RESULTS,
   RERANK_CANDIDATES,
+  phraseTerms,
 } from "./engine/plan";
-import { rerank, type Candidate } from "./engine/rank";
-import { queryKey, type XQuery } from "./engine/xquery";
+import { rerank, rrfFuse, type Candidate } from "./engine/rank";
+import { queryKey, emptyXQuery, type XQuery } from "./engine/xquery";
+import { matchesConstraints, queryInputError, MAX_QUERY_TERMS } from "./engine/constraints";
+
+interface Match {
+  tf: Map<string, number>;
+}
+
+function invalidSearch(error: string) {
+  return {
+    error,
+    queryKey: "",
+    ladder: "L0" as const,
+    appliedQuery: emptyXQuery(),
+    trace: tierA("").trace,
+    results: [] as never[],
+  };
+}
 
 /**
  * Entity linking refuses tokens at/above this df — common words never link (P1).
@@ -42,15 +59,20 @@ export const search = query({
     // 0. Tier C refinement merge lands when tierC.ts exists; the reactive re-run
     //    machinery is already in place because this is a plain Convex query.
     // 1. Parse.
+    const inputError = queryInputError(args.raw);
+    if (inputError !== null) return invalidSearch(inputError);
     const parsed = await tierB(tierA(args.raw), deps(ctx));
     const xq = parsed.xq;
-    xq.sort = args.sort;
+    if (!Object.values(parsed.trace.consumed).includes("sort")) xq.sort = args.sort;
+    const unknownAuthor = parsed.trace.leftover.find((term) => term.startsWith("from:"));
+    if (unknownAuthor !== undefined) return invalidSearch(`Unknown author: ${unknownAuthor.slice(5)}.`);
     const key = queryKey(xq);
 
     // 2. df point reads for every term the planner or reranker will touch.
     const allTerms = [
-      ...new Set([...xq.must, ...xq.should, ...xq.aspects, ...xq.phrases.flat()]),
+      ...new Set([...xq.must, ...xq.should, ...xq.aspects, ...phraseTerms(xq)]),
     ];
+    if (allTerms.length > MAX_QUERY_TERMS) return invalidSearch("Use at most 12 search terms and aspects.");
     const dfs = new Map<string, number>();
     for (const term of allTerms) {
       const row = await ctx.db
@@ -62,10 +84,32 @@ export const search = query({
 
     // 3. Ladder: execute -> escalate while survivors < MIN_RESULTS (bounded loop).
     let plan: ReadPlan | null = planL0(xq, dfs);
-    let matches = new Map<string, { tf: Map<string, number> }>();
+    let matches = new Map<string, Match>();
+    const postingCache = new Map<string, Doc<"postings">[]>();
+    const tweets = new Map<string, Doc<"tweets">>();
+    const firstMatched = new Map<string, Candidate["matchedVia"]>();
+    async function eligible(
+      found: Map<string, Match>,
+      via: Candidate["matchedVia"],
+    ): Promise<Map<string, Match>> {
+      const accepted = new Map<string, Match>();
+      for (const [id, match] of [...found].slice(0, RERANK_CANDIDATES)) {
+        const tweet = tweets.get(id) ?? await ctx.db.get(id as Id<"tweets">);
+        if (tweet === null) continue;
+        tweets.set(id, tweet);
+        if (!matchesConstraints(tweet, xq)) continue;
+        if (!firstMatched.has(id)) firstMatched.set(id, via);
+        accepted.set(id, match);
+      }
+      return accepted;
+    }
     let level: ReadPlan["level"] = "L0";
     for (let step = 0; step < 5 && plan !== null; step++) {
-      matches = await executePlan(ctx, plan);
+      const found = await executePlan(ctx, plan, postingCache);
+      const via = plan.level === "L5" ? "L4" : plan.level;
+      const accepted = await eligible(found, via);
+      // Retain prior exact hits when a widened candidate set is truncated.
+      for (const [id, match] of accepted) matches.set(id, match);
       level = plan.level;
       let prfTerms: string[] | undefined;
       if (plan.level === "L2" && matches.size < MIN_RESULTS && matches.size > 0) {
@@ -79,40 +123,37 @@ export const search = query({
     if (allTerms.length === 0 && xq.filters.authorId !== null) {
       const rows = await ctx.db
         .query("tweets")
-        .withIndex("by_author_time", (q) => q.eq("authorId", xq.filters.authorId!))
+        .withIndex("by_author_time", (q) => withTimeRange(
+          q.eq("authorId", xq.filters.authorId!),
+          { since: xq.filters.since ?? undefined, until: xq.filters.until ?? undefined },
+        ))
         .order("desc")
-        .take(100);
-      matches = new Map(rows.map((r) => [r._id as string, { tf: new Map<string, number>() }]));
+        .take(RERANK_CANDIDATES);
+      for (const row of rows) tweets.set(row._id, row);
+      matches = await eligible(new Map(rows.map((r) =>
+        [r._id as string, { tf: new Map<string, number>() }],
+      )), "L0");
       level = "L0";
     }
 
-    // 4. Hydrate candidates: tweets, authors, feedback (one bounded range read).
+    // 4. Hydrate candidates, with one exact feedback-total lookup per candidate.
     const ids = [...matches.keys()].slice(0, RERANK_CANDIDATES);
-    const votes = new Map<string, number>();
-    for (const fb of await ctx.db
-      .query("searchFeedback")
-      .withIndex("by_query_tweet", (q) => q.eq("queryKey", key))
-      .take(500)) {
-      votes.set(fb.tweetId, (votes.get(fb.tweetId) ?? 0) + fb.vote);
-    }
-    const tweets = new Map<string, Doc<"tweets">>();
     const authors = new Map<string, Doc<"authors"> | null>();
     const candidates: Candidate[] = [];
     for (const tweetId of ids) {
       // Postings denormalize the Convex doc id — hydration is a plain get.
-      const t = await ctx.db.get(tweetId as Id<"tweets">);
-      if (t === null) continue;
-      // Post-filters that need the tweet row (postings can't answer these):
-      if (xq.filters.minLikes !== null && t.likeCount < xq.filters.minLikes) continue;
-      if (xq.filters.lang !== null && t.lang !== xq.filters.lang) continue;
-      tweets.set(tweetId, t);
+      const t = tweets.get(tweetId)!;
       if (!authors.has(t.authorId)) {
         authors.set(t.authorId, await authorByAuthorId(ctx, t.authorId));
       }
+      const feedback = await ctx.db
+        .query("searchFeedbackTotals")
+        .withIndex("by_query_tweet", (q) => q.eq("queryKey", key).eq("tweetId", t._id))
+        .unique();
       candidates.push({
         tweetId,
         tf: matches.get(tweetId)!.tf,
-        matchedVia: level === "L4" || level === "L5" ? "L3" : level,
+        matchedVia: firstMatched.get(tweetId)!,
         likeCount: t.likeCount,
         replyCount: t.replyCount,
         retweetCount: t.retweetCount,
@@ -122,7 +163,7 @@ export const search = query({
         tokenCount: t.tokenCount,
         authorAuthority: authors.get(t.authorId)?.authority ?? 0,
         mediaType: t.mediaType,
-        feedbackVotes: votes.get(t._id) ?? 0,
+        feedbackVotes: feedback?.total ?? 0,
         retweetOfTweetId: t.retweetOfTweetId,
         quotedTweetId: t.quotedTweetId,
         sourceTweetId: t.tweetId,
@@ -149,6 +190,7 @@ export const search = query({
     });
 
     return {
+      error: null,
       queryKey: key,
       ladder: level,
       appliedQuery: xq,
@@ -162,8 +204,11 @@ export const search = query({
 async function executePlan(
   ctx: QueryCtx,
   plan: ReadPlan,
+  cache: Map<string, Doc<"postings">[]>,
 ): Promise<Map<string, { tf: Map<string, number> }>> {
   const read = async (r: PostingsRead) => {
+    const cached = cache.get(r.term);
+    if (cached !== undefined) return cached;
     let q;
     if (r.index === "by_term_author_time") {
       q = ctx.db
@@ -187,12 +232,14 @@ async function executePlan(
     const rows = await q.order(r.order).take(r.limit);
     // Cheap post-filters postings can answer themselves (score-ordered indexes
     // can't push the time range down):
-    return rows.filter(
+    const filtered = rows.filter(
       (p) =>
         (plan.postFilters.since === undefined || p.createdAt >= plan.postFilters.since) &&
-        (plan.postFilters.until === undefined || p.createdAt <= plan.postFilters.until) &&
+        (plan.postFilters.until === undefined || p.createdAt < plan.postFilters.until) &&
         (plan.postFilters.media === undefined || p.mediaType === plan.postFilters.media),
     );
+    cache.set(r.term, filtered);
+    return filtered;
   };
 
   const acc = new Map<string, { tf: Map<string, number> }>();
@@ -212,21 +259,25 @@ async function executePlan(
       }
     }
   }
+  const lists: string[][] = [];
   for (const union of plan.unions) {
-    for (const p of await read(union)) {
+    const rows = await read(union);
+    lists.push(rows.map((p) => p.tweetId));
+    for (const p of rows) {
       const entry = acc.get(p.tweetId);
       if (entry !== undefined) entry.tf.set(union.term, p.tf);
       else acc.set(p.tweetId, { tf: new Map([[union.term, p.tf]]) });
     }
   }
-  // Excludes: bounded probe per excluded term; hits are removed, never ranked down.
-  for (const term of plan.excludes) {
-    const rows = await ctx.db
-      .query("postings")
-      .withIndex("by_term_score", (ix) => ix.eq("term", term))
-      .take(1000);
-    for (const p of rows) acc.delete(p.tweetId);
+  if (lists.length > 0) {
+    const scores = rrfFuse(lists);
+    const ordered = [...acc].sort(([a], [b]) =>
+      (scores.get(b) ?? 0) - (scores.get(a) ?? 0) || a.localeCompare(b),
+    );
+    return new Map(ordered);
   }
+  // Negation and phrases are verified against hydrated candidate text, not a
+  // truncated posting list. The same predicates apply to author-only retrieval.
   return acc;
 }
 
@@ -235,7 +286,7 @@ async function executePlan(
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function withTimeRange<R>(q: any, timeRange: PostingsRead["timeRange"]): R {
   if (timeRange?.since !== undefined) q = q.gte("createdAt", timeRange.since);
-  if (timeRange?.until !== undefined) q = q.lte("createdAt", timeRange.until);
+  if (timeRange?.until !== undefined) q = q.lt("createdAt", timeRange.until);
   return q as R;
 }
 
@@ -286,6 +337,7 @@ function authorByAuthorId(ctx: QueryCtx, authorId: string) {
 export const suggest = query({
   args: { prefix: v.string() },
   handler: async (ctx, { prefix }) => {
+    if (prefix.length > 64) return [];
     const p = prefix.toLowerCase().trim();
     if (p.length === 0) return [];
     const terms = await ctx.db
@@ -340,6 +392,8 @@ function deps(ctx: QueryCtx): TierBDeps {
 export const searchBaseline = query({
   args: { raw: v.string() },
   handler: async (ctx, { raw }) => {
+    const inputError = queryInputError(raw);
+    if (inputError !== null) throw new ConvexError(inputError);
     if (raw.trim().length === 0) return [];
     const tweets = await ctx.db
       .query("tweets")

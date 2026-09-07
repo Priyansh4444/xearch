@@ -6,7 +6,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
-import { tierA, tierB, type TierBDeps } from "../convex/engine/parse";
+import { mapAspects, tierA, tierB, type TierBDeps } from "../convex/engine/parse";
 
 const NOW = Date.UTC(2026, 8, 7, 12); // fixed clock: 2026-09-07T12:00Z
 const DAY = 86_400_000;
@@ -23,6 +23,11 @@ const DF: Record<string, number> = {
   jack: 9000, // common word: must never entity-link (RISKS P1)
   apple: 5000,
 };
+
+test("repeated weak triggers do not count as content", () => {
+  expect(mapAspects(["cheap", "cheap", "expensive"], "")).not.toContain("~price");
+  expect(mapAspects(["cheap", "laptop"], "")).toContain("~price");
+});
 
 const deps: TierBDeps = {
   async resolveEntity(ngram) {

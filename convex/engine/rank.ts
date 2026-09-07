@@ -130,17 +130,22 @@ export function rerank(
 
   // Dedup quote/RT chains to the best representative (K5: one hop, no traversal).
   const byId = new Map(candidates.map((c) => [c.tweetId, c]));
+  function compare(a: Scored, b: Scored): number {
+    if (xq.sort === "latest") {
+      const time = byId.get(b.tweetId)!.createdAt - byId.get(a.tweetId)!.createdAt;
+      if (time !== 0) return time;
+    }
+    return b.score - a.score || a.tweetId.localeCompare(b.tweetId);
+  }
   const best = new Map<string, Scored>();
   for (const s of scored) {
     const c = byId.get(s.tweetId)!;
     const key = c.retweetOfTweetId ?? c.quotedTweetId ?? c.sourceTweetId ?? s.tweetId;
     const prior = best.get(key);
-    if (prior === undefined || s.score > prior.score) best.set(key, s);
+    if (prior === undefined || compare(s, prior) < 0) best.set(key, s);
   }
 
-  return [...best.values()].sort(
-    (a, b) => b.score - a.score || a.tweetId.localeCompare(b.tweetId), // deterministic ties
-  );
+  return [...best.values()].sort(compare);
 }
 
 /** Intent bonuses (§4.6): media match, phrase coverage, should-polarity hits. */
@@ -156,7 +161,7 @@ function fitBonus(xq: XQuery, c: Candidate): number {
     xq.phrases.length > 0 &&
     xq.phrases.every((p) => p.every((t) => c.tf.has(t)))
   ) {
-    fit += 0.3; // all phrase terms present (adjacency verification is post-v1)
+    fit += 0.3; // serving verifies adjacency before reranking
   }
   if (xq.should.length > 0 && xq.should.some((t) => c.tf.has(t))) {
     fit += 0.2;

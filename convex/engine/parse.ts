@@ -50,7 +50,7 @@ export function tierA(raw: string): { xq: XQuery; trace: ParseTrace } {
 
   // "quoted phrases"
   rest = rest.replace(/"([^"]+)"/g, (_m, phrase: string) => {
-    const toks = tokenize(phrase).tokens;
+    const toks = tokenize(phrase, true).tokens;
     if (toks.length > 0) {
       xq.phrases.push(toks);
       trace.consumed[`"${phrase}"`] = "phrases";
@@ -98,7 +98,7 @@ export function tierA(raw: string): { xq: XQuery; trace: ParseTrace } {
     (m, pre: string, op: string, val: string) => {
       const handler = OPS[op.toLowerCase()];
       if (handler && handler(val)) {
-        trace.consumed[`${op}:${val}`] = op;
+        trace.consumed[`${op}:${val}`] = op.toLowerCase();
         return pre;
       }
       return m; // unknown operator stays literal text (correctness invariant)
@@ -423,7 +423,7 @@ export function mapAspects(tokens: string[], rawText: string): string[] {
       continue;
     }
     const weakHits = weak.filter((w) => joined.includes(" " + w + " "));
-    if (weakHits.length > 0 && contentTokens.length > weakHits.length) {
+    if (weakHits.length > 0 && contentTokens.some((token) => !weak.includes(token))) {
       found.add(aspect);
     }
   }

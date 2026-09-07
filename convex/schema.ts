@@ -117,10 +117,26 @@ export default defineSchema({
     tweetId: v.id("tweets"),
     vote: v.union(v.literal(1), v.literal(-1)),
     sessionId: v.string(),
+    // Absent on legacy anonymous votes, which no longer affect ranking.
+    voterId: v.optional(v.string()),
   })
     .index("by_query_tweet", ["queryKey", "tweetId"])
     .index("by_query_session", ["queryKey", "sessionId"]) // dedupe: one vote/session
+    .index("by_query_voter_tweet", ["queryKey", "voterId", "tweetId"])
     .index("by_tweet", ["tweetId"]),
+
+  // Atomically maintained from trusted votes only; one point read per candidate.
+  searchFeedbackTotals: defineTable({
+    queryKey: v.string(),
+    tweetId: v.id("tweets"),
+    total: v.number(),
+  }).index("by_query_tweet", ["queryKey", "tweetId"]),
+
+  feedbackRateLimits: defineTable({
+    voterId: v.string(),
+    windowStart: v.number(),
+    writes: v.number(),
+  }).index("by_voter", ["voterId"]),
 
   // AI answer mode output (DESIGN §10). Single writer: the answers action.
   answers: defineTable({

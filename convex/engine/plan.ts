@@ -4,8 +4,9 @@
 // type: a PostingsRead without a `limit` does not compile.
 
 import type { XQuery } from "./xquery";
+import { tokenize } from "./tokenize";
 
-export const PER_TERM_CAP = 1000; // impact-ordered cap (WAND-lite, DESIGN §5.1)
+export const PER_TERM_CAP = 500; // 12 query terms + 5 PRF terms, cached across levels
 export const MIN_RESULTS = 10; // ladder escalation threshold (§5.2)
 export const RERANK_CANDIDATES = 200;
 
@@ -54,7 +55,7 @@ export interface ReadPlan {
  */
 export function planL0(xq: XQuery, dfs: Map<string, number>): ReadPlan {
   const gateTerms = rarestFirst(
-    [...new Set([...xq.must, ...xq.aspects, ...xq.phrases.flat()])],
+    [...new Set([...xq.must, ...xq.aspects, ...phraseTerms(xq)])],
     dfs,
   );
   return {
@@ -90,7 +91,7 @@ function readFor(term: string, xq: XQuery): PostingsRead {
       limit: PER_TERM_CAP,
     };
   }
-  if (f.media !== null) {
+  if (f.media !== null && xq.sort !== "latest" && timeRange === undefined) {
     return {
       term,
       index: "by_term_media_score",
@@ -135,13 +136,18 @@ export function escalate(
   // L0/L1 -> L1: drop the lowest-idf (= highest-df) gate, at most twice, and only
   // while more than one gate remains. Filters ride along untouched (invariant 2).
   if (executed.level === "L0" || executed.level === "L1") {
-    const fullGateCount = new Set([...xq.must, ...xq.aspects, ...xq.phrases.flat()]).size;
+    const fullGateCount = new Set([...xq.must, ...xq.aspects, ...phraseTerms(xq)]).size;
     const drops = fullGateCount - executed.gates.length;
-    if (executed.gates.length > 1 && drops < 2) {
+    const protectedTerms = new Set([...xq.aspects, ...phraseTerms(xq)]);
+    const droppable = executed.gates.filter((gate) =>
+      xq.must.includes(gate.term) && !protectedTerms.has(gate.term),
+    );
+    const toDrop = droppable.at(-1);
+    if (executed.gates.length > 1 && drops < 2 && toDrop !== undefined) {
       return {
         ...executed,
         level: "L1",
-        gates: executed.gates.slice(0, -1), // gates are rarest-first; last = commonest
+        gates: executed.gates.filter((gate) => gate.term !== toDrop.term),
       };
     }
     return escalateToL2(xq, dfs);
@@ -168,7 +174,7 @@ export function escalate(
 
 function escalateToL2(xq: XQuery, dfs: Map<string, number>): ReadPlan | null {
   const unionTerms = rarestFirst(
-    [...new Set([...xq.must, ...xq.should, ...xq.aspects, ...xq.phrases.flat()])],
+    [...new Set([...xq.must, ...xq.should, ...xq.aspects, ...phraseTerms(xq)])],
     dfs,
   );
   if (unionTerms.length === 0) return null;
@@ -179,4 +185,9 @@ function escalateToL2(xq: XQuery, dfs: Map<string, number>): ReadPlan | null {
     excludes: [...xq.exclude],
     postFilters: postFiltersOf(xq),
   };
+}
+
+/** Stopwords stay in phrase verification, but have no index postings. */
+export function phraseTerms(xq: XQuery): string[] {
+  return xq.phrases.flatMap((phrase) => tokenize(phrase.join(" ")).tokens);
 }

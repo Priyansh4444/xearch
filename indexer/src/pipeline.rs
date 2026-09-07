@@ -177,7 +177,6 @@ pub fn recency_score(created_at_ms: i64) -> f64 {
 /// "$"+digit in the ORIGINAL text is a ~price signal (RISKS T4).
 pub fn map_aspects(tokens: &[String], raw_text: &str, lexicon: &AspectLexicon) -> Vec<String> {
     let joined = format!(" {} ", tokens.join(" "));
-    let content_count = tokens.iter().filter(|t| !t.starts_with('~')).count();
     let mut found: Vec<String> = Vec::new();
     for (aspect, (strong, weak)) in &lexicon.aspects {
         if strong.iter().any(|p| joined.contains(&format!(" {p} "))) {
@@ -188,7 +187,8 @@ pub fn map_aspects(tokens: &[String], raw_text: &str, lexicon: &AspectLexicon) -
             .iter()
             .filter(|w| joined.contains(&format!(" {w} ")))
             .count();
-        if weak_hits > 0 && content_count > weak_hits {
+        let has_content = tokens.iter().any(|t| !t.starts_with('~') && !weak.contains(t));
+        if weak_hits > 0 && has_content {
             found.push(aspect.clone());
         }
     }
@@ -275,6 +275,7 @@ mod tests {
         // weak word needs a co-occurring content token
         assert_eq!(map_aspects(&toks("cheap laptop"), "", &lex), vec!["~price"]);
         assert!(map_aspects(&toks("cheap"), "", &lex).is_empty());
+        assert!(map_aspects(&toks("cheap cheap expensive"), "", &lex).is_empty());
         // $+digit in the raw text is a ~price signal on its own
         assert_eq!(map_aspects(&toks("99 sale"), "only $99 sale", &lex), vec!["~price"]);
     }

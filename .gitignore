@@ -1,6 +1,7 @@
 node_modules/
 AGENTS.local.md
-convex/_generated/
+convex/_generated/ai/
+apps/web/dist/
 indexer/target/
 checkpoint.json
 quarantine/

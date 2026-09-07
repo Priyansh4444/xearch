@@ -97,16 +97,16 @@ fn backfill(cli: &Cli) -> Result<()> {
         for (idx, line) in reader.lines().enumerate() {
             let idx = idx as u64;
             let line = line.with_context(|| format!("reading {name}:{idx}"))?;
-            if line.trim().is_empty() {
-                next_offset = idx + 1;
-                continue;
-            }
             if idx < offset {
                 // Already acked in a previous run — re-warm the handle cache only
                 // (authors precede their tweets; a resume must not forget them).
                 if let Ok(IngressRecord::Author(a)) = serde_json::from_str(&line) {
                     builder.learn_handle(&a.id, &a.handle);
                 }
+                continue;
+            }
+            if line.trim().is_empty() {
+                next_offset = idx + 1;
                 continue;
             }
             match parse_and_gate(&line) {
@@ -135,6 +135,10 @@ fn backfill(cli: &Cli) -> Result<()> {
         if !builder.is_empty() {
             flush(&client, &mut builder, &mut checkpoint, cli, &name, next_offset, &mut stats)?;
         }
+        // All pending records have been acknowledged. Persist progress even if
+        // the suffix contained only blank or quarantined lines.
+        checkpoint.offsets.insert(name.clone(), next_offset);
+        checkpoint.store(&cli.checkpoint)?;
         if cli.limit.is_some_and(|limit| stats.tweets >= limit) {
             eprintln!("limit {} reached; stopping (checkpoint resumes here)", cli.limit.unwrap());
             break;
@@ -260,7 +264,7 @@ fn load_config(lexicons: &Path) -> Result<Config> {
     let engagement_weights = (1.0, 2.0, 3.0, 4.0); // like, reply, rt, quote (DESIGN §6.1)
     let bucket_count: u16 = 256;
     let params = format!(
-        "tokenizerVersion={TOKENIZER_VERSION};weights={engagement_weights:?};buckets={bucket_count};recency={RECENCY_EPOCH_MS},{RECENCY_PER_DAY},{RECENCY_MAX_DAYS};scoreMax={SCORE_MAX}"
+        "tokenizerVersion={TOKENIZER_VERSION};aspectMapping=2;weights={engagement_weights:?};buckets={bucket_count};recency={RECENCY_EPOCH_MS},{RECENCY_PER_DAY},{RECENCY_MAX_DAYS};scoreMax={SCORE_MAX}"
     );
     let config_hash = format!(
         "fnv1a64:{:016x}",

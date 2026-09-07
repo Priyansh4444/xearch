@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState, type ReactElement } from "react";
 import { useMutation, useQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "../../../convex/_generated/api";
+import { queryInputError } from "../../../convex/engine/constraints";
 
 type SearchReturn = FunctionReturnType<typeof api.search.search>;
 type BaselineResults = FunctionReturnType<typeof api.search.searchBaseline>;
@@ -12,6 +13,7 @@ type Lane = "xearch" | "baseline";
 type Sort = "top" | "latest";
 
 interface Shown {
+  error: string | null;
   results: Result[];
   ladder: SearchReturn["ladder"] | null;
   queryKey: string | null;
@@ -24,13 +26,15 @@ const DEMO_QUERIES = ["bun", "pricing", "rust", "react server components", "agen
 
 const DEBOUNCE_MS = 250;
 
-export function App() {
+export function App(): ReactElement {
   const params = new URLSearchParams(window.location.search);
   const initial = params.get("q") ?? "";
   const [input, setInput] = useState(initial);
   const [query, setQuery] = useState(initial.trim());
   const [sort, setSort] = useState<Sort>(params.get("sort") === "latest" ? "latest" : "top");
   const [lane, setLane] = useState<Lane>(params.get("lane") === "baseline" ? "baseline" : "xearch");
+  const inputError = queryInputError(query);
+  const canVote = useQuery(api.feedback.canVote);
 
   useEffect(() => {
     const handle = setTimeout(() => setQuery(input.trim()), DEBOUNCE_MS);
@@ -51,22 +55,23 @@ export function App() {
 
   const full = useQuery(
     api.search.search,
-    query === "" || lane !== "xearch" ? "skip" : { raw: query, sort },
+    query === "" || inputError !== null || lane !== "xearch" ? "skip" : { raw: query, sort },
   );
   const baseline = useQuery(
     api.search.searchBaseline,
-    query === "" || lane !== "baseline" ? "skip" : { raw: query },
+    query === "" || inputError !== null || lane !== "baseline" ? "skip" : { raw: query },
   );
 
   const current: Shown | undefined = useMemo(() => {
     if (lane === "baseline") {
       return baseline === undefined
         ? undefined
-        : { results: baseline, ladder: null, queryKey: null, terms: query.split(/\s+/) };
+        : { error: null, results: baseline, ladder: null, queryKey: null, terms: query.split(/\s+/) };
     }
     if (full === undefined) return undefined;
     const q = full.appliedQuery;
     return {
+      error: full.error,
       results: full.results,
       ladder: full.ladder,
       queryKey: full.queryKey,
@@ -74,11 +79,11 @@ export function App() {
     };
   }, [lane, full, baseline, query]);
 
-  // Keep the previous list on screen while a new query loads (no layout flash).
-  const lastShown = useRef<Shown | null>(null);
-  if (current !== undefined && query !== "") lastShown.current = current;
-  const shown = query === "" ? null : (current ?? lastShown.current ?? undefined);
-  const searching = query !== "" && current === undefined;
+  const shown = input.trim() === query ? current : undefined;
+  const error = inputError ?? shown?.error;
+  const searching = input.trim() !== "" && !error && shown === undefined;
+  const operatorSort = full !== undefined && Object.values(full.trace.consumed).includes("sort");
+  const activeSort = full?.appliedQuery.sort ?? sort;
 
   return (
     <div className="page">
@@ -110,15 +115,16 @@ export function App() {
                 key={s}
                 type="button"
                 role="tab"
-                aria-selected={sort === s}
-                className={sort === s ? "tab active" : "tab"}
+                aria-selected={activeSort === s}
+                className={activeSort === s ? "tab active" : "tab"}
                 onClick={() => setSort(s)}
-                disabled={lane === "baseline"}
+                disabled={lane === "baseline" || operatorSort}
               >
                 {s === "top" ? "Top" : "Latest"}
               </button>
             ))}
           </div>
+          {operatorSort ? <span>Remove the sort: operator to use the tabs.</span> : null}
           <button
             type="button"
             className="lane-toggle"
@@ -130,38 +136,58 @@ export function App() {
         </div>
       ) : null}
 
-      {query === "" ? (
-        <Intro onPick={(q) => { setInput(q); setQuery(q); }} />
-      ) : shown === undefined || shown === null ? (
-        <SkeletonList />
-      ) : shown.results.length === 0 ? (
-        <EmptyState query={query} onPick={(q) => { setInput(q); setQuery(q); }} />
-      ) : (
-        <main aria-busy={searching}>
-          <p className="count-line">
-            {shown.results.length === 20
-              ? "top 20 posts"
-              : `${shown.results.length} post${shown.results.length === 1 ? "" : "s"}`}
-            {shown.ladder !== null && shown.ladder !== "L0"
-              ? ` — exact matches were thin; widened to related posts (${shown.ladder})`
-              : shown.results.length > 0 && shown.results.length < 20
-                ? " — every match in the corpus"
-                : ""}
-          </p>
-          <ol className="results">
-            {shown.results.map((t) => (
-              <li key={t._id}>
-                <ResultRow tweet={t} terms={shown.terms} queryKey={shown.queryKey} />
-              </li>
-            ))}
-          </ol>
-        </main>
-      )}
+      <SearchBody
+        query={query}
+        error={error}
+        shown={shown}
+        searching={searching}
+        canVote={canVote === true}
+        onPick={(q) => { setInput(q); setQuery(q); }}
+      />
 
       <footer className="colophon">
-        <p>corpus: 62 tech accounts, six months deep, archived 2026-09-03. served by Convex full-text search.</p>
+        <p>corpus: 62 seed timelines plus related posts, archived 2026-09-03. served by Convex.</p>
       </footer>
     </div>
+  );
+}
+
+interface SearchBodyProps {
+  query: string;
+  error: string | null | undefined;
+  shown: Shown | undefined;
+  searching: boolean;
+  canVote: boolean;
+  onPick: (query: string) => void;
+}
+
+function SearchBody({ query, error, shown, searching, canVote, onPick }: SearchBodyProps): ReactElement {
+  if (query === "") return <Intro onPick={onPick} />;
+  if (error) return <p role="alert">{error}</p>;
+  if (shown === undefined) return <SkeletonList />;
+  if (shown.results.length === 0) return <EmptyState query={query} onPick={onPick} />;
+
+  const count = shown.results.length;
+  let countLabel = `${count} posts`;
+  if (count === 1) countLabel = "1 post";
+  if (count === 20) countLabel = "top 20 posts";
+  let notice = "";
+  if (shown.ladder !== null && shown.ladder !== "L0") {
+    notice = ` — exact matches were thin; widened to related posts (${shown.ladder})`;
+  } else if (count < 20) {
+    notice = " — matches within the bounded search window";
+  }
+  return (
+    <main aria-busy={searching}>
+      <p className="count-line">{countLabel}{notice}</p>
+      <ol className="results">
+        {shown.results.map((tweet) => (
+          <li key={`${shown.queryKey ?? query}:${tweet._id}`}>
+            <ResultRow tweet={tweet} terms={shown.terms} queryKey={canVote ? shown.queryKey : null} />
+          </li>
+        ))}
+      </ol>
+    </main>
   );
 }
 
@@ -178,7 +204,7 @@ function EmptyState({ query, onPick }: { query: string; onPick: (q: string) => v
   return (
     <div className="empty-state">
       <p>
-        No posts contain <span className="query-echo">{query}</span>. The corpus is 62 tech accounts — try words people
+        No matches found in the bounded search window for <span className="query-echo">{query}</span>. The corpus starts from 62 tech accounts — try words people
         actually posted:
       </p>
       <DemoChips onPick={onPick} />
@@ -246,27 +272,30 @@ function Typeahead({ input, onPick }: { input: string; onPick: (q: string) => vo
   );
 }
 
-/** Stable anonymous session for feedback dedupe (one vote per session per pair). */
-function sessionId(): string {
-  let id = localStorage.getItem("xearch-session");
-  if (id === null) {
-    id = crypto.randomUUID();
-    localStorage.setItem("xearch-session", id);
-  }
-  return id;
-}
-
-function ResultRow({
-  tweet,
-  terms,
-  queryKey,
-}: {
+interface ResultRowProps {
   tweet: Result;
   terms: string[];
   queryKey: string | null;
-}) {
+}
+
+function ResultRow({ tweet, terms, queryKey }: ResultRowProps): ReactElement {
   const vote = useMutation(api.feedback.vote);
   const [voted, setVoted] = useState<1 | -1 | null>(null);
+  const [voteError, setVoteError] = useState<string | null>(null);
+  const [voting, setVoting] = useState(false);
+  async function submitVote(value: 1 | -1): Promise<void> {
+    if (queryKey === null) return;
+    setVoting(true);
+    setVoteError(null);
+    try {
+      await vote({ queryKey, tweetId: tweet._id, vote: value });
+      setVoted(value);
+    } catch {
+      setVoteError("Vote failed. Please try again.");
+    } finally {
+      setVoting(false);
+    }
+  }
   const name = tweet.author?.displayName ?? `@${tweet.authorHandle}`;
   return (
     <article className="result">
@@ -302,10 +331,8 @@ function ResultRow({
               type="button"
               className={voted === 1 ? "vote on" : "vote"}
               aria-label="Good result for this search"
-              onClick={() => {
-                setVoted(1);
-                void vote({ queryKey, tweetId: tweet._id, vote: 1, sessionId: sessionId() });
-              }}
+              disabled={voting}
+              onClick={() => { void submitVote(1); }}
             >
               +1
             </button>
@@ -313,16 +340,15 @@ function ResultRow({
               type="button"
               className={voted === -1 ? "vote on" : "vote"}
               aria-label="Bad result for this search"
-              onClick={() => {
-                setVoted(-1);
-                void vote({ queryKey, tweetId: tweet._id, vote: -1, sessionId: sessionId() });
-              }}
+              disabled={voting}
+              onClick={() => { void submitVote(-1); }}
             >
               -1
             </button>
           </span>
         ) : null}
       </p>
+      {voteError !== null ? <p role="alert">{voteError}</p> : null}
     </article>
   );
 }

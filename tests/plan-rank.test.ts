@@ -54,13 +54,19 @@ describe("escalate", () => {
     expect(escalate(planL0(xq, dfs), MIN_RESULTS, xq, dfs)).toBeNull();
   });
 
+  test("L1 protects phrase terms even when they also appear in must", () => {
+    const phrase = xqWith({ must: ["linux", "box"], phrases: [["box"]] });
+    const next = escalate(planL0(phrase, dfs), 0, phrase, dfs)!;
+    expect(next.gates.map((gate) => gate.term)).toEqual(["box"]);
+  });
+
   test("L0 -> L1 drops the commonest gate, at most twice, then unions at L2", () => {
     const l0 = planL0(xq, dfs); // gates: linux, box, ~price
     const l1 = escalate(l0, 0, xq, dfs)!;
     expect(l1.level).toBe("L1");
-    expect(l1.gates.map((g) => g.term)).toEqual(["linux", "box"]);
+    expect(l1.gates.map((g) => g.term)).toEqual(["linux", "~price"]);
     const l1b = escalate(l1, 0, xq, dfs)!;
-    expect(l1b.gates.map((g) => g.term)).toEqual(["linux"]);
+    expect(l1b.gates.map((g) => g.term)).toEqual(["~price"]);
     const l2 = escalate(l1b, 0, xq, dfs)!;
     expect(l2.level).toBe("L2");
     expect(l2.gates).toEqual([]);

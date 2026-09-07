@@ -28,7 +28,7 @@ Source of truth for types: `convex/engine/xquery.ts`.
 }
 ```
 
-Rules that make the IR canonical (→ stable `queryKey = sha256(canonicalJson)`):
+Rules that make the IR canonical (→ stable `queryKey = fnv1a64(canonicalJson)`):
 keys in fixed order, arrays sorted (must/should/exclude/aspects lexicographic;
 phrases by first token), all times absolute epoch ms, absent = null (never missing
 key), terms already tokenizer-normalized. Two phrasings that mean the same thing
@@ -37,6 +37,13 @@ aggregation work.
 
 Presentation mode (list vs AI answer) is NOT in the IR — it rides in the request
 envelope (`mode: "list" | "answer"`), user-chosen only.
+
+The serving shell rejects requests over 512 characters or 12 input tokens, and
+parses with at most 12 indexed terms/aspects. Unknown explicit `from:` handles
+return an actionable error, never an unfiltered topic search. `sort:` operators
+override the separate tab argument. Phrases retain stopwords for normalized token
+adjacency checks against candidate text; only indexed non-stopwords gate reads.
+Time windows are inclusive at `since` and exclusive at `until`.
 
 ## 2. Tier contracts
 

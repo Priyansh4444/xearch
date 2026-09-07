@@ -32,7 +32,7 @@ export interface XQuery {
   must: string[];
   /** Soft terms: rerank boosts + L2 union. Never gate. */
   should: string[];
-  /** Exact-adjacency groups (positions verify post-v1; until then treated as must). */
+  /** Exact token-adjacency groups, including stopwords; verified on candidate text. */
   phrases: string[][];
   exclude: string[];
   /** Canonical aspect tokens (~price, ...) — closed vocabulary from shared/lexicons. */

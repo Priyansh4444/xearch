@@ -12,7 +12,7 @@
 - **Auth:** none
 - **AI models:** none
 - **Started:** 2026-08-31T10:15:32Z
-- **Last updated:** 2026-09-07T13:30:00Z
+- **Last updated:** 2026-09-07T07:02:29Z
 
 ## Log
 
@@ -83,14 +83,14 @@ the decision documented (`apps/dashboard/src/overview.ts`,
 First usable search demo, end to end on the baseline lane. Implemented the
 Rust tokenizer twin (scanner parity with `convex/engine/tokenize.ts`; the
 shared golden fixture passes in both languages), `ingest.ingestBatch` with
-idempotent author/tweet/posting/term/meta writes, the pipeline's
+author/tweet/posting/term/meta writes (DF replay bug found in later review), the pipeline's
 tweet-to-postings transform with deterministic static scores and log-spaced
 buckets, and the checkpointed `backfill` loop with quarantine and ingress
 sanity gates. Added `pnpm collect:pull` (read-only R2 pull, digest-verified
 against the run manifest) and pulled `2026-09-03T06-45-44Z-full`. Loaded a
 100-post slice, inspected rows, then backfilled all 164,959 posts and 22,811
-authors into a cloud dev deployment: 0 quarantined lines, ~1,700 batches,
-re-sent batches confirmed idempotent. Two operational fixes along the way:
+authors into a cloud dev deployment: 0 quarantined lines, ~1,700 batches.
+Re-sent batches checked tweet deduplication, not DF correctness. Two operational fixes:
 Convex's 4,096-read mutation limit forced a per-batch df-term budget, and
 ack numbers deserialize as floats. Built `apps/web`, a React 19 SERP over
 `search.searchBaseline` (author-hydrated) with loading, empty, partial, and
@@ -121,3 +121,11 @@ reactive run. 68 TS tests + 5 Rust tests pass
 (`convex/engine/parse.ts`, `convex/engine/plan.ts`, `convex/engine/rank.ts`,
 `convex/search.ts`, `tests/parser.golden.test.ts`, `tests/plan-rank.test.ts`,
 `apps/web/src/App.tsx`).
+
+### 2026-09-07 - working tree
+Corrected review findings: replay-safe DF, config guards, RRF before truncation,
+hard filters and phrase adjacency, Latest ordering, query bounds, and UI states.
+Votes now require trusted identity and use exact totals; no auth provider is
+configured, so anonymous controls are hidden. Earlier replay-safety and retrieval
+claims were too broad. 86 TS/DOM tests and 5 Rust tests pass; no cloud deployment
+or corpus repair performed (`docs/SEARCH-REVIEW.md`, `tests/convex.integration.test.ts`).

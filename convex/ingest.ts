@@ -1,8 +1,8 @@
 // Ingest wire contract (contract #2, ARCHITECTURE.md). The Rust indexer calls these
 // internal mutations over the HTTP API. The validators ARE the contract — a payload
 // that doesn't validate is rejected wholesale (per boundary-discipline).
-// INVARIANTS: batch lands atomically; idempotent on tweetId; df deltas pre-aggregated
-// per batch by the indexer (one write per term per batch — the OCC mitigation, O2).
+// INVARIANTS: batch lands atomically; idempotent on tweetId; df increments derived
+// from inserted tweets (one write per term per batch — the OCC mitigation, O2).
 
 import { internalMutation } from "./_generated/server";
 import { v } from "convex/values";
@@ -71,6 +71,18 @@ export const ingestBatch = internalMutation({
     configHash: v.string(), // recorded to meta (RISKS O4)
   },
   handler: async (ctx, args) => {
+    const meta = await ctx.db
+      .query("meta")
+      .withIndex("by_key", (q) => q.eq("key", "activeConfig"))
+      .unique();
+    if (meta !== null && (
+      meta.configHash !== args.configHash ||
+      meta.tokenizerVersion !== TOKENIZER_VERSION ||
+      meta.lexiconVersion !== aspectsFile.version
+    )) {
+      throw new Error("Index configuration mismatch. Use a separate deployment for a deliberate reindex.");
+    }
+
     // Authors first (INGRESS §3.3: author rows precede the tweets that cite them).
     const batchAuthors = new Set<string>();
     for (const a of args.authors) {
@@ -87,7 +99,7 @@ export const ingestBatch = internalMutation({
         await ctx.db.patch(existing._id, {
           ...a,
           handle: a.handle.toLowerCase(),
-          authority: Math.log1p(a.followerCount),
+          authority: existing.isStub ? Math.log1p(a.followerCount) : existing.authority,
         });
       }
     }
@@ -95,6 +107,7 @@ export const ingestBatch = internalMutation({
     let inserted = 0;
     let updated = 0;
     let skipped = 0;
+    const insertedDfs = new Map<string, number>();
     for (const t of args.tweets) {
       // scoreBucket is denormalized onto postings only; the tweets table keeps the raw staticScore.
       const { postings, metrics, scoreBucket: _scoreBucket, ...row } = t;
@@ -140,6 +153,9 @@ export const ingestBatch = internalMutation({
             scoreBucket: t.scoreBucket,
           });
         }
+        for (const term of new Set(postings.map((p) => p.term))) {
+          insertedDfs.set(term, (insertedDfs.get(term) ?? 0) + 1);
+        }
         inserted += 1;
       } else if (t.metricsAt > existing.metricsAt) {
         // Text is immutable (INGRESS §3.1): metrics only, postings untouched.
@@ -156,7 +172,9 @@ export const ingestBatch = internalMutation({
       }
     }
 
-    for (const { term, delta } of args.dfDeltas) {
+    // Keep dfDeltas in the wire contract for existing clients. Only the server
+    // knows which tweets were newly inserted, so client deltas are not applied.
+    for (const [term, delta] of insertedDfs) {
       const existing = await ctx.db
         .query("terms")
         .withIndex("by_term", (q) => q.eq("term", term))
@@ -168,10 +186,6 @@ export const ingestBatch = internalMutation({
       }
     }
 
-    const meta = await ctx.db
-      .query("meta")
-      .withIndex("by_key", (q) => q.eq("key", "activeConfig"))
-      .unique();
     const metaRow = {
       key: "activeConfig",
       configHash: args.configHash,

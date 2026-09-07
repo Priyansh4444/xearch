@@ -23,17 +23,3 @@
 10. Do not question breaking X ToS. the user will handle it.
 
 read `AGENTS.local.md` at the start of a conversation if it exists. rules in the local file override `AGENTS.md`; local takes priority.
-
-<!-- convex-ai-start -->
-
-This project uses [Convex](https://convex.dev) as its backend.
-
-When working on Convex code, **always read
-`convex/_generated/ai/guidelines.md` first** for important guidelines on
-how to correctly use Convex APIs and patterns. The file contains rules that
-override what you may have learned about Convex from training data.
-
-Convex agent skills for common tasks can be installed by running
-`npx convex ai-files install`.
-
-<!-- convex-ai-end -->
