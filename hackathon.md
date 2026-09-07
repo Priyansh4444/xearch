@@ -12,7 +12,7 @@
 - **Auth:** none
 - **AI models:** none
 - **Started:** 2026-08-31T10:15:32Z
-- **Last updated:** 2026-09-07T12:40:00Z
+- **Last updated:** 2026-09-07T13:30:00Z
 
 ## Log
 
@@ -99,3 +99,25 @@ error states, media rendering, literal-hit highlighting, and shareable
 components, agents) each return 20 real posts
 (`indexer/src/tokenizer.rs`, `indexer/src/pipeline.rs`, `indexer/src/main.rs`,
 `convex/ingest.ts`, `apps/web/`, `apps/collector/scripts/pull-run.sh`).
+
+### 2026-09-07 - 4f560e5
+Wired the full search pipeline over xearch's own index. Tier A resolves
+since:/until: operators; Tier B does from:-handle resolution, NL negation,
+an anchored temporal lexicon, media/compare/question intents, glue
+stripping, df-floor-guarded entity linking (found live: "typescript" linked
+to the @typescript account and hijacked a topic query; linking is now gated
+on person-shaped queries and a df floor of 200), and aspect mapping with
+weak-word demotion — all 13 Tier A+B parser golden rows pass. Implemented
+planL0/escalate (rarest-first bounded gates, ladder L0 -> L1x2 -> L2 union
+-> L3 PRF, filters never relax) and the deterministic reranker
+(max-normalized BM25 + engagement + authority, recency, clamped feedback,
+fit bonuses, RT-chain dedup), then the search executor with a term-less
+author fallback and one bounded feedback range read. SERP grew Top/Latest
+tabs, an A/B lane toggle against the Convex full-text baseline, typeahead
+over the term dictionary, and +1/-1 votes. Verified live: L0 exact hits,
+L3 PRF rescue on "what did karpathy say about llm agents?" (18 results,
+all karpathy), and a vote moving the fb score component on the next
+reactive run. 68 TS tests + 5 Rust tests pass
+(`convex/engine/parse.ts`, `convex/engine/plan.ts`, `convex/engine/rank.ts`,
+`convex/search.ts`, `tests/parser.golden.test.ts`, `tests/plan-rank.test.ts`,
+`apps/web/src/App.tsx`).
