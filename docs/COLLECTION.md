@@ -21,7 +21,9 @@ The current implementation milestone is [the collection pilot](collection/01-pil
 6. TypeScript owns collection, split into acquisition and normalization stages.
    Acquisition owns HTTP, retries, cursors, checkpoints, and raw-page archival.
    Normalization owns provider validation, deduplication, ingress JSONL, and
-   structured rejections.
+   structured rejections. The replaceable file boundary and rejected direct-write
+   alternatives are recorded in
+   [ADR 0001](adr/0001-file-bound-collection-normalization.md).
 
 This is a hackathon collector: small, focused, and best-effort. Acquisition is
 checkpointed after every page so interrupted runs can resume without losing or

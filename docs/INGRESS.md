@@ -85,7 +85,9 @@ mappings, fallbacks, and the repost policy live in `docs/COLLECTION.md`.
   event-window queries to be demonstrable; an all-last-week corpus makes `since:`
   filters pointless.
 - Skew warning: if one account is 30% of the corpus, authority and engagement
-  signals degenerate. Cap any single author at ~2% of total.
+  signals degenerate. Normalization reports per-author share without discarding
+  accepted records. A separate corpus-shaping step may cap an author at ~2% of the
+  pre-shape corpus once measured skew justifies that policy.
 
 ## 5. Quality gates (indexer enforces, collector aims)
 

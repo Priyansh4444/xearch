@@ -6,14 +6,15 @@ upgrades itself as smarter interpretations land.
 
 ## Read in this order
 
-1. [DESIGN.md](DESIGN.md) — what we're building and why (algorithms, ranking, scale)
-2. [ARCHITECTURE.md](ARCHITECTURE.md) — module map, the five contracts, design rationale
-3. [docs/RISKS.md](docs/RISKS.md) — what goes wrong + the compromise we take, per row
-4. [docs/PARSER.md](docs/PARSER.md) — the Loose Parser made concrete (schema, prompt, evals)
-5. [docs/ASPECTS.md](docs/ASPECTS.md) — aspect tokens: gripes, prior art, escalation plan
-6. [docs/INGRESS.md](docs/INGRESS.md) — what data collection must deliver (JSONL contract)
-7. [docs/COLLECTION.md](docs/COLLECTION.md) — collection goals, sources, mappings, and retention
-8. [docs/collection/01-pilot.md](docs/collection/01-pilot.md) — the 62-account pilot: accounts, stop rules, run lifecycle, commands
+1. [CONTEXT.md](CONTEXT.md) — canonical project language
+2. [DESIGN.md](DESIGN.md) — what we're building and why (algorithms, ranking, scale)
+3. [ARCHITECTURE.md](ARCHITECTURE.md) — module map, the five contracts, design rationale
+4. [docs/RISKS.md](docs/RISKS.md) — what goes wrong + the compromise we take, per row
+5. [docs/PARSER.md](docs/PARSER.md) — the Loose Parser made concrete (schema, prompt, evals)
+6. [docs/ASPECTS.md](docs/ASPECTS.md) — aspect tokens: gripes, prior art, escalation plan
+7. [docs/INGRESS.md](docs/INGRESS.md) — what data collection must deliver (JSONL contract)
+8. [docs/COLLECTION.md](docs/COLLECTION.md) — collection goals, sources, mappings, and retention
+9. [docs/collection/01-pilot.md](docs/collection/01-pilot.md) — the 62-account pilot: accounts, stop rules, run lifecycle, commands
 
 ## Layout
 
