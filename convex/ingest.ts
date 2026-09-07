@@ -6,9 +6,6 @@
 
 import { internalMutation } from "./_generated/server";
 import { v } from "convex/values";
-import type { MutationCtx } from "./_generated/server";
-import { TOKENIZER_VERSION } from "./engine/tokenize";
-import aspectsFile from "../shared/lexicons/aspects.json";
 
 const postingIn = v.object({
   term: v.string(),
@@ -71,127 +68,19 @@ export const ingestBatch = internalMutation({
     configHash: v.string(), // recorded to meta (RISKS O4)
   },
   handler: async (ctx, args) => {
-    // Authors first (INGRESS §3.3: author rows precede the tweets that cite them).
-    const batchAuthors = new Set<string>();
-    for (const a of args.authors) {
-      batchAuthors.add(a.authorId);
-      const existing = await authorByAuthorId(ctx, a.authorId);
-      if (existing === null) {
-        await ctx.db.insert("authors", {
-          ...a,
-          handle: a.handle.toLowerCase(),
-          authority: Math.log1p(a.followerCount), // day-1 authority; Tweepcred refresh overwrites
-        });
-      } else if (!(a.isStub && !existing.isStub)) {
-        // Stub-upgrade rule: a stub never downgrades a real row; anything else patches.
-        await ctx.db.patch(existing._id, {
-          ...a,
-          handle: a.handle.toLowerCase(),
-          authority: Math.log1p(a.followerCount),
-        });
-      }
-    }
-
-    let inserted = 0;
-    let updated = 0;
-    let skipped = 0;
-    for (const t of args.tweets) {
-      // scoreBucket is denormalized onto postings only; the tweets table keeps the raw staticScore.
-      const { postings, metrics, scoreBucket: _scoreBucket, ...row } = t;
-      const existing = await ctx.db
-        .query("tweets")
-        .withIndex("by_tweetId", (q) => q.eq("tweetId", t.tweetId))
-        .unique();
-      if (existing === null) {
-        // Orphan tweet -> stub author, so authors.by_authorId always resolves.
-        if (!batchAuthors.has(t.authorId)) {
-          const author = await authorByAuthorId(ctx, t.authorId);
-          if (author === null) {
-            await ctx.db.insert("authors", {
-              authorId: t.authorId,
-              handle: t.authorHandle.toLowerCase(),
-              displayName: t.authorHandle,
-              nameTokens: [],
-              followerCount: 0,
-              followingCount: 0,
-              verified: false,
-              authority: 0,
-              isStub: true,
-            });
-          }
-          batchAuthors.add(t.authorId);
-        }
-        const tweetDoc = await ctx.db.insert("tweets", {
-          ...row,
-          likeCount: metrics.likes,
-          retweetCount: metrics.retweets,
-          replyCount: metrics.replies,
-          quoteCount: metrics.quotes,
-          propagatedBoost: 0,
-        });
-        for (const p of postings) {
-          await ctx.db.insert("postings", {
-            term: p.term,
-            tweetId: tweetDoc,
-            tf: p.tf,
-            authorId: t.authorId,
-            createdAt: t.createdAt,
-            mediaType: t.mediaType,
-            scoreBucket: t.scoreBucket,
-          });
-        }
-        inserted += 1;
-      } else if (t.metricsAt > existing.metricsAt) {
-        // Text is immutable (INGRESS §3.1): metrics only, postings untouched.
-        await ctx.db.patch(existing._id, {
-          likeCount: metrics.likes,
-          retweetCount: metrics.retweets,
-          replyCount: metrics.replies,
-          quoteCount: metrics.quotes,
-          metricsAt: t.metricsAt,
-        });
-        updated += 1;
-      } else {
-        skipped += 1;
-      }
-    }
-
-    for (const { term, delta } of args.dfDeltas) {
-      const existing = await ctx.db
-        .query("terms")
-        .withIndex("by_term", (q) => q.eq("term", term))
-        .unique();
-      if (existing === null) {
-        await ctx.db.insert("terms", { term, df: Math.max(0, delta) });
-      } else {
-        await ctx.db.patch(existing._id, { df: Math.max(0, existing.df + delta) });
-      }
-    }
-
-    const meta = await ctx.db
-      .query("meta")
-      .withIndex("by_key", (q) => q.eq("key", "activeConfig"))
-      .unique();
-    const metaRow = {
-      key: "activeConfig",
-      configHash: args.configHash,
-      lexiconVersion: aspectsFile.version,
-      tokenizerVersion: TOKENIZER_VERSION,
-      updatedAt: Date.now(),
-    };
-    if (meta === null) await ctx.db.insert("meta", metaRow);
-    else await ctx.db.patch(meta._id, metaRow);
-
-    return { inserted, updated, skipped };
+    // TODO(implement):
+    //   for each author: lookup by_authorId; insert or patch (stub-upgrade rule).
+    //   for each tweet: lookup by_tweetId;
+    //     unseen -> insert tweet row; insert one postings row per posting with
+    //               denormalized {authorId, createdAt, mediaType, scoreBucket};
+    //     newer metricsAt -> patch metrics + metricsAt (rerank reads live counts);
+    //     else -> skip.
+    //   for each dfDelta: upsert terms row, df += delta.
+    //   upsert meta.activeConfig = configHash.
+    // Return { inserted, updated, skipped } so the indexer can log progress.
+    throw new Error("not implemented: ingestBatch");
   },
 });
-
-function authorByAuthorId(ctx: MutationCtx, authorId: string) {
-  return ctx.db
-    .query("authors")
-    .withIndex("by_authorId", (q) => q.eq("authorId", authorId))
-    .unique();
-}
 
 /** Metric re-crawls (<48h tweets) + boost propagation results (refresh mode). */
 export const applyMetrics = internalMutation({

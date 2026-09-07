@@ -16,6 +16,5 @@
     "convex/**/*.ts",
     "tests/**/*.ts",
     "shared/**/*.json"
-  ],
-  "exclude": ["apps/web"]
+  ]
 }
