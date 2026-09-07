@@ -4,7 +4,11 @@
 //! wholesale (idempotent on tweetId — RISKS O1).
 
 use crate::model::IngestBatch;
-use anyhow::Result;
+use anyhow::{anyhow, bail, Context, Result};
+
+const BACKOFF_BASE_MS: u64 = 200;
+const BACKOFF_CAP_MS: u64 = 30_000;
+const MAX_ATTEMPTS: u32 = 8;
 
 pub struct ConvexClient {
     pub deployment_url: String, // e.g. https://something.convex.cloud
@@ -13,8 +17,16 @@ pub struct ConvexClient {
 
 impl ConvexClient {
     pub fn from_env() -> Result<Self> {
-        // CONVEX_URL + CONVEX_DEPLOY_KEY; fail fast with a helpful message.
-        todo!("from_env")
+        let deployment_url = std::env::var("CONVEX_URL").map_err(|_| {
+            anyhow!("CONVEX_URL is not set (the deployment URL, e.g. http://127.0.0.1:3210 or https://<name>.convex.cloud; `npx convex dev` writes it to .env.local)")
+        })?;
+        let deploy_key = std::env::var("CONVEX_DEPLOY_KEY").map_err(|_| {
+            anyhow!("CONVEX_DEPLOY_KEY is not set (a deploy/admin key for the deployment; internal mutations require admin auth)")
+        })?;
+        Ok(Self {
+            deployment_url: deployment_url.trim_end_matches('/').to_string(),
+            deploy_key,
+        })
     }
 
     /// Sends internal.ingest.ingestBatch. Retries on 5xx/OCC-conflict responses
@@ -22,24 +34,83 @@ impl ConvexClient {
     /// gives up -> Err so main.rs can quarantine the batch WITHOUT checkpointing
     /// past it (never drop silently — O1/failure policy).
     pub fn ingest_batch(&self, batch: &IngestBatch) -> Result<IngestAck> {
-        let _ = batch;
-        todo!("ingest_batch")
+        let value = self.mutation("ingest:ingestBatch", serde_json::to_value(batch)?)?;
+        Ok(serde_json::from_value(value).context("ingestBatch ack shape")?)
     }
 
     pub fn apply_metrics(&self, updates_json: &serde_json::Value) -> Result<()> {
-        let _ = updates_json;
-        todo!("apply_metrics")
+        self.mutation("ingest:applyMetrics", updates_json.clone())?;
+        Ok(())
     }
 
     pub fn upsert_authority(&self, rows_json: &serde_json::Value) -> Result<()> {
-        let _ = rows_json;
-        todo!("upsert_authority")
+        self.mutation("ingest:upsertAuthority", rows_json.clone())?;
+        Ok(())
+    }
+
+    /// POST {deployment}/api/mutation. Batches are atomic server-side and
+    /// idempotent on tweetId, so wholesale retry is always safe.
+    fn mutation(&self, path: &str, args: serde_json::Value) -> Result<serde_json::Value> {
+        let url = format!("{}/api/mutation", self.deployment_url);
+        let body = serde_json::json!({ "path": path, "args": args, "format": "json" });
+        let mut last_error = String::new();
+        for attempt in 0..MAX_ATTEMPTS {
+            if attempt > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(backoff_ms(attempt)));
+            }
+            let response = ureq::post(&url)
+                .set("Authorization", &format!("Convex {}", self.deploy_key))
+                .send_json(&body);
+            match response {
+                Ok(resp) => {
+                    let reply: serde_json::Value =
+                        resp.into_json().context("convex reply is not JSON")?;
+                    match reply["status"].as_str() {
+                        Some("success") => return Ok(reply["value"].clone()),
+                        _ => {
+                            // Function-level errors (validator rejection, JS throw)
+                            // are not transient: fail immediately, loudly.
+                            bail!("convex mutation {path} failed: {reply}");
+                        }
+                    }
+                }
+                // 5xx and OCC conflicts (Convex reports commit races as 503) retry.
+                Err(ureq::Error::Status(code, resp)) if code >= 500 => {
+                    last_error = format!(
+                        "HTTP {code}: {}",
+                        resp.into_string().unwrap_or_default()
+                    );
+                }
+                Err(ureq::Error::Status(code, resp)) => {
+                    bail!(
+                        "convex mutation {path} rejected (HTTP {code}): {}",
+                        resp.into_string().unwrap_or_default()
+                    );
+                }
+                Err(e) => last_error = format!("transport: {e}"), // connection refused etc.
+            }
+        }
+        bail!("convex mutation {path} failed after {MAX_ATTEMPTS} attempts; last error: {last_error}")
     }
 }
 
+/// Exponential backoff with deterministic-enough jitter (nanosecond clock — no
+/// rand dependency for one sleep).
+fn backoff_ms(attempt: u32) -> u64 {
+    let base = BACKOFF_BASE_MS.saturating_mul(1 << attempt.min(10)).min(BACKOFF_CAP_MS);
+    let jitter = (std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as u64)
+        .unwrap_or(0))
+        % (base / 2 + 1);
+    (base / 2 + jitter).min(BACKOFF_CAP_MS)
+}
+
+/// Convex's JSON export format renders all numbers as f64; keep the fields f64
+/// and treat them as counts.
 #[derive(Debug, serde::Deserialize)]
 pub struct IngestAck {
-    pub inserted: u64,
-    pub updated: u64,
-    pub skipped: u64,
+    pub inserted: f64,
+    pub updated: f64,
+    pub skipped: f64,
 }

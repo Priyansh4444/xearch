@@ -53,9 +53,67 @@ export interface ReadPlan {
  * Terms are ordered rarest-first by caller-provided dfs (planner stays pure).
  */
 export function planL0(xq: XQuery, dfs: Map<string, number>): ReadPlan {
-  // TODO(implement): gate list = must ∪ aspects ∪ flattened phrases, sorted by df
-  // ascending, each as one PostingsRead with PER_TERM_CAP.
-  throw new Error("not implemented: planL0");
+  const gateTerms = rarestFirst(
+    [...new Set([...xq.must, ...xq.aspects, ...xq.phrases.flat()])],
+    dfs,
+  );
+  return {
+    level: "L0",
+    gates: gateTerms.map((term) => readFor(term, xq)),
+    unions: [],
+    excludes: [...xq.exclude],
+    postFilters: postFiltersOf(xq),
+  };
+}
+
+function rarestFirst(terms: string[], dfs: Map<string, number>): string[] {
+  // Unknown df = 0 = rarest; ties break lexicographically for determinism.
+  return [...terms].sort((a, b) => {
+    const d = (dfs.get(a) ?? 0) - (dfs.get(b) ?? 0);
+    return d !== 0 ? d : a.localeCompare(b);
+  });
+}
+
+function readFor(term: string, xq: XQuery): PostingsRead {
+  const f = xq.filters;
+  const timeRange =
+    f.since !== null || f.until !== null
+      ? { since: f.since ?? undefined, until: f.until ?? undefined }
+      : undefined;
+  if (f.authorId !== null) {
+    return {
+      term,
+      index: "by_term_author_time",
+      eq: { authorId: f.authorId },
+      timeRange,
+      order: "desc",
+      limit: PER_TERM_CAP,
+    };
+  }
+  if (f.media !== null) {
+    return {
+      term,
+      index: "by_term_media_score",
+      eq: { mediaType: f.media },
+      order: "desc",
+      limit: PER_TERM_CAP,
+    };
+  }
+  if (xq.sort === "latest" || timeRange !== undefined) {
+    return { term, index: "by_term_time", timeRange, order: "desc", limit: PER_TERM_CAP };
+  }
+  return { term, index: "by_term_score", order: "desc", limit: PER_TERM_CAP };
+}
+
+function postFiltersOf(xq: XQuery): ReadPlan["postFilters"] {
+  const f = xq.filters;
+  return {
+    since: f.since ?? undefined,
+    until: f.until ?? undefined,
+    media: f.media ?? undefined,
+    minLikes: f.minLikes ?? undefined,
+    lang: f.lang ?? undefined,
+  };
 }
 
 /**
@@ -72,6 +130,53 @@ export function escalate(
   dfs: Map<string, number>,
   prfTerms?: string[],
 ): ReadPlan | null {
-  // TODO(implement)
-  throw new Error("not implemented: escalate");
+  if (survivors >= MIN_RESULTS) return null;
+
+  // L0/L1 -> L1: drop the lowest-idf (= highest-df) gate, at most twice, and only
+  // while more than one gate remains. Filters ride along untouched (invariant 2).
+  if (executed.level === "L0" || executed.level === "L1") {
+    const fullGateCount = new Set([...xq.must, ...xq.aspects, ...xq.phrases.flat()]).size;
+    const drops = fullGateCount - executed.gates.length;
+    if (executed.gates.length > 1 && drops < 2) {
+      return {
+        ...executed,
+        level: "L1",
+        gates: executed.gates.slice(0, -1), // gates are rarest-first; last = commonest
+      };
+    }
+    return escalateToL2(xq, dfs);
+  }
+
+  // L2 -> L3: PRF terms (mined by the caller from the docs found so far) join the
+  // union. Without terms to add there is nothing left to relax in a query.
+  if (executed.level === "L2" && prfTerms !== undefined && prfTerms.length > 0) {
+    const known = new Set(executed.unions.map((u) => u.term));
+    const extra = rarestFirst(
+      prfTerms.filter((t) => !known.has(t)),
+      dfs,
+    );
+    if (extra.length === 0) return null;
+    return {
+      ...executed,
+      level: "L3",
+      unions: [...executed.unions, ...extra.map((t) => readFor(t, xq))],
+    };
+  }
+
+  return null; // L4 (vectors) is an action, not a plan
+}
+
+function escalateToL2(xq: XQuery, dfs: Map<string, number>): ReadPlan | null {
+  const unionTerms = rarestFirst(
+    [...new Set([...xq.must, ...xq.should, ...xq.aspects, ...xq.phrases.flat()])],
+    dfs,
+  );
+  if (unionTerms.length === 0) return null;
+  return {
+    level: "L2",
+    gates: [],
+    unions: unionTerms.map((t) => readFor(t, xq)),
+    excludes: [...xq.exclude],
+    postFilters: postFiltersOf(xq),
+  };
 }

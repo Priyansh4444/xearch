@@ -10,3 +10,4 @@ done/
 .amp/portals/*
 !.env.r2.example
 .wrangler/
+.DS_Store

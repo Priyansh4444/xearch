@@ -20,6 +20,7 @@ upgrades itself as smarter interpretations land.
 
 ```
 apps/
+  web/               React 19 SERP (Vite) over the baseline search lane
   collector/         TypeScript collection (docs/collection/01-pilot.md)
     src/
       acquisition/   FxTwitter HTTP, retries, profile + timeline envelopes
@@ -58,10 +59,14 @@ tests/             TS golden test (Rust twin has its own in-crate)
 
 ## Status
 
-Design + contracts scaffolded; bodies marked `not implemented` are the build list.
-Suggested order (dependencies, not a schedule): tokenizer twins vs golden fixture →
-`ingest.ingestBatch` + indexer backfill → `tierB` + `planL0`/`escalate` → `rerank` →
-`search` wiring → tierC → vectors/answers.
+Working end to end on xearch's own index: tokenizer twins pass the shared golden
+fixture, `ingest.ingestBatch` + the Rust `backfill` loop have loaded the full
+archived corpus (164,959 posts), and the full `search` query runs Tier A+B
+parsing (operators, dates, entities, aspects, glue), the L0–L3 recall ladder
+with bounded reads, and the deterministic reranker with live feedback votes.
+`apps/web` is the SERP: Top/Latest tabs, typeahead, votes, and an A/B lane
+toggle against Convex full-text baseline. Remaining build list: tierC →
+vectors/answers → indexer tail/refresh (Tweepcred, boost propagation).
 
 ## Running
 
@@ -74,6 +79,14 @@ apps/collector/scripts/acquire-detached.sh --run <id>      # long runs: detached
 pnpm collect:pilot normalize <run-id>                      # validate, report, archive
 pnpm collect:pilot verify <run-id>                         # byte-for-byte re-normalization
 pnpm collect:sync [run-id]                                 # mirror data/old to R2 (needs .env.r2)
+pnpm collect:pull <run-id> [pattern ...]                   # read-only pull from R2: manifest + ingress,
+                                                           # digest-verified against the manifest
+pnpm web                        # the SERP at http://localhost:5173 (uses .env.local's CONVEX_URL)
+
+# index a pulled run into the deployment in .env.local (CONVEX_URL + CONVEX_DEPLOY_KEY):
+cd indexer && cargo build --release && cd ..
+indexer/target/release/xearch-indexer \
+  --data-dir data/old/<run-id>/ingress --checkpoint ./checkpoint.json backfill
 pnpm typecheck                  # tsc over apps/, convex/, tests/
 cd indexer && cargo test        # Rust golden tests (same fixture)
 ```
