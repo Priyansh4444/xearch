@@ -59,12 +59,14 @@ tests/             TS golden test (Rust twin has its own in-crate)
 
 ## Status
 
-Working end to end on the baseline lane: tokenizer twins pass the shared golden
+Working end to end on xearch's own index: tokenizer twins pass the shared golden
 fixture, `ingest.ingestBatch` + the Rust `backfill` loop have loaded the full
-archived corpus (164,959 posts), and `apps/web` is a literal-search SERP over
-`search.searchBaseline`. Remaining build list (dependencies, not a schedule):
-`tierB` + `planL0`/`escalate` → `rerank` → `search` wiring → typeahead/feedback →
-tierC → vectors/answers.
+archived corpus (164,959 posts), and the full `search` query runs Tier A+B
+parsing (operators, dates, entities, aspects, glue), the L0–L3 recall ladder
+with bounded reads, and the deterministic reranker with live feedback votes.
+`apps/web` is the SERP: Top/Latest tabs, typeahead, votes, and an A/B lane
+toggle against Convex full-text baseline. Remaining build list: tierC →
+vectors/answers → indexer tail/refresh (Tweepcred, boost propagation).
 
 ## Running
 

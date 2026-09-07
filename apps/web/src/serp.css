@@ -75,6 +75,130 @@ body {
   border-color: var(--signal);
 }
 
+/* controls: sort tabs + lane toggle ---------------------------------------- */
+
+.searchbox {
+  position: relative;
+}
+
+.typeahead {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 100%;
+  z-index: 10;
+  list-style: none;
+  margin: 0;
+  padding: 0.25rem 0;
+  background: #fff;
+  border: 1.5px solid var(--ink);
+  border-top: none;
+}
+
+.typeahead button {
+  display: flex;
+  justify-content: space-between;
+  width: 100%;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.95rem;
+  padding: 0.35rem 1rem;
+  background: none;
+  border: none;
+  color: var(--ink);
+  cursor: pointer;
+  text-align: left;
+}
+
+.typeahead button:hover,
+.typeahead button:focus-visible {
+  background: var(--mark);
+}
+
+.typeahead .df {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 0.9rem;
+}
+
+.tabs {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.tab {
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.25rem 0.8rem;
+  background: none;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.tab.active {
+  border-color: var(--ink);
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.tab:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.lane-toggle {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.75rem;
+  padding: 0.25rem 0.6rem;
+  background: none;
+  border: 1px dashed var(--hairline);
+  border-radius: 2px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.lane-toggle:hover,
+.lane-toggle:focus-visible {
+  color: var(--signal);
+  border-color: var(--signal);
+}
+
+.votes {
+  margin-left: auto;
+  display: flex;
+  gap: 0.35rem;
+}
+
+.vote {
+  font: inherit;
+  font-size: 0.75rem;
+  padding: 0 0.45rem;
+  background: none;
+  border: 1px solid var(--hairline);
+  border-radius: 2px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.vote:hover,
+.vote:focus-visible {
+  border-color: var(--signal);
+  color: var(--signal);
+}
+
+.vote.on {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--paper);
+}
+
 /* result list --------------------------------------------------------------- */
 
 .count-line {
