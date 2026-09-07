@@ -74,7 +74,7 @@ export function tokenize(raw: string): Tokenized {
       i = next;
     } else if (EMOJI_RE.test(c)) {
       const [run, next] = takeRun(chars, i, (ch) => EMOJI_RE.test(ch));
-      for (const e of dedupePreservingOrder(Array.from(run))) push(e);
+      for (const e of new Set(Array.from(run))) push(e);
       i = next;
     } else if (WORD_RE.test(c)) {
       const [run, next] = takeWordRun(chars, i);
@@ -132,8 +132,4 @@ function cjkBigrams(run: string): string[] {
   const out: string[] = [];
   for (let i = 0; i + 1 < cs.length; i++) out.push(cs[i]! + cs[i + 1]!);
   return out;
-}
-
-function dedupePreservingOrder(xs: string[]): string[] {
-  return [...new Set(xs)];
 }

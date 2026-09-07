@@ -8,7 +8,7 @@
 
 3. don't assume data is available. test the actual source and document anything unreliable, missing, expensive, or legally questionable.
 
-4. use the simplest reliable solution. don't add abstractions, dependencies, or infrastructure for hypothetical future needs.
+4. use the simplest reliable solution. dependencies are welcome when they solve a measured current problem more simply than code we would maintain ourselves. don't add abstractions, dependencies, or infrastructure for hypothetical future needs.
 
 5. convex is the backend and the source of truth for application state. keep reads bounded and indexed.
 

@@ -1,12 +1,12 @@
-{"text": "The pricing on these Linux boxes is OUTRAGEOUS lol", "tokens": ["pricing", "linux", "boxes", "outrageous", "lol"], "hasLink": false, "note": "lowercase, stopwords dropped"}
-{"text": "Check https://t.co/abc123 out! #Convex is live", "tokens": ["check", "out", "#convex", "convex", "live"], "hasLink": true, "note": "URL stripped to hasLink; hashtag kept AND bare word emitted"}
-{"text": "@theo ships $TSLA takes for $99", "tokens": ["@theo", "theo", "ships", "$tsla", "tsla", "takes", "99"], "hasLink": false, "note": "mention dual-emit; $+letters cashtag dual-emit; $+digits -> bare number ($ handled by aspect emitter)"}
-{"text": "caf\u00e9 r\u00e9sum\u00e9 na\u00efve", "tokens": ["caf\u00e9", "r\u00e9sum\u00e9", "na\u00efve"], "hasLink": false, "note": "NFKC + lowercase preserves accents"}
-{"text": "\uff21\uff30\uff29 rocks \u2460", "tokens": ["api", "rocks", "1"], "hasLink": false, "note": "NFKC folds fullwidth + circled digits"}
-{"text": "snake_case_ident and kebab-case-ident", "tokens": ["snake_case_ident", "kebab", "case", "ident"], "hasLink": false, "note": "underscore joins, hyphen splits"}
-{"text": "\u65e5\u672c\u8a9e\u30c6\u30b9\u30c8 desu", "tokens": ["\u65e5\u672c", "\u672c\u8a9e", "\u8a9e\u30c6", "\u30c6\u30b9", "\u30b9\u30c8", "desu"], "hasLink": false, "note": "CJK run -> overlapping bigrams (RISKS T2)"}
-{"text": "ship it \ud83d\ude80\ud83d\ude80 today", "tokens": ["ship", "\ud83d\ude80", "today"], "hasLink": false, "note": "emoji run collapses to one token per distinct emoji sequence; duplicates deduped per run"}
-{"text": "don't stop won't stop", "tokens": ["don't", "stop", "won't", "stop"], "hasLink": false, "note": "inner apostrophe joins"}
-{"text": "  ", "tokens": [], "hasLink": false, "note": "whitespace only"}
-{"text": "RT @user: original text here", "tokens": ["@user", "user", "original", "text", "here"], "hasLink": false, "note": "leading RT marker dropped via stoplist"}
-{"text": "100x dev builds 2 apps", "tokens": ["100x", "dev", "builds", "2", "apps"], "hasLink": false, "note": "alphanumeric mixes survive; bare digits survive"}
+{"name": "lowercase, stopwords dropped", "text": "The pricing on these Linux boxes is OUTRAGEOUS lol", "tokens": ["pricing", "linux", "boxes", "outrageous", "lol"], "hasLink": false}
+{"name": "URL stripped to hasLink; hashtag kept AND bare word emitted", "text": "Check https://t.co/abc123 out! #Convex is live", "tokens": ["check", "out", "#convex", "convex", "live"], "hasLink": true}
+{"name": "mention dual-emit; $+letters cashtag dual-emit; $+digits -> bare number ($ handled by aspect emitter)", "text": "@theo ships $TSLA takes for $99", "tokens": ["@theo", "theo", "ships", "$tsla", "tsla", "takes", "99"], "hasLink": false}
+{"name": "NFKC + lowercase preserves accents", "text": "caf\u00e9 r\u00e9sum\u00e9 na\u00efve", "tokens": ["caf\u00e9", "r\u00e9sum\u00e9", "na\u00efve"], "hasLink": false}
+{"name": "NFKC folds fullwidth + circled digits", "text": "\uff21\uff30\uff29 rocks \u2460", "tokens": ["api", "rocks", "1"], "hasLink": false}
+{"name": "underscore joins, hyphen splits", "text": "snake_case_ident and kebab-case-ident", "tokens": ["snake_case_ident", "kebab", "case", "ident"], "hasLink": false}
+{"name": "CJK run -> overlapping bigrams (RISKS T2)", "text": "\u65e5\u672c\u8a9e\u30c6\u30b9\u30c8 desu", "tokens": ["\u65e5\u672c", "\u672c\u8a9e", "\u8a9e\u30c6", "\u30c6\u30b9", "\u30b9\u30c8", "desu"], "hasLink": false}
+{"name": "emoji run collapses to one token per distinct emoji sequence; duplicates deduped per run", "text": "ship it \ud83d\ude80\ud83d\ude80 today", "tokens": ["ship", "\ud83d\ude80", "today"], "hasLink": false}
+{"name": "inner apostrophe joins", "text": "don't stop won't stop", "tokens": ["don't", "stop", "won't", "stop"], "hasLink": false}
+{"name": "whitespace only", "text": "  ", "tokens": [], "hasLink": false}
+{"name": "leading RT marker dropped via stoplist", "text": "RT @user: original text here", "tokens": ["@user", "user", "original", "text", "here"], "hasLink": false}
+{"name": "alphanumeric mixes survive; bare digits survive", "text": "100x dev builds 2 apps", "tokens": ["100x", "dev", "builds", "2", "apps"], "hasLink": false}

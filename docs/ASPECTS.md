@@ -5,6 +5,17 @@ canonical aspect tokens (`~price`) at index *and* query time so attribute intent
 matches at inverted-index speed. This doc is the honest counterweight: where that
 idea creaks, how the field solves the same problem, and which gripes we accept.
 
+`shared/lexicons/aspects.json` is the versioned source used by the Rust indexer and
+the TypeScript query path. Weak single-word triggers require a co-occurring content
+token as described in G5. The tokenizer, not the aspect file, handles `$` followed
+by digits.
+
+`shared/lexicons/stopwords.json` is also shared by indexing and queries. Both paths
+must remove the same words or recall changes silently. The list is deliberately
+small because broad English stopword corpora can remove useful query terms and do
+not include X-specific markers such as `rt`. Evaluate changes against retrieval
+queries before replacing or expanding it.
+
 ## 1. How everyone else solves "the query says cheap, the doc says outrageous pricing"
 
 | Approach | Who | Mechanism | Cost | Verdict for us |

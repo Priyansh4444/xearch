@@ -7,7 +7,7 @@ import {
   type PilotClient,
   type ProfileResponse,
   type TimelineRequest,
-  type TimelineResponse,
+  type TimelineFetchResult,
 } from "../src/acquisition/fxtwitter.ts";
 import type { PilotConfig } from "../src/config/pilot.ts";
 import { acquire, createRun } from "../src/pilot/acquire.ts";
@@ -318,7 +318,7 @@ function account(handle: string, expectedUserId: string): PilotConfig["accounts"
 
 interface FakeScript {
   profiles: Record<string, ProfileResponse>;
-  timelines: Record<string, (TimelineResponse | Error)[]>;
+  timelines: Record<string, (TimelineFetchResult | Error)[]>;
 }
 
 function fakeClient(script: FakeScript): PilotClient & { profileRequests: string[]; timelineRequests: TimelineRequest[] } {
@@ -349,12 +349,12 @@ function profile(id: string, screenName: string): ProfileResponse {
   return { httpStatus: 200, latencyMs: 20, attempts: 1, receivedAt: NOW, raw, profile: { id, screenName, name: screenName, protected: false } };
 }
 
-function page(results: unknown[], bottom: string | null, receivedAt = NOW): TimelineResponse {
+function page(results: unknown[], bottom: string | null, receivedAt = NOW): TimelineFetchResult {
   const raw = { code: 200, results, cursor: { top: "t", bottom } };
   return { httpStatus: 200, latencyMs: 1_000, attempts: 1, receivedAt, raw, page: raw };
 }
 
-function noContent(): TimelineResponse {
+function noContent(): TimelineFetchResult {
   return { httpStatus: 204, latencyMs: 10, attempts: 1, receivedAt: NOW, raw: null, page: null };
 }
 

@@ -5,7 +5,7 @@ import type {
   FxTwitterTimelinePage,
   TimelineClient,
   TimelineRequest,
-  TimelineResponse,
+  TimelineFetchResult,
 } from "../acquisition/fxtwitter.ts";
 
 const CHECKPOINT_VERSION = 1;
@@ -162,7 +162,7 @@ export async function runTimelineProbe(
 export function analyzeTimelinePage(
   pageNumber: number,
   inputCursorValue: string | null,
-  response: TimelineResponse,
+  response: TimelineFetchResult,
   seenTweetIds: Set<string>,
 ): PageReport {
   if (response.page === null) {
