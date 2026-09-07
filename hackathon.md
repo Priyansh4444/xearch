@@ -3,16 +3,16 @@
 - **Project:** Xearch
 - **Event:** Convex All Gas Hackathon
 - **What it does:** Searches tweets with a reactive Convex-backed retrieval and ranking architecture.
-- **Live app:** not deployed
+- **Live app:** not deployed (SERP runs locally: `pnpm web`)
 - **Repo:** https://github.com/Priyansh4444/xearch
-- **Frontend:** not deployed
-- **Convex deployment:** not deployed
+- **Frontend:** `apps/web` (React 19 + Vite), local only
+- **Convex deployment:** cloud dev deployment (team pc-style, project xearch), full corpus loaded
 - **Components:** none
 - **Convex features:** schema, indexes, full-text search, vector indexes, queries, mutations, actions
 - **Auth:** none
 - **AI models:** none
 - **Started:** 2026-08-31T10:15:32Z
-- **Last updated:** 2026-09-03T11:30:00Z
+- **Last updated:** 2026-09-07T12:40:00Z
 
 ## Log
 
@@ -78,3 +78,24 @@ pages show the with-replies timeline re-serving identical posts as
 conversation context, not a paging fault, so the bound was raised to 15% and
 the decision documented (`apps/dashboard/src/overview.ts`,
 `apps/collector/src/pilot/report.ts`, `docs/collection/01-pilot.md`).
+
+### 2026-09-07 - cb2ff36
+First usable search demo, end to end on the baseline lane. Implemented the
+Rust tokenizer twin (scanner parity with `convex/engine/tokenize.ts`; the
+shared golden fixture passes in both languages), `ingest.ingestBatch` with
+idempotent author/tweet/posting/term/meta writes, the pipeline's
+tweet-to-postings transform with deterministic static scores and log-spaced
+buckets, and the checkpointed `backfill` loop with quarantine and ingress
+sanity gates. Added `pnpm collect:pull` (read-only R2 pull, digest-verified
+against the run manifest) and pulled `2026-09-03T06-45-44Z-full`. Loaded a
+100-post slice, inspected rows, then backfilled all 164,959 posts and 22,811
+authors into a cloud dev deployment: 0 quarantined lines, ~1,700 batches,
+re-sent batches confirmed idempotent. Two operational fixes along the way:
+Convex's 4,096-read mutation limit forced a per-batch df-term budget, and
+ack numbers deserialize as floats. Built `apps/web`, a React 19 SERP over
+`search.searchBaseline` (author-hydrated) with loading, empty, partial, and
+error states, media rendering, literal-hit highlighting, and shareable
+`?q=` URLs; verified demo queries (bun, pricing, rust, react server
+components, agents) each return 20 real posts
+(`indexer/src/tokenizer.rs`, `indexer/src/pipeline.rs`, `indexer/src/main.rs`,
+`convex/ingest.ts`, `apps/web/`, `apps/collector/scripts/pull-run.sh`).
