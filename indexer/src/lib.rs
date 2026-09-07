@@ -4,6 +4,7 @@
 
 pub mod checkpoint;
 pub mod convex_api;
+pub mod extended_pictographic;
 pub mod model;
 pub mod pipeline;
 pub mod tokenizer;

@@ -62,9 +62,29 @@ function deps(ctx: { db: unknown }): TierBDeps {
 export const searchBaseline = query({
   args: { raw: v.string() },
   handler: async (ctx, { raw }) => {
-    return await ctx.db
+    if (raw.trim().length === 0) return [];
+    const tweets = await ctx.db
       .query("tweets")
       .withSearchIndex("search_text", (q) => q.search("text", raw))
       .take(20);
+    // Hydrate authors (20 bounded point reads on by_authorId) so the SERP can
+    // render display names without denormalizing more onto tweets.
+    const authors = new Map<string, { displayName: string; verified: boolean } | null>();
+    for (const t of tweets) {
+      if (!authors.has(t.authorId)) {
+        const a = await ctx.db
+          .query("authors")
+          .withIndex("by_authorId", (q) => q.eq("authorId", t.authorId))
+          .unique();
+        authors.set(
+          t.authorId,
+          a === null ? null : { displayName: a.displayName, verified: a.verified },
+        );
+      }
+    }
+    return tweets.map((t) => ({
+      ...t,
+      author: authors.get(t.authorId) ?? null,
+    }));
   },
 });
