@@ -160,13 +160,14 @@ export async function stage(input, state) {
     await fs.mkdir(path.join(temp, 'ingress'), { recursive: true });
     const filename = `${batch}.jsonl`;
     await fs.writeFile(path.join(temp, 'ingress', filename), content, { mode: 0o600 });
-    const manifest = { version: 1, batch, filename, createdAt: new Date().toISOString(), inputLines: lines, ignored, duplicates, records: entries.length, tweets: entries.filter(([, x]) => x.record.kind === 'tweet').length, sha256: hash(content), quarantineCount: issues.length, entries: entries.map(([key, x]) => ({ key, hash: x.hash, textHash: x.textHash, captured: x.captured })) };
+    const manifest = { version: 1, batch, filename, createdAt: new Date().toISOString(), inputLines: lines, ignored, duplicates, records: entries.length, tweets: entries.filter(([, x]) => x.record.kind === 'tweet').length, sha256: hash(content), quarantineCount: issues.length, entries: [...selected].map(([key, x]) => ({ key, hash: x.hash, textHash: x.textHash, captured: x.captured })) };
     await atomic(path.join(temp, 'manifest.json'), manifest);
     await fs.writeFile(path.join(temp, 'quarantine.jsonl'), issues.map(x => JSON.stringify(x) + '\n').join(''), { mode: 0o600 });
     await fs.rename(temp, target); // publish only a closed, complete batch
     await atomic(path.join(state, 'chunks.json'), Object.fromEntries([...chunks].map(([key, group]) => [key, { count: group.count, seen: [...group.seen] }])));
     if (manifest.records === 0) {
-      // There is nothing to upload. Keep diagnostic sidecars, but do not block the next export.
+      // No ingress delta, but unchanged newer observations must advance watermarks.
+      for (const entry of manifest.entries) ledger.records[entry.key] = { hash: entry.hash, textHash: entry.textHash, captured: entry.captured };
       ledger.acked.push(batch);
       await atomic(path.join(state, 'ledger.json'), ledger);
     }

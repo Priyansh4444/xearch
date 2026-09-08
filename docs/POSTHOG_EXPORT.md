@@ -75,7 +75,10 @@ records relies on the latest indexer's idempotent mutation behavior.
 ## Deduplication and failure behavior
 
 - `ledger.json` stores only acknowledged content hashes, snapshot times and tweet
-  text hashes. Staging does not mark any data record uploaded.
+  text hashes. Staging does not mark any data record uploaded. Acknowledgement
+  also advances snapshot times for unchanged records; zero-delta batches do this
+  automatically because their content is already acknowledged. Pending nonempty
+  batches retain that metadata in the manifest until ingestion is acknowledged.
 - Only one nonempty batch may be pending per state directory. A second stage
   fails with the pending name; finish/retry that batch first. Export input is
   never moved, deleted, or marked consumed.

@@ -3,6 +3,8 @@ use std::{fs, path::Path, process::Command, time::{SystemTime, UNIX_EPOCH}};
 use xearch_indexer::model::IngressRecord;
 
 fn stage_fixture(fixture: &str) -> Vec<IngressRecord> {
+    let version = Command::new("node").arg("--version").output().expect("Node 24 must be installed");
+    assert!(version.status.success() && String::from_utf8_lossy(&version.stdout).starts_with("v24."), "Node 24 required; got {}", String::from_utf8_lossy(&version.stdout));
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let state = std::env::temp_dir().join(format!("xearch-posthog-{}-{}", std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
     let output = Command::new("node")
@@ -39,8 +41,23 @@ fn staged_posthog_records_deserialize_with_real_ingress_model() {
 fn native_xmd_producer_fixture_maps_media_metrics_authors_and_quotes() {
     let records = stage_fixture("apps/posthog-export/fixtures/producer-v1-full.jsonl");
     assert_eq!(records.len(), 4);
-    assert!(matches!(records[0], IngressRecord::Author(_)));
-    assert!(matches!(records[1], IngressRecord::Author(_)));
+    for (record, id, handle, name, followers, following) in [
+        (&records[0], "12345", "example", "Example", 120, 25),
+        (&records[1], "54321", "quoted", "Quoted Author", 55, 15),
+    ] {
+        match record {
+            IngressRecord::Author(author) => {
+                assert_eq!(author.id, id);
+                assert_eq!(author.handle, handle);
+                assert_eq!(author.display_name, name);
+                assert_eq!(author.follower_count, followers);
+                assert_eq!(author.following_count, following);
+                assert!(!author.verified);
+                assert_eq!(author.created_at, 1_704_067_200_000);
+            }
+            _ => panic!("expected author"),
+        }
+    }
     let post = records.iter().find_map(|r| match r {
         IngressRecord::Tweet(t) if t.id == "1234567890123456789" => Some(t),
         _ => None,

@@ -109,3 +109,35 @@ test('out-of-order snapshots select newest; public URLs omit query credentials',
   const r = normalizeEvent(event([{ ...post, media: { photos: [{ url: 'https://img.example/a?token=secret#secret' }] } }])).records.at(-1).record;
   assert.equal(r.media[0].url, 'https://img.example/a');
 });
+
+for (const mixed of [false, true]) {
+  test(`unchanged newer snapshots advance cross-run watermarks (${mixed ? 'mixed delta' : 'zero delta'})`, async t => {
+    const f = await fixture(t);
+    const checkpoint = path.join(f.dir, 'checkpoint.json'), quarantine = path.join(f.dir, 'quarantine');
+    await fs.mkdir(quarantine);
+    const ack = async batch => {
+      await fs.writeFile(checkpoint, JSON.stringify({ config_hash: 'test', offsets: { [`${batch.batch}.jsonl`]: batch.records } }));
+      return acknowledge(f.state, batch.batch, checkpoint, quarantine);
+    };
+    await f.write([event()]);
+    await ack(await stage(f.input, f.state));
+    const newer = '2025-01-03T00:00:00Z';
+    await f.write([event(mixed ? [post, { ...post, id: '124' }] : [post], { captured_at: newer })]);
+    const batch = await stage(f.input, f.state);
+    assert.equal(batch.records, mixed ? 1 : 0);
+    const readLedger = async () => JSON.parse(await fs.readFile(path.join(f.state, 'ledger.json'), 'utf8'));
+    if (mixed) {
+      // A pending delta must not advance either record's committed watermark.
+      assert.equal((await readLedger()).records['tweet:123'].captured, Date.parse('2025-01-01T00:00:00Z'));
+      await ack(batch);
+    }
+    const ledger = await readLedger();
+    assert.equal(ledger.records['tweet:123'].captured, Date.parse(newer));
+    assert.equal(ledger.records['author:42'].captured, Date.parse(newer));
+    await f.write([event([{ ...post, likes: 8, author: { ...author, followers: 100 } }], { captured_at: '2025-01-02T00:00:00Z' })]);
+    assert.equal((await stage(f.input, f.state)).records, 0);
+    // A genuinely newer changed observation is still eligible.
+    await f.write([event([{ ...post, likes: 9 }], { captured_at: '2025-01-04T00:00:00Z' })]);
+    assert.equal((await stage(f.input, f.state)).records, 1);
+  });
+}
