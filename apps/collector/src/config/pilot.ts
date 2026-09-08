@@ -151,7 +151,10 @@ export function loadPilotConfigEffect(path: string): Effect.Effect<PilotConfig, 
   });
   return Effect.flatMap(read, (text) =>
     Effect.try({
-      try: () => parsePilotConfig(JSON.parse(text) as unknown),
+      try: () => {
+        const parsed: unknown = JSON.parse(text);
+        return parsePilotConfig(parsed);
+      },
       catch: (cause) => new PilotConfigError(path, cause),
     }),
   );
