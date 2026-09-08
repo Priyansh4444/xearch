@@ -223,41 +223,9 @@ export const applyMetrics = internalMutation({
     ),
   },
   handler: async (ctx, args) => {
-    const latestByTweet = new Map<string, (typeof args.updates)[number]>();
-    for (const update of args.updates) {
-      const previous = latestByTweet.get(update.tweetId);
-      if (previous === undefined || update.metricsAt > previous.metricsAt) {
-        latestByTweet.set(update.tweetId, update);
-      }
-    }
-
-    for (const update of latestByTweet.values()) {
-      const tweet = await ctx.db
-        .query("tweets")
-        .withIndex("by_tweetId", (q) => q.eq("tweetId", update.tweetId))
-        .unique();
-      if (tweet === null || update.metricsAt <= tweet.metricsAt) continue;
-
-      await ctx.db.patch(tweet._id, {
-        likeCount: update.metrics.likes,
-        retweetCount: update.metrics.retweets,
-        quoteCount: update.metrics.quotes,
-        replyCount: update.metrics.replies,
-        metricsAt: update.metricsAt,
-        propagatedBoost: update.propagatedBoost ?? tweet.propagatedBoost,
-      });
-
-      if (update.newScoreBucket === undefined) continue;
-      const postings = await ctx.db
-        .query("postings")
-        .withIndex("by_tweet", (q) => q.eq("tweetId", tweet._id))
-        .collect();
-      for (const posting of postings) {
-        if (posting.scoreBucket !== update.newScoreBucket) {
-          await ctx.db.patch(posting._id, { scoreBucket: update.newScoreBucket });
-        }
-      }
-    }
+    // TODO(implement): patch tweets; when newScoreBucket present, patch the tweet's
+    // postings via by_tweet (the ONLY code path that ever rewrites postings, §6.1).
+    throw new Error("not implemented: applyMetrics");
   },
 });
 
@@ -267,22 +235,9 @@ export const upsertAuthority = internalMutation({
     rows: v.array(v.object({ authorId: v.string(), authority: v.number() })),
   },
   handler: async (ctx, args) => {
-    const highestByAuthor = new Map<string, number>();
-    for (const row of args.rows) {
-      const previous = highestByAuthor.get(row.authorId);
-      if (previous === undefined || row.authority > previous) {
-        highestByAuthor.set(row.authorId, row.authority);
-      }
-    }
-
-    for (const [authorId, authority] of highestByAuthor) {
-      const author = await authorByAuthorId(ctx, authorId);
-      if (author === null) continue;
-      const followerFloor = 0.5 * Math.log1p(author.followerCount);
-      const nextAuthority = Math.max(authority, followerFloor);
-      if (author.authority !== nextAuthority) {
-        await ctx.db.patch(author._id, { authority: nextAuthority });
-      }
-    }
+    // TODO(implement): patch authors.authority; floor rule
+    // authority = max(tweepcred, 0.5 * log1p(followers)) lives HERE (RISKS K3),
+    // so the indexer stays ignorant of serving-side blending.
+    throw new Error("not implemented: upsertAuthority");
   },
 });

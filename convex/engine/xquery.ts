@@ -3,8 +3,6 @@
 // ever sees the raw query string. Mirrored by docs/PARSER.md §1 (JSON Schema) and
 // the Tier C output grammar. Bump `v` on any breaking change.
 
-import { Option } from "effect";
-import * as Schema from "effect/Schema";
 import type { VisualMediaType } from "../contracts/media";
 
 export const XQUERY_VERSION = 1 as const;
@@ -46,25 +44,6 @@ export interface XQuery {
   // NOTE deliberately absent: presentation mode (list|answer). It rides in the
   // request envelope, chosen by the user — never inferred (DESIGN §4.1).
 }
-
-const XQuerySchema = Schema.Struct({
-  v: Schema.Literal(XQUERY_VERSION),
-  intent: Schema.Literals(["topic", "person", "person_topic", "media", "question", "compare", "event"]),
-  must: Schema.Array(Schema.String),
-  should: Schema.Array(Schema.String),
-  phrases: Schema.Array(Schema.Array(Schema.String)),
-  exclude: Schema.Array(Schema.String),
-  aspects: Schema.Array(Schema.String),
-  filters: Schema.Struct({
-    authorId: Schema.NullOr(Schema.String),
-    since: Schema.NullOr(Schema.Number),
-    until: Schema.NullOr(Schema.Number),
-    media: Schema.NullOr(Schema.Literals(["image", "video", "gif"])),
-    minLikes: Schema.NullOr(Schema.Number),
-    lang: Schema.NullOr(Schema.String),
-  }),
-  sort: Schema.Literals(["top", "latest"]),
-});
 
 export const emptyFilters = (): XQueryFilters => ({
   authorId: null,
@@ -135,23 +114,10 @@ export function queryKey(xq: XQuery): string {
 
 /** Parse + validate an untrusted JSON string (Tier C output, cache rows). */
 export function parseXQueryJson(json: string): XQuery | null {
-  let value: unknown;
-  try {
-    value = JSON.parse(json);
-  } catch {
-    return null;
-  }
-  const parsed = Schema.decodeUnknownOption(XQuerySchema)(value);
-  if (Option.isNone(parsed)) return null;
-  return {
-    ...parsed.value,
-    must: [...parsed.value.must],
-    should: [...parsed.value.should],
-    phrases: parsed.value.phrases.map((phrase) => [...phrase]),
-    exclude: [...parsed.value.exclude],
-    aspects: [...parsed.value.aspects],
-    filters: { ...parsed.value.filters },
-  };
+  // TODO: field-by-field validation against the closed enums (PARSER §1).
+  // Constrained decoding makes malformed Tier C output unrepresentable, but cache
+  // rows written by older versions still cross this boundary — validate anyway.
+  throw new Error("not implemented: parseXQueryJson");
 }
 
 /**
@@ -159,30 +125,7 @@ export function parseXQueryJson(json: string): XQuery | null {
  * ADD should/aspects; it may never contradict operator-set slots (PARSER §2).
  */
 export function mergeRefinement(base: XQuery, refined: XQuery): XQuery {
-  const filters = {
-    authorId: base.filters.authorId ?? refined.filters.authorId,
-    since: base.filters.since ?? refined.filters.since,
-    until: base.filters.until ?? refined.filters.until,
-    media: base.filters.media ?? refined.filters.media,
-    minLikes: base.filters.minLikes ?? refined.filters.minLikes,
-    lang: base.filters.lang ?? refined.filters.lang,
-  };
-  const unique = (values: string[]): string[] => [...new Set(values)];
-  const phrases = [...base.phrases, ...refined.phrases]
-    .filter((phrase, index, all) =>
-      all.findIndex((candidate) => candidate.join("\u0000") === phrase.join("\u0000")) === index,
-    )
-    .map((phrase) => [...phrase]);
-
-  return {
-    ...base,
-    intent: base.intent === "topic" ? refined.intent : base.intent,
-    must: unique([...base.must, ...refined.must]),
-    should: unique([...base.should, ...refined.should]),
-    phrases,
-    exclude: unique([...base.exclude, ...refined.exclude]),
-    aspects: unique([...base.aspects, ...refined.aspects]),
-    filters,
-    sort: base.sort,
-  };
+  // TODO: slot-wise merge honoring the may-not-override rule; count overridden
+  // attempts into the trace for the eval harness.
+  throw new Error("not implemented: mergeRefinement");
 }
