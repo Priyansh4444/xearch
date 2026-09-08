@@ -3,6 +3,7 @@
 
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import * as Data from "effect/Data";
 import { Option } from "effect";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -58,16 +59,11 @@ const PilotConfigSchema = Schema.Struct({
   accounts: Schema.Array(PilotAccountSchema),
 });
 
-export class PilotConfigError extends Error {
-  readonly _tag = "PilotConfigError";
-
-  constructor(
-    readonly path: string,
-    override readonly cause: unknown,
-  ) {
-    super(`failed to load pilot config ${path}`);
-  }
-}
+export class PilotConfigError extends Data.TaggedError("PilotConfigError")<{
+  readonly message: string;
+  readonly path: string;
+  readonly cause: unknown;
+}> {}
 
 export function parsePilotConfig(value: unknown): PilotConfig {
   const parsed = Schema.decodeUnknownOption(PilotConfigSchema)(value);
@@ -147,7 +143,12 @@ export async function loadPilotConfig(path: string): Promise<PilotConfig> {
 export function loadPilotConfigEffect(path: string): Effect.Effect<PilotConfig, PilotConfigError> {
   const read = Effect.tryPromise({
     try: () => readFile(path, "utf8"),
-    catch: (cause) => new PilotConfigError(path, cause),
+    catch: (cause) =>
+      new PilotConfigError({
+        message: `failed to load pilot config ${path}`,
+        path,
+        cause,
+      }),
   });
   return Effect.flatMap(read, (text) =>
     Effect.try({
@@ -155,7 +156,12 @@ export function loadPilotConfigEffect(path: string): Effect.Effect<PilotConfig, 
         const parsed: unknown = JSON.parse(text);
         return parsePilotConfig(parsed);
       },
-      catch: (cause) => new PilotConfigError(path, cause),
+      catch: (cause) =>
+        new PilotConfigError({
+          message: `failed to parse pilot config ${path}`,
+          path,
+          cause,
+        }),
     }),
   );
 }
