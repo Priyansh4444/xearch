@@ -5,6 +5,10 @@
 
 import { Option } from "effect";
 import * as Schema from "effect/Schema";
+import {
+  parseNonEmptyString,
+  parseNonNegativeNumber,
+} from "../contracts/primitives.ts";
 
 export type CandidateOrigin = "timeline" | "embedded";
 
@@ -217,7 +221,7 @@ export function mapStatus(value: unknown, context: CandidateContext): MappedCand
 }
 
 function mapProviderStatus(value: ProviderStatus, context: CandidateContext): MappedCandidate {
-  const id = nonEmptyString(value.id);
+  const id = parseNonEmptyString(value.id);
   const reasons: RejectionCode[] = [];
   if (id === null) reasons.push("missing_tweet_id");
 
@@ -244,7 +248,7 @@ function mapProviderStatus(value: ProviderStatus, context: CandidateContext): Ma
 
   const quote = value.quote;
   const quotedTweetId = quote !== null && typeof quote === "object" && !Array.isArray(quote)
-    ? nonEmptyString(quote["id"])
+    ? parseNonEmptyString(quote["id"])
     : null;
   const quoteTombstone =
     quote !== null &&
@@ -266,7 +270,7 @@ function mapProviderStatus(value: ProviderStatus, context: CandidateContext): Ma
     retweetOfTweetId: null,
     inReplyToTweetId: mapInReplyTo(value),
   };
-  const lang = nonEmptyString(value.lang);
+  const lang = parseNonEmptyString(value.lang);
   if (lang !== null) tweet.lang = lang;
   const entities = mapEntities(value.raw_text);
   if (entities !== null) tweet.entities = entities;
@@ -291,14 +295,14 @@ export function mapAuthor(value: unknown): MappedAuthor {
   if (authorData === null) return { ok: false, reasons: ["missing_author"] };
   const reasons: RejectionCode[] = [];
 
-  const id = nonEmptyString(authorData.id);
+  const id = parseNonEmptyString(authorData.id);
   if (id === null) reasons.push("missing_author_id");
-  const screenName = nonEmptyString(authorData.screen_name);
+  const screenName = parseNonEmptyString(authorData.screen_name);
   if (screenName === null) reasons.push("missing_author_handle");
-  const displayName = nonEmptyString(authorData.name);
+  const displayName = parseNonEmptyString(authorData.name);
   if (displayName === null) reasons.push("missing_author_display_name");
-  const followerCount = nonNegativeNumber(authorData.followers) ? authorData.followers : null;
-  const followingCount = nonNegativeNumber(authorData.following) ? authorData.following : null;
+  const followerCount = parseNonNegativeNumber(authorData.followers);
+  const followingCount = parseNonNegativeNumber(authorData.following);
   if (followerCount === null || followingCount === null) {
     reasons.push("missing_author_counts");
   }
@@ -330,9 +334,9 @@ export function mapAuthor(value: unknown): MappedAuthor {
     verified,
     createdAt,
   };
-  const bio = nonEmptyString(authorData.description);
+  const bio = parseNonEmptyString(authorData.description);
   if (bio !== null) author.bio = bio;
-  const avatarUrl = nonEmptyString(authorData.avatar_url);
+  const avatarUrl = parseNonEmptyString(authorData.avatar_url);
   if (avatarUrl !== null) author.avatarUrl = avatarUrl;
   return { ok: true, author };
 }
@@ -355,10 +359,14 @@ function mapMetrics(status: ProviderStatus): IngressMetrics | null {
   const reposts = status.reposts;
   const quotes = status.quotes;
   const replies = status.replies;
-  if (!nonNegativeNumber(likes) || !nonNegativeNumber(reposts) || !nonNegativeNumber(quotes) || !nonNegativeNumber(replies)) {
+  const likeCount = parseNonNegativeNumber(likes);
+  const repostCount = parseNonNegativeNumber(reposts);
+  const quoteCount = parseNonNegativeNumber(quotes);
+  const replyCount = parseNonNegativeNumber(replies);
+  if (likeCount === null || repostCount === null || quoteCount === null || replyCount === null) {
     return null;
   }
-  return { likes, retweets: reposts, quotes, replies };
+  return { likes: likeCount, retweets: repostCount, quotes: quoteCount, replies: replyCount };
 }
 
 function mapMedia(value: ProviderStatus["media"]): IngressMedia[] | null {
@@ -367,7 +375,7 @@ function mapMedia(value: ProviderStatus["media"]): IngressMedia[] | null {
   const out: IngressMedia[] = [];
   const seen = new Set<string>();
   for (const item of value.all) {
-    const url = nonEmptyString(item.url);
+    const url = parseNonEmptyString(item.url);
     if (url === null) return null;
     let type: IngressMedia["type"];
     switch (item.type) {
@@ -393,17 +401,17 @@ function mapMedia(value: ProviderStatus["media"]): IngressMedia[] | null {
 
 function mapInReplyTo(status: ProviderStatus): string | null {
   if (status.replying_to !== undefined && status.replying_to !== null) {
-    const parent = nonEmptyString(status.replying_to.status);
+    const parent = parseNonEmptyString(status.replying_to.status);
     if (parent !== null) return parent;
   }
   if (Array.isArray(status.replying_to_status)) {
     const first = status.replying_to_status[0];
     if (typeof first === "object" && first !== null && !Array.isArray(first)) {
-      return nonEmptyString(first.id);
+      return parseNonEmptyString(first.id);
     }
-    return nonEmptyString(first);
+    return parseNonEmptyString(first);
   }
-  return nonEmptyString(status.replying_to_status);
+  return parseNonEmptyString(status.replying_to_status);
 }
 
 function mapEntities(rawText: ProviderStatus["raw_text"]): IngressEntities | null {
@@ -412,9 +420,9 @@ function mapEntities(rawText: ProviderStatus["raw_text"]): IngressEntities | nul
   const mentions: string[] = [];
   const urls: string[] = [];
   for (const facet of rawText.facets) {
-    if (facet.type === "hashtag") pushUnique(hashtags, nonEmptyString(facet.original)?.replace(/^#/, ""));
-    else if (facet.type === "mention") pushUnique(mentions, nonEmptyString(facet.original)?.replace(/^@/, ""));
-    else if (facet.type === "url") pushUnique(urls, nonEmptyString(facet.replacement) ?? nonEmptyString(facet.original));
+    if (facet.type === "hashtag") pushUnique(hashtags, parseNonEmptyString(facet.original)?.replace(/^#/, ""));
+    else if (facet.type === "mention") pushUnique(mentions, parseNonEmptyString(facet.original)?.replace(/^@/, ""));
+    else if (facet.type === "url") pushUnique(urls, parseNonEmptyString(facet.replacement) ?? parseNonEmptyString(facet.original));
   }
   return { hashtags, mentions, urls };
 }
@@ -452,20 +460,14 @@ function dedupe<T>(values: T[]): T[] {
 }
 
 export function timestampMilliseconds(value: unknown): number | null {
-  if (!nonNegativeNumber(value) || value === 0) return null;
-  return value >= 1_000_000_000_000 ? Math.round(value) : Math.round(value * 1_000);
+  const timestamp = parseNonNegativeNumber(value);
+  if (timestamp === null || timestamp === 0) return null;
+  return timestamp >= 1_000_000_000_000 ? Math.round(timestamp) : Math.round(timestamp * 1_000);
 }
 
 export function dateMilliseconds(value: unknown): number | null {
-  if (typeof value !== "string") return null;
-  const parsed = Date.parse(value);
+  const date = parseNonEmptyString(value);
+  if (date === null) return null;
+  const parsed = Date.parse(date);
   return Number.isFinite(parsed) ? parsed : null;
-}
-
-function nonNegativeNumber(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0;
-}
-
-function nonEmptyString(value: unknown): string | null {
-  return typeof value === "string" && value.trim().length > 0 ? value : null;
 }

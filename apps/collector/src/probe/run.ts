@@ -9,6 +9,10 @@ import type {
   TimelineRequest,
   TimelineResponse,
 } from "../acquisition/fxtwitter.ts";
+import {
+  parseNonEmptyString,
+  parseNonNegativeNumber,
+} from "../contracts/primitives.ts";
 import { parseProviderStatus, type ProviderStatus } from "../normalization/mapping.ts";
 
 const CHECKPOINT_VERSION = 1;
@@ -253,7 +257,7 @@ export function analyzeTimelinePage(
       continue;
     }
 
-    const id = nonEmptyString(status.id);
+    const id = parseNonEmptyString(status.id);
     if (id === null) {
       increment(missingRequiredFields, "id");
     } else if (seenTweetIds.has(id)) {
@@ -306,7 +310,7 @@ export function analyzeTimelinePage(
 function missingIngressFields(status: ProviderStatus): string[] {
   const missing: string[] = [];
   requireValue(missing, "type", status.type === "status");
-  requireValue(missing, "text", nonEmptyString(status.text) !== null);
+  requireValue(missing, "text", parseNonEmptyString(status.text) !== null);
   requireValue(missing, "created_timestamp", timestampMilliseconds(status.created_timestamp) !== null);
   const metrics = [
     ["likes", status.likes],
@@ -315,17 +319,17 @@ function missingIngressFields(status: ProviderStatus): string[] {
     ["replies", status.replies],
   ] as const;
   for (const [metric, value] of metrics) {
-    requireValue(missing, metric, nonNegativeNumber(value));
+    requireValue(missing, metric, parseNonNegativeNumber(value) !== null);
   }
 
   if (status.author === undefined || status.author === null) {
     missing.push("author");
   } else {
-    requireValue(missing, "author.id", nonEmptyString(status.author.id) !== null);
-    requireValue(missing, "author.screen_name", nonEmptyString(status.author.screen_name) !== null);
-    requireValue(missing, "author.name", nonEmptyString(status.author.name) !== null);
-    requireValue(missing, "author.followers", nonNegativeNumber(status.author.followers));
-    requireValue(missing, "author.following", nonNegativeNumber(status.author.following));
+    requireValue(missing, "author.id", parseNonEmptyString(status.author.id) !== null);
+    requireValue(missing, "author.screen_name", parseNonEmptyString(status.author.screen_name) !== null);
+    requireValue(missing, "author.name", parseNonEmptyString(status.author.name) !== null);
+    requireValue(missing, "author.followers", parseNonNegativeNumber(status.author.followers) !== null);
+    requireValue(missing, "author.following", parseNonNegativeNumber(status.author.following) !== null);
     requireValue(missing, "author.joined", dateMilliseconds(status.author.joined) !== null);
     requireValue(missing, "author.verification.verified", status.author.verification?.verified === true || status.author.verification?.verified === false);
   }
@@ -461,7 +465,7 @@ async function writeJson(path: string, value: unknown): Promise<void> {
 }
 
 function validateOptions(options: ProbeOptions): void {
-  if (nonEmptyString(options.handle) === null) throw new Error("handle is required");
+  if (parseNonEmptyString(options.handle) === null) throw new Error("handle is required");
   if (!Number.isInteger(options.pages) || options.pages < 1) {
     throw new Error("pages must be a positive integer");
   }
@@ -479,22 +483,16 @@ function cursorFingerprint(cursor: string | null): string | null {
 }
 
 function timestampMilliseconds(value: unknown): number | null {
-  if (!nonNegativeNumber(value)) return null;
-  return value >= 1_000_000_000_000 ? value : value * 1_000;
+  const timestamp = parseNonNegativeNumber(value);
+  if (timestamp === null) return null;
+  return timestamp >= 1_000_000_000_000 ? timestamp : timestamp * 1_000;
 }
 
 function dateMilliseconds(value: unknown): number | null {
-  if (typeof value !== "string") return null;
-  const parsed = Date.parse(value);
+  const date = parseNonEmptyString(value);
+  if (date === null) return null;
+  const parsed = Date.parse(date);
   return Number.isFinite(parsed) ? parsed : null;
-}
-
-function nonNegativeNumber(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0;
-}
-
-function nonEmptyString(value: unknown): string | null {
-  return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
 function requireValue(missing: string[], field: string, present: boolean): void {

@@ -5,6 +5,7 @@
 import { join } from "node:path";
 import type { NormalizationCounts } from "../normalization/normalize.ts";
 import type { PageMeta } from "../normalization/normalize.ts";
+import { mean, percentile } from "../contracts/statistics.ts";
 import { accountRawDirectory, pageMetaFileName, readJson, type RunPaths } from "./layout.ts";
 import type { Manifest } from "./manifest.ts";
 
@@ -170,15 +171,4 @@ export async function buildReport(paths: RunPaths, manifest: Manifest, counts: N
 
 function check(name: string, value: number | string | null, bound: string, passed: boolean | null): ThresholdCheck {
   return { name, value: typeof value === "number" ? Math.round(value * 10_000) / 10_000 : value, bound, passed };
-}
-
-function mean(values: number[]): number | null {
-  if (values.length === 0) return null;
-  return values.reduce((sum, value) => sum + value, 0) / values.length;
-}
-
-function percentile(sorted: number[], fraction: number): number | null {
-  if (sorted.length === 0) return null;
-  const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil(fraction * sorted.length) - 1));
-  return sorted[index] ?? null;
 }

@@ -17,6 +17,12 @@ import {
   type ProviderStatus,
 } from "../normalization/mapping.ts";
 import type { RawPageInput } from "../normalization/normalize.ts";
+import {
+  formatCount,
+  normalizeHandle,
+  parseFiniteNumber,
+  parseNonEmptyString,
+} from "../contracts/primitives.ts";
 
 export type InteractionKind = "reply" | "quote" | "repost" | "mention";
 
@@ -67,7 +73,7 @@ export function discoverFromPages(pages: RawPageInput[], options: DiscoveryOptio
     const parsed = parseProviderAuthor(author);
     if (parsed === null) return;
     const id = parsed.id ?? null;
-    const handle = lower(parsed.screen_name ?? null);
+    const handle = normalizeHandle(parseNonEmptyString(parsed.screen_name ?? null));
     if (id !== null && handle !== null) handleToId.set(handle, id);
   };
 
@@ -104,9 +110,9 @@ export function discoverFromPages(pages: RawPageInput[], options: DiscoveryOptio
     bucket.seeds.add(seed);
     bucket.interactions[kind] += 1;
     if (author !== undefined && author !== null) {
-      bucket.displayName = str(author.name) ?? bucket.displayName;
-      bucket.followers = num(author.followers) ?? bucket.followers;
-      bucket.statuses = num(author.statuses) ?? bucket.statuses;
+      bucket.displayName = parseNonEmptyString(author.name) ?? bucket.displayName;
+      bucket.followers = parseFiniteNumber(author.followers) ?? bucket.followers;
+      bucket.statuses = parseFiniteNumber(author.statuses) ?? bucket.statuses;
     }
   };
 
@@ -121,8 +127,8 @@ export function discoverFromPages(pages: RawPageInput[], options: DiscoveryOptio
       learn(status.reposted_by);
       for (const facet of facets(status)) {
         if (facet.type === "mention") {
-          const id = str(facet.id);
-          const handle = lower(str(facet.original));
+          const id = parseNonEmptyString(facet.id);
+          const handle = normalizeHandle(parseNonEmptyString(facet.original));
           if (id !== null && handle !== null) handleToId.set(handle, id);
         }
       }
@@ -136,24 +142,32 @@ export function discoverFromPages(pages: RawPageInput[], options: DiscoveryOptio
       const status = parseProviderStatus(row);
       const author = status?.author;
       if (status === null || author === null || author === undefined) continue;
-      const authorId = str(author.id);
+      const authorId = parseNonEmptyString(author.id);
       const repostedAuthor = parseProviderAuthor(status.reposted_by);
       const reposted = repostedAuthor !== null && repostedAuthor.id === seed;
       if (reposted) {
-        record(bucketFor(authorId, lower(str(author.screen_name))), seed, "repost", author);
+        record(
+          bucketFor(authorId, normalizeHandle(parseNonEmptyString(author.screen_name))),
+          seed,
+          "repost",
+          author,
+        );
         continue;
       }
       if (authorId !== seed) continue;
 
       if (status.replying_to !== undefined && status.replying_to !== null) {
-        const handle = lower(status.replying_to.screen_name ?? null);
+        const handle = normalizeHandle(parseNonEmptyString(status.replying_to.screen_name));
         record(bucketFor(null, handle), seed, "reply");
       }
       const quote = parseProviderStatus(status.quote);
       if (quote?.type === "status" && quote.author !== undefined && quote.author !== null) {
         const quoteAuthor = parseProviderAuthor(quote.author);
         record(
-          bucketFor(quoteAuthor?.id ?? null, lower(quoteAuthor?.screen_name ?? null)),
+          bucketFor(
+            quoteAuthor?.id ?? null,
+            normalizeHandle(parseNonEmptyString(quoteAuthor?.screen_name)),
+          ),
           seed,
           "quote",
           quoteAuthor,
@@ -162,12 +176,12 @@ export function discoverFromPages(pages: RawPageInput[], options: DiscoveryOptio
       const replyTarget =
         status.replying_to === undefined || status.replying_to === null
           ? null
-          : lower(status.replying_to.screen_name ?? null);
+          : normalizeHandle(parseNonEmptyString(status.replying_to.screen_name));
       for (const facet of facets(status)) {
         if (facet.type !== "mention") continue;
-        const handle = lower(str(facet.original));
+        const handle = normalizeHandle(parseNonEmptyString(facet.original));
         if (handle === null || handle === replyTarget) continue;
-        record(bucketFor(str(facet.id), handle), seed, "mention");
+        record(bucketFor(parseNonEmptyString(facet.id), handle), seed, "mention");
       }
     }
   }
@@ -266,7 +280,7 @@ export function renderMarkdown(candidates: DiscoveryCandidate[], minSeeds: numbe
       candidate.statuses !== null && candidate.statuses < 250 ? "<250 posts" : "",
     ].filter(Boolean);
     lines.push(
-      `| ${index + 1} | \`${candidate.handle ?? "?"}\` | ${candidate.userId ? `\`${candidate.userId}\`` : "—"} | ${candidate.seeds.length} | ${candidate.interactions.reply} | ${candidate.interactions.quote} | ${candidate.interactions.repost} | ${candidate.interactions.mention} | ${fmt(candidate.followers)} | ${fmt(candidate.statuses)} | ${flags.join(", ")} |`,
+      `| ${index + 1} | \`${candidate.handle ?? "?"}\` | ${candidate.userId ? `\`${candidate.userId}\`` : "—"} | ${candidate.seeds.length} | ${candidate.interactions.reply} | ${candidate.interactions.quote} | ${candidate.interactions.repost} | ${candidate.interactions.mention} | ${formatCount(candidate.followers)} | ${formatCount(candidate.statuses)} | ${flags.join(", ")} |`,
     );
   });
   return `${lines.join("\n")}\n`;
@@ -301,20 +315,4 @@ function facets(row: ProviderStatus): ReadonlyArray<ProviderFacet> {
 
 function total(candidate: DiscoveryCandidate): number {
   return Object.values(candidate.interactions).reduce((sum, value) => sum + value, 0);
-}
-
-function fmt(value: number | null): string {
-  return value === null ? "—" : value.toLocaleString("en-US");
-}
-
-function str(value: unknown): string | null {
-  return typeof value === "string" && value.length > 0 ? value : null;
-}
-
-function lower(value: string | null): string | null {
-  return value === null ? null : value.replace(/^@/, "").toLowerCase();
-}
-
-function num(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
