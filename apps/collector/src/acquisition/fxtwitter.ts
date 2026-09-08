@@ -51,6 +51,8 @@ export interface FxTwitterProfile {
   screenName: string;
   name: string;
   protected: boolean;
+  followers?: number;
+  statuses?: number;
 }
 
 export interface TimelineRequest {
@@ -120,14 +122,17 @@ const TimelinePageSchema = Schema.Struct({
   }),
 });
 
-const ProfileEnvelopeSchema = Schema.Struct({
+export const FxTwitterProfileEnvelopeSchema = Schema.Struct({
   user: Schema.Struct({
     id: Schema.String.check(Schema.isMinLength(1)),
     screen_name: Schema.String,
     name: Schema.optional(Schema.String),
     protected: Schema.optional(Schema.Boolean),
+    followers: Schema.optional(Schema.Number),
+    statuses: Schema.optional(Schema.Number),
   }),
 });
+export type FxTwitterProfileEnvelope = Schema.Schema.Type<typeof FxTwitterProfileEnvelopeSchema>;
 
 interface RawResponse {
   httpStatus: number;
@@ -302,13 +307,16 @@ export function parseTimelinePage(value: unknown): FxTwitterTimelinePage {
 
 export function parseProfile(value: unknown): FxTwitterProfile {
   try {
-    const envelope = Schema.decodeUnknownSync(ProfileEnvelopeSchema)(value);
-    return {
+    const envelope = Schema.decodeUnknownSync(FxTwitterProfileEnvelopeSchema)(value);
+    const profile: FxTwitterProfile = {
       id: envelope.user.id,
       screenName: envelope.user.screen_name,
       name: envelope.user.name ?? "",
       protected: envelope.user.protected ?? false,
     };
+    if (envelope.user.followers !== undefined) profile.followers = envelope.user.followers;
+    if (envelope.user.statuses !== undefined) profile.statuses = envelope.user.statuses;
+    return profile;
   } catch (cause) {
     throw decodeError(cause, "profile");
   }

@@ -2,9 +2,20 @@
 // Evidence comes only from retained raw pages of finished or running seed runs.
 // Output is a ranked report for human approval; admission is never automatic.
 
-import type { PilotClient } from "../acquisition/fxtwitter.ts";
+import { Option } from "effect";
+import * as Schema from "effect/Schema";
+import {
+  FxTwitterProfileEnvelopeSchema,
+  type PilotClient,
+} from "../acquisition/fxtwitter.ts";
 import type { PilotAccount, PilotConfig } from "../config/pilot.ts";
-import { isRecord } from "../normalization/mapping.ts";
+import {
+  parseProviderAuthor,
+  parseProviderStatus,
+  type ProviderAuthor,
+  type ProviderFacet,
+  type ProviderStatus,
+} from "../normalization/mapping.ts";
 import type { RawPageInput } from "../normalization/normalize.ts";
 
 export type InteractionKind = "reply" | "quote" | "repost" | "mention";
@@ -53,9 +64,10 @@ export function discoverFromPages(pages: RawPageInput[], options: DiscoveryOptio
   const seedIds = new Set(options.seeds.map((seed) => seed.userId));
 
   const learn = (author: unknown): void => {
-    if (!isRecord(author)) return;
-    const id = str(author.id);
-    const handle = lower(str(author.screen_name));
+    const parsed = parseProviderAuthor(author);
+    if (parsed === null) return;
+    const id = parsed.id ?? null;
+    const handle = lower(parsed.screen_name ?? null);
     if (id !== null && handle !== null) handleToId.set(handle, id);
   };
 
@@ -87,26 +99,27 @@ export function discoverFromPages(pages: RawPageInput[], options: DiscoveryOptio
     return bucket;
   };
 
-  const record = (bucket: Bucket | null, seed: string, kind: InteractionKind, author?: unknown): void => {
+  const record = (bucket: Bucket | null, seed: string, kind: InteractionKind, author?: ProviderAuthor | null): void => {
     if (bucket === null) return;
     bucket.seeds.add(seed);
     bucket.interactions[kind] += 1;
-    if (isRecord(author)) {
+    if (author !== undefined && author !== null) {
       bucket.displayName = str(author.name) ?? bucket.displayName;
       bucket.followers = num(author.followers) ?? bucket.followers;
       bucket.statuses = num(author.statuses) ?? bucket.statuses;
-      bucket.protected = typeof author.protected === "boolean" ? author.protected : bucket.protected;
     }
   };
 
   // Pass 1: learn every handle -> id pair the pages expose, so reply handles resolve.
   for (const page of pages) {
     for (const row of page.results) {
-      if (!isRecord(row)) continue;
-      learn(row.author);
-      if (isRecord(row.quote)) learn(row.quote.author);
-      if (isRecord(row.reposted_by)) learn(row.reposted_by);
-      for (const facet of facets(row)) {
+      const status = parseProviderStatus(row);
+      if (status === null) continue;
+      learn(status.author);
+      const quote = parseProviderStatus(status.quote);
+      learn(quote?.author);
+      learn(status.reposted_by);
+      for (const facet of facets(status)) {
         if (facet.type === "mention") {
           const id = str(facet.id);
           const handle = lower(str(facet.original));
@@ -120,24 +133,37 @@ export function discoverFromPages(pages: RawPageInput[], options: DiscoveryOptio
   for (const page of pages) {
     const seed = page.accountUserId;
     for (const row of page.results) {
-      if (!isRecord(row) || !isRecord(row.author)) continue;
-      const authorId = str(row.author.id);
-      const reposted = isRecord(row.reposted_by) && str(row.reposted_by.id) === seed;
+      const status = parseProviderStatus(row);
+      const author = status?.author;
+      if (status === null || author === null || author === undefined) continue;
+      const authorId = str(author.id);
+      const repostedAuthor = parseProviderAuthor(status.reposted_by);
+      const reposted = repostedAuthor !== null && repostedAuthor.id === seed;
       if (reposted) {
-        record(bucketFor(authorId, lower(str(row.author.screen_name))), seed, "repost", row.author);
+        record(bucketFor(authorId, lower(str(author.screen_name))), seed, "repost", author);
         continue;
       }
       if (authorId !== seed) continue;
 
-      if (isRecord(row.replying_to)) {
-        const handle = lower(str(row.replying_to.screen_name));
+      if (status.replying_to !== undefined && status.replying_to !== null) {
+        const handle = lower(status.replying_to.screen_name ?? null);
         record(bucketFor(null, handle), seed, "reply");
       }
-      if (isRecord(row.quote) && row.quote.type === "status" && isRecord(row.quote.author)) {
-        record(bucketFor(str(row.quote.author.id), lower(str(row.quote.author.screen_name))), seed, "quote", row.quote.author);
+      const quote = parseProviderStatus(status.quote);
+      if (quote?.type === "status" && quote.author !== undefined && quote.author !== null) {
+        const quoteAuthor = parseProviderAuthor(quote.author);
+        record(
+          bucketFor(quoteAuthor?.id ?? null, lower(quoteAuthor?.screen_name ?? null)),
+          seed,
+          "quote",
+          quoteAuthor,
+        );
       }
-      const replyTarget = isRecord(row.replying_to) ? lower(str(row.replying_to.screen_name)) : null;
-      for (const facet of facets(row)) {
+      const replyTarget =
+        status.replying_to === undefined || status.replying_to === null
+          ? null
+          : lower(status.replying_to.screen_name ?? null);
+      for (const facet of facets(status)) {
         if (facet.type !== "mention") continue;
         const handle = lower(str(facet.original));
         if (handle === null || handle === replyTarget) continue;
@@ -193,10 +219,12 @@ export async function resolveCandidates(
       candidate.handle = response.profile.screenName.toLowerCase();
       candidate.displayName = response.profile.name;
       candidate.protected = response.profile.protected;
-      const user = isRecord(response.raw) && isRecord(response.raw.user) ? response.raw.user : null;
-      if (user !== null) {
-        candidate.followers = num(user.followers) ?? candidate.followers;
-        candidate.statuses = num(user.statuses) ?? candidate.statuses;
+      candidate.followers = response.profile.followers ?? candidate.followers;
+      candidate.statuses = response.profile.statuses ?? candidate.statuses;
+      const envelope = Schema.decodeUnknownOption(FxTwitterProfileEnvelopeSchema)(response.raw);
+      if (Option.isSome(envelope)) {
+        candidate.followers = envelope.value.user.followers ?? candidate.followers;
+        candidate.statuses = envelope.value.user.statuses ?? candidate.statuses;
       }
       candidate.resolution = "resolved";
     } catch (error) {
@@ -266,10 +294,9 @@ function mergeInto(target: Bucket, source: Bucket): void {
   target.protected ??= source.protected;
 }
 
-function facets(row: Record<string, unknown>): Record<string, unknown>[] {
+function facets(row: ProviderStatus): ReadonlyArray<ProviderFacet> {
   const rawText = row.raw_text;
-  if (!isRecord(rawText) || !Array.isArray(rawText.facets)) return [];
-  return rawText.facets.filter(isRecord);
+  return rawText?.facets === undefined ? [] : rawText.facets;
 }
 
 function total(candidate: DiscoveryCandidate): number {

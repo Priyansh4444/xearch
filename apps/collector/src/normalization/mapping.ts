@@ -18,10 +18,12 @@ const ProviderAuthorSchema = Schema.Struct({
   name: Schema.optional(Schema.String),
   followers: Schema.optional(Schema.Number),
   following: Schema.optional(Schema.Number),
+  statuses: Schema.optional(Schema.Number),
   joined: Schema.optional(Schema.Unknown),
   verification: Schema.optional(Schema.NullOr(ProviderVerificationSchema)),
   description: Schema.optional(Schema.String),
   avatar_url: Schema.optional(Schema.String),
+  protected: Schema.optional(Schema.Boolean),
 });
 
 const ProviderMediaItemSchema = Schema.Struct({
@@ -35,6 +37,7 @@ const ProviderMediaSchema = Schema.Struct({
 
 const ProviderFacetSchema = Schema.Struct({
   type: Schema.optional(Schema.String),
+  id: Schema.optional(Schema.String),
   original: Schema.optional(Schema.String),
   replacement: Schema.optional(Schema.String),
 });
@@ -58,7 +61,12 @@ const ProviderStatusSchema = Schema.Struct({
     Schema.NullOr(Schema.Struct({ facets: Schema.optional(Schema.Array(ProviderFacetSchema)) })),
   ),
   replying_to: Schema.optional(
-    Schema.NullOr(Schema.Struct({ status: Schema.optional(Schema.String) })),
+    Schema.NullOr(
+      Schema.Struct({
+        screen_name: Schema.optional(Schema.String),
+        status: Schema.optional(Schema.String),
+      }),
+    ),
   ),
   replying_to_status: Schema.optional(
     Schema.NullOr(
@@ -70,8 +78,19 @@ const ProviderStatusSchema = Schema.Struct({
   ),
 });
 
-type ProviderStatus = Schema.Schema.Type<typeof ProviderStatusSchema>;
-type ProviderAuthor = Schema.Schema.Type<typeof ProviderAuthorSchema>;
+export type ProviderStatus = Schema.Schema.Type<typeof ProviderStatusSchema>;
+export type ProviderAuthor = Schema.Schema.Type<typeof ProviderAuthorSchema>;
+export type ProviderFacet = Schema.Schema.Type<typeof ProviderFacetSchema>;
+
+export function parseProviderStatus(value: unknown): ProviderStatus | null {
+  const status = Schema.decodeUnknownOption(ProviderStatusSchema)(value);
+  return Option.isSome(status) ? status.value : null;
+}
+
+export function parseProviderAuthor(value: unknown): ProviderAuthor | null {
+  const author = Schema.decodeUnknownOption(ProviderAuthorSchema)(value);
+  return Option.isSome(author) ? author.value : null;
+}
 
 export interface CandidateContext {
   /** Numeric id of the seed account whose timeline this page belongs to. */
@@ -190,11 +209,11 @@ export type MappedCandidate = MappedTweet | RejectedCandidate;
 
 /** Map one provider status (timeline row or embedded quote) and everything nested in it. */
 export function mapStatus(value: unknown, context: CandidateContext): MappedCandidate {
-  const status = Schema.decodeUnknownOption(ProviderStatusSchema)(value);
-  if (Option.isNone(status) || status.value.type !== "status") {
+  const status = parseProviderStatus(value);
+  if (status === null || status.type !== "status") {
     return reject(context, null, ["invalid_response_shape"], []);
   }
-  return mapProviderStatus(status.value, context);
+  return mapProviderStatus(status, context);
 }
 
 function mapProviderStatus(value: ProviderStatus, context: CandidateContext): MappedCandidate {
@@ -268,9 +287,8 @@ export type MappedAuthor = { ok: true; author: IngressAuthor } | { ok: false; re
 
 /** Map an embedded provider author (status.author or profile user). */
 export function mapAuthor(value: unknown): MappedAuthor {
-  const authorValue = Schema.decodeUnknownOption(ProviderAuthorSchema)(value);
-  if (Option.isNone(authorValue)) return { ok: false, reasons: ["missing_author"] };
-  const authorData = authorValue.value;
+  const authorData = parseProviderAuthor(value);
+  if (authorData === null) return { ok: false, reasons: ["missing_author"] };
   const reasons: RejectionCode[] = [];
 
   const id = nonEmptyString(authorData.id);
@@ -321,10 +339,10 @@ export function mapAuthor(value: unknown): MappedAuthor {
 
 function mapEmbedded(status: ProviderStatus, context: CandidateContext, parentId: string | null): MappedCandidate[] {
   const quote = status.quote;
-  const quotedStatus = Schema.decodeUnknownOption(ProviderStatusSchema)(quote);
-  if (Option.isNone(quotedStatus) || quotedStatus.value.type !== "status") return [];
+  const quotedStatus = parseProviderStatus(quote);
+  if (quotedStatus === null || quotedStatus.type !== "status") return [];
   return [
-    mapProviderStatus(quotedStatus.value, {
+    mapProviderStatus(quotedStatus, {
       ...context,
       origin: "embedded",
       parentId: parentId ?? `${context.rawFile}#${context.index}`,
