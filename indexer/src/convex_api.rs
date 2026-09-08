@@ -14,6 +14,7 @@ const MAX_ATTEMPTS: u32 = 8;
 pub struct ConvexClient {
     pub deployment_url: String, // e.g. https://something.convex.cloud
     pub deploy_key: String,
+    agent: ureq::Agent,
 }
 
 impl ConvexClient {
@@ -30,6 +31,11 @@ impl ConvexClient {
         Ok(Self {
             deployment_url: deployment_url.trim_end_matches('/').to_string(),
             deploy_key,
+            agent: ureq::AgentBuilder::new()
+                .timeout_connect(std::time::Duration::from_secs(10))
+                .timeout_read(std::time::Duration::from_secs(60))
+                .timeout_write(std::time::Duration::from_secs(60))
+                .build(),
         })
     }
 
@@ -79,7 +85,9 @@ impl ConvexClient {
             if attempt > 0 {
                 std::thread::sleep(std::time::Duration::from_millis(backoff_ms(attempt)));
             }
-            let response = ureq::post(&url)
+            let response = self
+                .agent
+                .post(&url)
                 .set("Authorization", &format!("Convex {}", self.deploy_key))
                 .send_json(&body);
             match response {
@@ -92,6 +100,9 @@ impl ConvexClient {
                                 .get("value")
                                 .cloned()
                                 .ok_or_else(|| eyre!("successful Convex reply has no value"))
+                        }
+                        Some(status) if is_occ_conflict(&reply) => {
+                            last_error = format!("Convex OCC conflict: {status}: {reply}");
                         }
                         _ => {
                             // Function-level errors (validator rejection, JS throw)
@@ -117,6 +128,13 @@ impl ConvexClient {
             "convex mutation {path} failed after {MAX_ATTEMPTS} attempts; last error: {last_error}"
         )
     }
+}
+
+fn is_occ_conflict(reply: &serde_json::Value) -> bool {
+    let text = reply.to_string().to_ascii_lowercase();
+    text.contains("optimistic concurrency")
+        || text.contains("occ conflict")
+        || text.contains("write conflict")
 }
 
 /// Exponential backoff with deterministic-enough jitter (nanosecond clock — no

@@ -29,6 +29,12 @@ test("repeated weak triggers do not count as content", () => {
   expect(mapAspects(["cheap", "laptop"], "")).toContain("~price");
 });
 
+test("invalid absolute dates remain visible instead of rolling over", async () => {
+  const { xq, trace } = await tierB(tierA("since:2026-13-45 linux"), deps);
+  expect(xq.filters.since).toBeNull();
+  expect(trace.leftover).toContain("since:2026-13-45");
+});
+
 const deps: TierBDeps = {
   async resolveEntity(ngram) {
     const joined = ngram.join("");

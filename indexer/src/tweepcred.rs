@@ -53,6 +53,15 @@ pub fn tweepcred(graph: &InteractionGraph) -> HashMap<String, f64> {
             .iter()
             .map(|node| ((*node).clone(), JUMP_PROB * initial))
             .collect();
+        let dangling_mass: f64 = nodes
+            .iter()
+            .filter(|&&node| graph.edges.get(node).is_none_or(Vec::is_empty))
+            .map(|node| scores.get(*node).copied().unwrap_or(0.0))
+            .sum();
+        let redistributed_dangling = (1.0 - JUMP_PROB) * dangling_mass * initial;
+        for value in next.values_mut() {
+            *value += redistributed_dangling;
+        }
         for (source, edges) in &graph.edges {
             let mass = scores.get(source).copied().unwrap_or(0.0);
             let total_weight: f64 = edges.iter().map(|(_, weight)| *weight).sum();

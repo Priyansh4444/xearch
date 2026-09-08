@@ -283,8 +283,13 @@ function Typeahead({ input, onPick }: { input: string; onPick: (q: string) => vo
         .filter((s) => s.term !== lastWord)
         .slice(0, 5)
         .map((s) => (
-          <li key={s.term} role="option">
-            <button type="button" onClick={() => onPick(complete(s.term))}>
+          <li key={s.term}>
+            <button
+              type="button"
+              role="option"
+              aria-selected={false}
+              onClick={() => onPick(complete(s.term))}
+            >
               {complete(s.term)}
               <span className="df">{s.df}</span>
             </button>

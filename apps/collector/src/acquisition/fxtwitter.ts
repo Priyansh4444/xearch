@@ -3,6 +3,8 @@
 // records; that is normalization's job (apps/collector/src/normalization).
 
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
+import * as Data from "effect/Data";
 
 const DEFAULT_BASE_URL = "https://api.fxtwitter.com";
 const USER_AGENT = "xearch-collection-pilot/0.2";
@@ -14,9 +16,12 @@ export interface FxTwitterCursor {
 
 export interface FxTwitterTimelinePage {
   code: number;
-  results: unknown[];
+  results: ReadonlyArray<FxTwitterTimelineResult>;
   cursor: FxTwitterCursor;
 }
+
+const TimelineResultSchema = Schema.JsonObject;
+export type FxTwitterTimelineResult = Schema.Schema.Type<typeof TimelineResultSchema>;
 
 /** Minimal profile fields acquisition needs for identity resolution. */
 export interface FxTwitterProfile {
@@ -74,24 +79,33 @@ export interface FxTwitterClientOptions {
   now?: () => number;
 }
 
-export class FxTwitterError extends Error {
-  readonly _tag = "FxTwitterError";
+export type FxTwitterErrorKind = "transport" | "http" | "decode";
+
+export class FxTwitterError extends Data.TaggedError("FxTwitterError")<{
+  readonly message: string;
   readonly status: number | null;
   readonly responseBody: string | null;
+  readonly kind: FxTwitterErrorKind;
+  readonly retryDelay: number;
+}> {}
 
-  constructor(
-    message: string,
-    status: number | null,
-    responseBody: string | null,
-    readonly kind: "transport" | "http" | "decode" = "decode",
-    readonly retryDelay: number = 0,
-  ) {
-    super(message);
-    this.name = "FxTwitterError";
-    this.status = status;
-    this.responseBody = responseBody;
-  }
-}
+const TimelinePageSchema = Schema.Struct({
+  code: Schema.Number,
+  results: Schema.Array(TimelineResultSchema),
+  cursor: Schema.Struct({
+    top: Schema.NullOr(Schema.String),
+    bottom: Schema.NullOr(Schema.String),
+  }),
+});
+
+const ProfileEnvelopeSchema = Schema.Struct({
+  user: Schema.Struct({
+    id: Schema.String,
+    screen_name: Schema.String,
+    name: Schema.optional(Schema.String),
+    protected: Schema.optional(Schema.Boolean),
+  }),
+});
 
 interface RawResponse {
   httpStatus: number;
@@ -209,13 +223,13 @@ export class FxTwitterClient implements PilotClient {
           };
         }
         if (!response.ok) {
-          throw new FxTwitterError(
-            `FxTwitter returned HTTP ${response.status}`,
-            response.status,
-            bodyText,
-            "http",
-            retryDelayMs(response, attempt, this.retryBaseDelayMs),
-          );
+          throw new FxTwitterError({
+            message: `FxTwitter returned HTTP ${response.status}`,
+            status: response.status,
+            responseBody: bodyText,
+            kind: "http",
+            retryDelay: retryDelayMs(response, attempt, this.retryBaseDelayMs),
+          });
         }
         return {
           httpStatus: response.status,
@@ -225,13 +239,13 @@ export class FxTwitterClient implements PilotClient {
           bodyText,
         };
         },
-        catch: (cause) => cause instanceof FxTwitterError ? cause : new FxTwitterError(
-          `FxTwitter request failed on attempt ${attempt}: ${errorMessage(cause)}`,
-          null,
-          null,
-          "transport",
-          exponentialDelayMs(attempt, this.retryBaseDelayMs),
-        ),
+        catch: (cause) => cause instanceof FxTwitterError ? cause : new FxTwitterError({
+          message: `FxTwitter request failed on attempt ${attempt}: ${errorMessage(cause)}`,
+          status: null,
+          responseBody: null,
+          kind: "transport",
+          retryDelay: exponentialDelayMs(attempt, this.retryBaseDelayMs),
+        }),
       });
       return Effect.retry(once, {
         while: (error) => {
@@ -242,7 +256,13 @@ export class FxTwitterClient implements PilotClient {
           if (sleep === undefined) return Effect.as(Effect.sleep(error.retryDelay), true);
           return Effect.as(Effect.tryPromise({
             try: () => sleep(error.retryDelay),
-            catch: (cause) => new FxTwitterError(`Retry wait failed: ${errorMessage(cause)}`, null, null, "transport"),
+            catch: (cause) => new FxTwitterError({
+              message: `Retry wait failed: ${errorMessage(cause)}`,
+              status: null,
+              responseBody: null,
+              kind: "transport",
+              retryDelay: 0,
+            }),
           }), true);
         },
       });
@@ -251,60 +271,44 @@ export class FxTwitterClient implements PilotClient {
 }
 
 export function parseTimelinePage(value: unknown): FxTwitterTimelinePage {
-  if (!isRecord(value)) {
-    throw new FxTwitterError("FxTwitter timeline response is not an object", 200, null);
+  try {
+    return Schema.decodeUnknownSync(TimelinePageSchema)(value);
+  } catch (cause) {
+    throw decodeError(cause, "timeline");
   }
-  if (typeof value.code !== "number" || !Number.isFinite(value.code) || !Array.isArray(value.results) || !isRecord(value.cursor)) {
-    throw new FxTwitterError(
-      "FxTwitter timeline response does not match the documented envelope",
-      200,
-      JSON.stringify(value),
-    );
-  }
-
-  return {
-    code: value.code,
-    results: value.results,
-    cursor: {
-      top: nullableString(value.cursor.top, "cursor.top"),
-      bottom: nullableString(value.cursor.bottom, "cursor.bottom"),
-    },
-  };
 }
 
 export function parseProfile(value: unknown): FxTwitterProfile {
-  if (!isRecord(value) || !isRecord(value.user)) {
-    throw new FxTwitterError("FxTwitter profile response does not contain a user", 200, JSON.stringify(value));
+  try {
+    const envelope = Schema.decodeUnknownSync(ProfileEnvelopeSchema)(value);
+    return {
+      id: envelope.user.id,
+      screenName: envelope.user.screen_name,
+      name: envelope.user.name ?? "",
+      protected: envelope.user.protected ?? false,
+    };
+  } catch (cause) {
+    throw decodeError(cause, "profile");
   }
-  const user = value.user;
-  if (typeof user.id !== "string" || user.id.length === 0 || typeof user.screen_name !== "string") {
-    throw new FxTwitterError("FxTwitter profile user lacks id or screen_name", 200, JSON.stringify(value));
-  }
-  return {
-    id: user.id,
-    screenName: user.screen_name,
-    name: typeof user.name === "string" ? user.name : "",
-    protected: user.protected === true,
-  };
-}
-
-function nullableString(value: unknown, field: string): string | null {
-  if (value === null || value === undefined) return null;
-  if (typeof value === "string") return value;
-  throw new FxTwitterError(`FxTwitter ${field} is not a string or null`, 200, null);
 }
 
 function parseJson(body: string): unknown {
   try {
-    return JSON.parse(body) as unknown;
+    return JSON.parse(body);
   } catch {
-    throw new FxTwitterError("FxTwitter returned invalid JSON", 200, body);
+    throw new FxTwitterError({
+      message: "FxTwitter returned invalid JSON",
+      status: 200,
+      responseBody: body,
+      kind: "decode",
+      retryDelay: 0,
+    });
   }
 }
 
 function tryParseJson(body: string): unknown {
   try {
-    return JSON.parse(body) as unknown;
+    return JSON.parse(body);
   } catch {
     return body;
   }
@@ -330,16 +334,18 @@ function exponentialDelayMs(attempt: number, baseDelayMs: number): number {
   return Math.min(baseDelayMs * 2 ** (attempt - 1), 30_000);
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function decodeError(cause: unknown): FxTwitterError {
+function decodeError(cause: unknown, resource = "response"): FxTwitterError {
   return cause instanceof FxTwitterError
     ? cause
-    : new FxTwitterError(`FxTwitter decode failed: ${errorMessage(cause)}`, null, null);
+    : new FxTwitterError({
+      message: `FxTwitter ${resource} decode failed: ${errorMessage(cause)}`,
+      status: 200,
+      responseBody: null,
+      kind: "decode",
+      retryDelay: 0,
+    });
 }

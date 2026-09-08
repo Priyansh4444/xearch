@@ -186,7 +186,7 @@ impl BatchBuilder {
         // ~100 tweets per batch (ingest.ts header), AND a df-term budget: ingestBatch
         // does one indexed read per df delta and Convex caps a mutation at 4096
         // reads, so dense/unique-vocab stretches flush early.
-        self.tweets.len() >= 100 || self.df.len() >= 1500
+        self.tweets.len() >= 100 || self.authors.len() >= 100 || self.df.len() >= 1500
     }
 
     #[must_use]

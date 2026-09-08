@@ -7,6 +7,7 @@
 
 use crate::extended_pictographic::EXTENDED_PICTOGRAPHIC;
 use std::collections::HashMap;
+use unicode_general_category::{get_general_category, GeneralCategory};
 use unicode_normalization::UnicodeNormalization;
 
 pub const TOKENIZER_VERSION: u32 = 1;
@@ -42,9 +43,18 @@ const fn is_cjk(c: char) -> bool {
 }
 
 fn is_word(c: char) -> bool {
-    // Mirrors WORD_RE [\p{L}\p{N}_]: Rust's is_alphabetic/is_numeric are exactly
-    // the L* / N* general categories.
-    c.is_alphabetic() || c.is_numeric() || c == '_'
+    // Mirrors WORD_RE [\p{L}\p{N}_]. `is_alphabetic` includes Other_Alphabetic
+    // marks that JavaScript's Unicode general-category `L` does not include.
+    let category = get_general_category(c);
+    matches!(
+        category,
+        GeneralCategory::UppercaseLetter
+            | GeneralCategory::LowercaseLetter
+            | GeneralCategory::TitlecaseLetter
+            | GeneralCategory::ModifierLetter
+            | GeneralCategory::OtherLetter
+    ) || c.is_numeric()
+        || c == '_'
 }
 
 #[derive(Debug, Default)]
@@ -213,6 +223,12 @@ mod tests {
         ] {
             assert_eq!(strip_urls(input), (expected.to_owned(), has_link));
         }
+    }
+
+    #[test]
+    fn word_predicate_matches_unicode_general_category_l() {
+        let stopwords = std::collections::HashSet::new();
+        assert_eq!(tokenize("का", &stopwords).tokens, vec!["क"]);
     }
 
     #[derive(serde::Deserialize)]

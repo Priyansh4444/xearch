@@ -3,7 +3,12 @@
 // advances. Failures pause one account; they never masquerade as completion.
 
 import { join } from "node:path";
-import { FxTwitterError, type PilotClient, type TimelineResponse } from "../acquisition/fxtwitter.ts";
+import {
+  FxTwitterError,
+  type FxTwitterTimelineResult,
+  type PilotClient,
+  type TimelineResponse,
+} from "../acquisition/fxtwitter.ts";
 import type { PilotConfig } from "../config/pilot.ts";
 import type { PageMeta } from "../normalization/normalize.ts";
 import { isRecord, timestampMilliseconds } from "../normalization/mapping.ts";
@@ -288,7 +293,10 @@ async function fetchOnePage(
 }
 
 /** Creation times of top-level rows authored by the seed and not reposted (Q20 stop rule). */
-export function authoredTimestamps(results: unknown[], userId: string): number[] {
+export function authoredTimestamps(
+  results: ReadonlyArray<FxTwitterTimelineResult>,
+  userId: string,
+): number[] {
   const out: number[] = [];
   for (const result of results) {
     if (!isRecord(result) || !isRecord(result.author)) continue;

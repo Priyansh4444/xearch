@@ -168,12 +168,20 @@ export async function tierB(
   // 2a. Operator dates recorded by Tier A (absolute or relative), now resolvable.
   const now = deps.now();
   if (px.pendingSince != null) {
-    xq.filters.since = resolveDateValue(px.pendingSince, now);
-    consume(`since:${px.pendingSince}`, "filters.since");
+    const since = resolveDateValue(px.pendingSince, now);
+    if (since === null) trace.leftover.push(`since:${px.pendingSince}`);
+    else {
+      xq.filters.since = since;
+      consume(`since:${px.pendingSince}`, "filters.since");
+    }
   }
   if (px.pendingUntil != null) {
-    xq.filters.until = resolveDateValue(px.pendingUntil, now);
-    consume(`until:${px.pendingUntil}`, "filters.until");
+    const until = resolveDateValue(px.pendingUntil, now);
+    if (until === null) trace.leftover.push(`until:${px.pendingUntil}`);
+    else {
+      xq.filters.until = until;
+      consume(`until:${px.pendingUntil}`, "filters.until");
+    }
   }
 
   // 2b. NL negation needs the raw residue ("not" is a stopword and never reaches
@@ -192,22 +200,37 @@ export async function tierB(
   //     never binds as a date; "million man march" stays three literal terms).
   applyTemporalLexicon(xq, rawRest, now, consume);
 
-  // 2d. Media lexicon: a leading media noun is a filter, not a term.
+  // 2d. Glue is removed before media detection so "show photos" recognizes
+  // "photos" as the first meaningful token.
+  const GLUE = new Set([
+    "tweets", "tweet", "posts", "post", "thread", "threads",
+    "show", "me", "find", "search", "about",
+    "say", "says", "said", "vs", "versus",
+    "what", "who", "why", "how", "when", "where", "which", "someone",
+  ]);
+  const tokensWithoutGlue = xq.must.filter((token) => !GLUE.has(token));
+  // Aspect detection intentionally sees glue words such as "vs" before
+  // retrieval removes them.
+  const tokensForAspects = [...xq.must];
+
+  // 2e. Media lexicon: a leading media noun is a filter, not a term.
   const MEDIA_NOUNS: Record<string, MediaFilter> = {
     pic: "image", pics: "image", photo: "image", photos: "image",
     screenshot: "image", screenshots: "image", image: "image", images: "image",
     video: "video", videos: "video", clip: "video", clips: "video",
     gif: "gif", gifs: "gif",
   };
-  const leading = xq.must[0];
+  const leading = tokensWithoutGlue[0];
   if (leading !== undefined && MEDIA_NOUNS[leading] !== undefined) {
     if (xq.filters.media === null) xq.filters.media = MEDIA_NOUNS[leading]!;
     xq.intent = "media";
-    xq.must = xq.must.slice(1);
+    xq.must = tokensWithoutGlue.slice(1);
     consume(leading, "filters.media");
+  } else {
+    xq.must = tokensWithoutGlue;
   }
 
-  // 2e. Question intent: interrogative shape, trailing "?", or an attribute-of
+  // 2f. Question intent: interrogative shape, trailing "?", or an attribute-of
   //     opener ("height of taj mahal" — the attribute survives as structure).
   const question = detectQuestionIntent(rawRest, xq.must);
   if (question !== null && xq.intent === "topic") xq.intent = question;
@@ -218,28 +241,14 @@ export async function tierB(
     xq.intent = "question";
   }
 
-  // 2f. Compare: "vs"/"versus" is glue AND a compare signal.
-  if (xq.must.some((t) => t === "vs" || t === "versus")) {
+  // 2g. Compare: "vs"/"versus" is glue AND a compare signal.
+  if (tokensForAspects.some((t) => t === "vs" || t === "versus")) {
     if (xq.intent === "topic") xq.intent = "compare";
   }
 
-  // 2g. Glue stripping: huge-df, zero-signal tokens vanish from must. Interrogatives
-  //     were consumed as intent; "say/said" style verbs ride along with them.
-  const GLUE = new Set([
-    "tweets", "tweet", "posts", "post", "thread", "threads",
-    "show", "me", "find", "search", "about",
-    "say", "says", "said", "vs", "versus",
-    "what", "who", "why", "how", "when", "where", "which", "someone",
-  ]);
-  // Aspect mapping (step 5) sees the pre-glue token stream: glue words like "vs"
-  // are aspect signals ("~compare") even though they never gate retrieval.
-  const tokensForAspects = [...xq.must];
-  const kept: string[] = [];
-  for (const t of xq.must) {
-    if (GLUE.has(t)) consume(t, "glue");
-    else kept.push(t);
-  }
-  xq.must = kept;
+  // Aspect mapping (step 5) sees the pre-glue token stream: glue words like
+  // "vs" are aspect signals ("~compare") even though they never gate retrieval.
+  for (const t of tokensForAspects) if (GLUE.has(t)) consume(t, "glue");
 
   // 3. Entity linking over the remaining tokens — bounded to two probes; the
   //    dominance + common-word rules live inside deps (RISKS P1). Only attempted
@@ -307,12 +316,18 @@ export async function tierB(
 }
 
 /** since:/until: operator values: absolute YYYY-MM-DD or relative Nd/Nh/Nw. */
-function resolveDateValue(val: string, now: number): number {
+function resolveDateValue(val: string, now: number): number | null {
   const abs = val.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (abs !== null) {
-    return Date.UTC(Number(abs[1]), Number(abs[2]) - 1, Number(abs[3]));
+    const year = Number(abs[1]);
+    const month = Number(abs[2]);
+    const day = Number(abs[3]);
+    const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+    if (month < 1 || month > 12 || day < 1 || day > daysInMonth) return null;
+    return Date.UTC(year, month - 1, day);
   }
-  const rel = val.match(/^(\d+)([dhw])$/)!;
+  const rel = val.match(/^(\d+)([dhw])$/);
+  if (rel === null) return null;
   const n = Number(rel[1]);
   const unitMs = { h: 3_600_000, d: 86_400_000, w: 7 * 86_400_000 }[rel[2] as "h" | "d" | "w"];
   return now - n * unitMs;

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   FxTwitterError,
+  type FxTwitterTimelineResult,
   type PilotClient,
   type ProfileResponse,
   type TimelineRequest,
@@ -137,7 +138,13 @@ describe("pilot acquisition", () => {
     const first = fakeClient({
       profiles: { seed: profile("100", "Seed"), next: profile("200", "Next") },
       timelines: {
-        "100": [new FxTwitterError("FxTwitter returned HTTP 500", 500, "boom")],
+        "100": [new FxTwitterError({
+          message: "FxTwitter returned HTTP 500",
+          status: 500,
+          responseBody: "boom",
+          kind: "decode",
+          retryDelay: 0,
+        })],
         "200": [page([row("20", "200", NOW - DAY)], null)],
       },
     });
@@ -349,7 +356,11 @@ function profile(id: string, screenName: string): ProfileResponse {
   return { httpStatus: 200, latencyMs: 20, attempts: 1, receivedAt: NOW, raw, profile: { id, screenName, name: screenName, protected: false } };
 }
 
-function page(results: unknown[], bottom: string | null, receivedAt = NOW): TimelineResponse {
+function page(
+  results: FxTwitterTimelineResult[],
+  bottom: string | null,
+  receivedAt = NOW,
+): TimelineResponse {
   const raw = { code: 200, results, cursor: { top: "t", bottom } };
   return { httpStatus: 200, latencyMs: 1_000, attempts: 1, receivedAt, raw, page: raw };
 }
@@ -362,8 +373,8 @@ function row(
   id: string,
   authorId: string,
   createdAtMs: number,
-  options: { repostedBy?: string; quotes?: Record<string, unknown>; likes?: number } = {},
-): Record<string, unknown> {
+  options: { repostedBy?: string; quotes?: FxTwitterTimelineResult; likes?: number } = {},
+): FxTwitterTimelineResult {
   return {
     type: "status",
     id,
