@@ -13,6 +13,7 @@ import {
   type PostingsRead,
   type ReadPlan,
   MIN_RESULTS,
+  PER_TERM_CAP,
   RERANK_CANDIDATES,
   phraseTerms,
 } from "./engine/plan";
@@ -93,7 +94,7 @@ export const search = query({
       via: Candidate["matchedVia"],
     ): Promise<Map<string, Match>> {
       const accepted = new Map<string, Match>();
-      for (const [id, match] of [...found].slice(0, RERANK_CANDIDATES)) {
+      for (const [id, match] of found) {
         const tweet = tweets.get(id) ?? await ctx.db.get(id as Id<"tweets">);
         if (tweet === null) continue;
         tweets.set(id, tweet);
@@ -123,15 +124,17 @@ export const search = query({
     if (allTerms.length === 0 && xq.filters.authorId !== null) {
       const rows = await ctx.db
         .query("tweets")
-        .withIndex("by_author_time", (q) => withTimeRange(
-          q.eq("authorId", xq.filters.authorId!),
-          {
-            since: xq.filters.since ?? undefined,
-            until: xq.filters.until ?? undefined,
-          },
-        ))
+        .withIndex("by_author_time", (q) => {
+          const range = q.eq("authorId", xq.filters.authorId!);
+          const since = xq.filters.since;
+          const until = xq.filters.until;
+          if (since !== null && until !== null) return range.gte("createdAt", since).lt("createdAt", until);
+          if (since !== null) return range.gte("createdAt", since);
+          if (until !== null) return range.lt("createdAt", until);
+          return range;
+        })
         .order("desc")
-        .take(RERANK_CANDIDATES);
+        .take(PER_TERM_CAP);
       for (const row of rows) tweets.set(row._id, row);
       matches = await eligible(new Map(rows.map((r) =>
         [r._id as string, { tf: new Map<string, number>() }],
@@ -216,9 +219,17 @@ async function executePlan(
     if (r.index === "by_term_author_time") {
       q = ctx.db
         .query("postings")
-        .withIndex(r.index, (ix) =>
-          withTimeRange(ix.eq("term", r.term).eq("authorId", r.eq!.authorId!), r.timeRange),
-        );
+        .withIndex(r.index, (ix) => {
+          const range = ix.eq("term", r.term).eq("authorId", r.eq!.authorId!);
+          const since = r.timeRange?.since;
+          const until = r.timeRange?.until;
+          if (since !== undefined && until !== undefined) {
+            return range.gte("createdAt", since).lt("createdAt", until);
+          }
+          if (since !== undefined) return range.gte("createdAt", since);
+          if (until !== undefined) return range.lt("createdAt", until);
+          return range;
+        });
     } else if (r.index === "by_term_media_score") {
       q = ctx.db
         .query("postings")
@@ -228,7 +239,17 @@ async function executePlan(
     } else if (r.index === "by_term_time") {
       q = ctx.db
         .query("postings")
-        .withIndex(r.index, (ix) => withTimeRange(ix.eq("term", r.term), r.timeRange));
+        .withIndex(r.index, (ix) => {
+          const range = ix.eq("term", r.term);
+          const since = r.timeRange?.since;
+          const until = r.timeRange?.until;
+          if (since !== undefined && until !== undefined) {
+            return range.gte("createdAt", since).lt("createdAt", until);
+          }
+          if (since !== undefined) return range.gte("createdAt", since);
+          if (until !== undefined) return range.lt("createdAt", until);
+          return range;
+        });
     } else {
       q = ctx.db.query("postings").withIndex("by_term_score", (ix) => ix.eq("term", r.term));
     }
@@ -282,15 +303,6 @@ async function executePlan(
   // Negation and phrases are verified against hydrated candidate text, not a
   // truncated posting list. The same predicates apply to author-only retrieval.
   return acc;
-}
-
-// The IndexRangeBuilder chain types don't survive a generic helper; the shape is
-// checked by the withIndex call sites, so a local `any` is contained and honest.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function withTimeRange<R>(q: any, timeRange: PostingsRead["timeRange"]): R {
-  if (timeRange?.since !== undefined) q = q.gte("createdAt", timeRange.since);
-  if (timeRange?.until !== undefined) q = q.lt("createdAt", timeRange.until);
-  return q as R;
 }
 
 /**

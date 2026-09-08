@@ -20,8 +20,30 @@ export interface FxTwitterTimelinePage {
   cursor: FxTwitterCursor;
 }
 
-const TimelineResultSchema = Schema.JsonObject;
-export type FxTwitterTimelineResult = Schema.Schema.Type<typeof TimelineResultSchema>;
+export type FxTwitterJson = Schema.Schema.Type<typeof Schema.Json>;
+
+const TimelineResultSchema = Schema.Json;
+type FxTwitterTimelineValue =
+  | string
+  | number
+  | boolean
+  | null
+  | FxTwitterTimelineResult
+  | ReadonlyArray<FxTwitterTimelineValue>;
+export type FxTwitterTimelineResult =
+  | string
+  | number
+  | boolean
+  | null
+  | { readonly [key: string]: FxTwitterTimelineValue | undefined }
+  | ReadonlyArray<FxTwitterTimelineValue>;
+
+export const FxTwitterTimelineStatusSchema = Schema.Struct({
+  author: Schema.optional(Schema.NullOr(Schema.Struct({ id: Schema.String }))),
+  created_timestamp: Schema.optional(Schema.Json),
+  reposted_by: Schema.optional(Schema.Json),
+});
+export type FxTwitterTimelineStatus = Schema.Schema.Type<typeof FxTwitterTimelineStatusSchema>;
 
 /** Minimal profile fields acquisition needs for identity resolution. */
 export interface FxTwitterProfile {
@@ -45,7 +67,7 @@ export interface TimelineResponse {
   attempts: number;
   /** Wall-clock epoch ms when the final successful response arrived. */
   receivedAt: number;
-  raw: unknown;
+  raw: FxTwitterJson | FxTwitterTimelineResult | null;
   page: FxTwitterTimelinePage | null;
 }
 
@@ -54,7 +76,7 @@ export interface ProfileResponse {
   latencyMs: number;
   attempts: number;
   receivedAt: number;
-  raw: unknown;
+  raw: FxTwitterJson | null;
   /** Null when the provider answered 404 (no such profile). */
   profile: FxTwitterProfile | null;
 }
@@ -100,7 +122,7 @@ const TimelinePageSchema = Schema.Struct({
 
 const ProfileEnvelopeSchema = Schema.Struct({
   user: Schema.Struct({
-    id: Schema.String,
+    id: Schema.String.check(Schema.isMinLength(1)),
     screen_name: Schema.String,
     name: Schema.optional(Schema.String),
     protected: Schema.optional(Schema.Boolean),
@@ -292,9 +314,9 @@ export function parseProfile(value: unknown): FxTwitterProfile {
   }
 }
 
-function parseJson(body: string): unknown {
+function parseJson(body: string): FxTwitterJson {
   try {
-    return JSON.parse(body);
+    return Schema.decodeUnknownSync(Schema.Json)(JSON.parse(body));
   } catch {
     throw new FxTwitterError({
       message: "FxTwitter returned invalid JSON",
@@ -306,9 +328,9 @@ function parseJson(body: string): unknown {
   }
 }
 
-function tryParseJson(body: string): unknown {
+function tryParseJson(body: string): FxTwitterJson {
   try {
-    return JSON.parse(body);
+    return Schema.decodeUnknownSync(Schema.Json)(JSON.parse(body));
   } catch {
     return body;
   }

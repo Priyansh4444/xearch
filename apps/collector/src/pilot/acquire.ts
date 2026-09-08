@@ -3,15 +3,18 @@
 // advances. Failures pause one account; they never masquerade as completion.
 
 import { join } from "node:path";
+import { Option } from "effect";
+import * as Schema from "effect/Schema";
 import {
   FxTwitterError,
+  FxTwitterTimelineStatusSchema,
   type FxTwitterTimelineResult,
   type PilotClient,
   type TimelineResponse,
 } from "../acquisition/fxtwitter.ts";
 import type { PilotConfig } from "../config/pilot.ts";
 import type { PageMeta } from "../normalization/normalize.ts";
-import { isRecord, timestampMilliseconds } from "../normalization/mapping.ts";
+import { timestampMilliseconds } from "../normalization/mapping.ts";
 import {
   accountRawDirectory,
   pageErrorFileName,
@@ -299,9 +302,10 @@ export function authoredTimestamps(
 ): number[] {
   const out: number[] = [];
   for (const result of results) {
-    if (!isRecord(result) || !isRecord(result.author)) continue;
-    if (result.author.id !== userId || isRecord(result.reposted_by)) continue;
-    const createdAt = timestampMilliseconds(result.created_timestamp);
+    const status = Schema.decodeUnknownOption(FxTwitterTimelineStatusSchema)(result);
+    if (Option.isNone(status) || status.value.author?.id !== userId) continue;
+    if (status.value.reposted_by !== undefined && status.value.reposted_by !== null) continue;
+    const createdAt = timestampMilliseconds(status.value.created_timestamp);
     if (createdAt !== null) out.push(createdAt);
   }
   return out;
