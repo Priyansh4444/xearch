@@ -1,7 +1,9 @@
 # Offline PostHog export → Xearch
 
 This adapter reads `xmd_data_captured` schema v1 from exported PostHog JSONL.
-It makes **no network calls**. Node 24 is the only converter dependency.
+Conversion (`stage`) makes **no network calls**. Node 24 is the only converter
+dependency. The separate, explicit `ingest` command runs the existing Rust
+indexer through Cargo and can send data to Convex.
 No database, PostHog project, deployment, or scheduler is provisioned here.
 
 ## Prerequisite for ingestion
@@ -40,37 +42,57 @@ Review quarantine even when staging succeeds. Recover records from the retained
 raw export; do not assume a successful conversion means a complete archive.
 A zero-record batch retains diagnostics but requires no ingestion or ack.
 
-For a nonempty batch, set `BATCH` to its printed name. The following is the actual
-latest-branch invocation, **not run by the converter**. It sends data to the
-already configured Convex deployment and must only be run when authorized:
+For a nonempty batch, set `BATCH` to its printed name. **Only when authorized to
+send data to the configured Convex deployment**, run the wrapper below from an
+integration containing the ingestion prerequisite above:
 
 ```sh
 BATCH=posthog-<epochMs>-<uuid>
 STATE="$PWD/data/posthog-state"
-mkdir -p "$STATE/indexer-quarantine"
 # CONVEX_URL and CONVEX_DEPLOY_KEY must already be set in the environment.
-cargo run --release --manifest-path indexer/Cargo.toml -- \
-  --data-dir "$STATE/batches/$BATCH/ingress" \
-  --checkpoint "$STATE/checkpoint.json" \
-  --quarantine "$STATE/indexer-quarantine" \
-  --lexicons "$PWD/shared/lexicons" backfill
-node apps/posthog-export/cli.mjs ack "$STATE" "$BATCH" \
-  "$STATE/checkpoint.json" "$STATE/indexer-quarantine"
+# Cargo must be on PATH. The wrapper derives manifest/lexicon paths from its own location.
+node apps/posthog-export/cli.mjs ingest "$STATE" "$BATCH"
 ```
 
-Never point the indexer at sidecars or all prior batches. Do not use `--limit`
-when expecting a final ack. If ingestion fails, rerun the same command against
-the same immutable file and checkpoint. Rust checkpoints only after its server
-ack, except rejected lines also advance the offset. Therefore adapter ack checks
-**both** the full offset and the batch's indexer quarantine file. Exit status
-alone is not sufficient. Ack checks the staged file hash too. Supply the exact
-checkpoint and quarantine paths used by backfill, not fabricated proof files.
+The wrapper creates a unique `attempts/<uuid>/` inside the batch directory.
+Before spawning Cargo, it records the immutable batch hash and exact canonical
+checkpoint and quarantine paths in `attempt.json`. It passes only that batch's
+closed ingress directory to backfill. It holds the state lock until the child
+and its streams finish. Spawn errors, nonzero exit, and signals cannot mark an
+attempt successful. No `--limit`, checkpoint override, or quarantine override is
+accepted by this wrapper.
 
-If indexer quarantine is nonempty, keep the export and pending batch. Diagnose
-the cause. After fixing it, replay the immutable batch with a fresh checkpoint
-and a fresh quarantine directory, then ack using those exact paths. Do not edit
-the staged file or simply erase rejection evidence. Replaying already accepted
-records relies on the latest indexer's idempotent mutation behavior.
+After exit zero, the wrapper records process success, then checks the full
+checkpoint offset, unchanged batch hash, and the **same bound quarantine path**
+before updating the ledger. Rejected lines also advance Rust offsets, so exit
+status and checkpoint alone are insufficient. The indexer writes quarantine
+files only for rejects; a missing file in this generated directory is normal
+for clean ingestion. No fake empty proof file is created.
+
+If acknowledgement fails after process success, rerun only the local check:
+
+```sh
+node apps/posthog-export/cli.mjs ack "$STATE" "$BATCH"
+```
+
+`ack` accepts no path overrides. Legacy `ack STATE BATCH CHECKPOINT QUARANTINE`
+commands fail closed. Manually run indexer commands have no wrapper binding and
+cannot be acknowledged by this adapter. The latest attempt must have a recorded
+successful process completion. A crash before that record is written requires a
+fresh `ingest` attempt even if the server might already have accepted records.
+
+If ingestion fails or quarantines records, preserve the export and attempt
+files. Diagnose and fix the cause, then explicitly rerun `ingest` for a fresh
+attempt with a new checkpoint and quarantine directory. Previous evidence is
+never erased or reused. Replaying accepted records relies on the prerequisite
+indexer's idempotent mutation behavior. A repeated `ingest` after ledger ack is
+a no-op. Never edit the staged file or erase rejection evidence to force ack.
+
+This is a **local accidental-path-mismatch guard**, not an authenticated server
+receipt. It trusts the local Cargo executable on PATH, the indexer implementation,
+and unmodified local state. A malicious operator can forge or alter local files;
+this wrapper does not protect against that. Keep state private and back it up.
+No live ingest was run to validate this wrapper; tests mock the process boundary.
 
 ## Deduplication and failure behavior
 

@@ -1,10 +1,11 @@
 #!/usr/bin/env node
-// Offline only. No PostHog, X, or Convex client and no third-party dependencies.
+// Stage is offline. Explicit ingest runs the existing indexer, which can contact Convex.
 import { createHash, randomUUID } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import { createReadStream } from 'node:fs';
 import * as fs from 'node:fs/promises';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { pathToFileURL, fileURLToPath } from 'node:url';
 
 const MAX_EVENT_BYTES = 200_000;
 const MAX_EXPORT_LINE_BYTES = 1_000_000; // Includes PostHog metadata / JSON string escaping.
@@ -206,36 +207,103 @@ export async function stage(input, state) {
   });
 }
 
-export async function acknowledge(state, batch, checkpointFile, quarantineDir) {
-  state = path.resolve(state);
+/** Verify the closed batch before launching ingestion or accepting its result. */
+async function batchAt(state, batch) {
   requireValue(/^posthog-[0-9]+-[0-9a-f-]+$/.test(batch), 'invalid batch name');
+  const dir = await fs.realpath(path.join(state, 'batches', batch));
+  const manifest = await readJson(path.join(dir, 'manifest.json'));
+  requireValue(manifest.batch === batch && manifest.filename === `${batch}.jsonl`, 'manifest mismatch');
+  const content = await fs.readFile(path.join(dir, 'ingress', manifest.filename), 'utf8');
+  requireValue(hash(content) === manifest.sha256, 'staged file changed; refusing ingestion/ack');
+  return { dir, manifest };
+}
+
+/** Spawn the trusted local Cargo toolchain; close waits for child streams as well as exit. */
+async function runIndexer(command, args, options) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, options);
+    child.once('error', reject);
+    child.once('close', (code, signal) => resolve({ code, signal }));
+  });
+}
+
+/** Run a fresh, locally bound ingestion attempt. This explicit command can contact Convex. */
+export async function ingest(state, batch, { run = runIndexer } = {}) {
+  state = await fs.realpath(state);
   return locked(state, async () => {
     const ledger = await ledgerAt(state);
     if (ledger.acked.includes(batch)) return { batch, alreadyAcknowledged: true };
-    const dir = path.join(state, 'batches', batch), manifest = await readJson(path.join(dir, 'manifest.json'));
-    requireValue(manifest.batch === batch && manifest.filename === `${batch}.jsonl`, 'manifest mismatch');
-    const content = await fs.readFile(path.join(dir, 'ingress', manifest.filename), 'utf8');
-    requireValue(hash(content) === manifest.sha256, 'staged file changed; refusing ack');
-    const checkpoint = await readJson(checkpointFile);
-    requireValue(typeof checkpoint.configHash === 'string' || typeof checkpoint.config_hash === 'string', 'invalid indexer checkpoint');
-    requireValue(checkpoint.offsets?.[manifest.filename] === manifest.records, 'checkpoint does not cover the complete batch; retry backfill without --limit');
-    await fs.stat(quarantineDir); // explicit directory required; do not hide a wrong path
+    const { dir, manifest } = await batchAt(state, batch);
+    requireValue(manifest.records > 0, 'empty batch needs no ingestion');
+    const attemptId = randomUUID();
+    const attemptDir = path.join(dir, 'attempts', attemptId);
+    await fs.mkdir(path.join(attemptDir, 'quarantine'), { recursive: true, mode: 0o700 });
+    const canonicalDir = await fs.realpath(attemptDir);
+    const checkpoint = path.join(canonicalDir, 'checkpoint.json');
+    const quarantine = await fs.realpath(path.join(canonicalDir, 'quarantine'));
+    const repo = fileURLToPath(new URL('../../', import.meta.url));
+    const args = ['run', '--release', '--manifest-path', path.join(repo, 'indexer/Cargo.toml'), '--',
+      '--data-dir', path.join(dir, 'ingress'), '--checkpoint', checkpoint,
+      '--quarantine', quarantine, '--lexicons', path.join(repo, 'shared/lexicons'), 'backfill'];
+    const attemptFile = path.join(canonicalDir, 'attempt.json');
+    const attempt = { version: 1, attemptId, batch, sha256: manifest.sha256, checkpoint, quarantine, status: 'started', startedAt: new Date().toISOString() };
+    await atomic(attemptFile, attempt);
+    await atomic(path.join(dir, 'latest-attempt.json'), { attemptId });
+    let result;
     try {
-      const q = await fs.readFile(path.join(quarantineDir, manifest.filename), 'utf8');
-      requireValue(q.trim() === '', 'indexer quarantined records; resolve/retry before ack');
-    } catch (error) { if (error.code !== 'ENOENT') throw error; }
-    for (const entry of manifest.entries) ledger.records[entry.key] = { hash: entry.hash, textHash: entry.textHash, captured: entry.captured };
-    ledger.acked.push(batch);
-    await atomic(path.join(state, 'ledger.json'), ledger);
-    return { batch, acknowledged: manifest.records };
+      result = await run('cargo', args, { cwd: repo, stdio: ['ignore', 'inherit', 'inherit'] });
+    } catch (error) {
+      await atomic(attemptFile, { ...attempt, status: 'failed', failure: 'spawn/process error' });
+      throw error;
+    }
+    const succeeded = result?.code === 0 && result.signal == null;
+    await atomic(attemptFile, { ...attempt, status: succeeded ? 'succeeded' : 'failed', exitCode: result?.code ?? null, signal: result?.signal ?? null, completedAt: new Date().toISOString() });
+    requireValue(succeeded, 'indexer process failed; evidence retained; rerun ingest for a fresh attempt');
+    return acknowledgeLocked(state, batch);
   });
+}
+
+/** Accept only the latest wrapper-owned successful attempt, never caller-supplied proof paths. */
+async function acknowledgeLocked(state, batch) {
+  const ledger = await ledgerAt(state);
+  if (ledger.acked.includes(batch)) return { batch, alreadyAcknowledged: true };
+  const { dir, manifest } = await batchAt(state, batch);
+  const latest = await readJson(path.join(dir, 'latest-attempt.json'), {});
+  requireValue(typeof latest.attemptId === 'string' && /^[0-9a-f-]{36}$/.test(latest.attemptId), 'no bound ingestion attempt; use ingest first');
+  const attemptDir = await fs.realpath(path.join(dir, 'attempts', latest.attemptId));
+  const attempt = await readJson(path.join(attemptDir, 'attempt.json'));
+  const checkpointFile = path.join(attemptDir, 'checkpoint.json');
+  const quarantineDir = path.join(attemptDir, 'quarantine');
+  requireValue(attempt.version === 1 && attempt.attemptId === latest.attemptId && attempt.batch === batch && attempt.sha256 === manifest.sha256, 'attempt does not match immutable batch');
+  requireValue(attempt.checkpoint === checkpointFile && attempt.quarantine === quarantineDir, 'attempt paths do not match bound paths');
+  requireValue(attempt.status === 'succeeded', 'attempt did not complete successfully; rerun ingest');
+  const checkpoint = await readJson(checkpointFile);
+  requireValue(typeof checkpoint.configHash === 'string' || typeof checkpoint.config_hash === 'string', 'invalid indexer checkpoint');
+  requireValue(checkpoint.offsets?.[manifest.filename] === manifest.records, 'checkpoint does not cover the complete batch; rerun ingest');
+  requireValue((await fs.stat(quarantineDir)).isDirectory(), 'bound quarantine path is not a directory');
+  try {
+    const q = await fs.readFile(path.join(quarantineDir, manifest.filename), 'utf8');
+    requireValue(q.trim() === '', 'indexer quarantined records; resolve/retry before ack');
+  } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  for (const entry of manifest.entries) ledger.records[entry.key] = { hash: entry.hash, textHash: entry.textHash, captured: entry.captured };
+  ledger.acked.push(batch);
+  await atomic(path.join(state, 'ledger.json'), ledger);
+  return { batch, acknowledged: manifest.records };
+}
+
+export async function acknowledge(state, batch, ...legacyPaths) {
+  requireValue(legacyPaths.length === 0, 'ack no longer accepts proof paths; use the bound ingest command');
+  state = await fs.realpath(state);
+  return locked(state, () => acknowledgeLocked(state, batch));
 }
 
 async function main() {
   const [command, ...args] = process.argv.slice(2);
   if (command === 'stage' && args.length === 2) return stage(args[0], args[1]);
-  if (command === 'ack' && args.length === 4) return acknowledge(...args);
-  throw new Error('Usage: node apps/posthog-export/cli.mjs stage EXPORT.jsonl STATE_DIR\n       node apps/posthog-export/cli.mjs ack STATE_DIR BATCH CHECKPOINT.json INDEXER_QUARANTINE_DIR');
+  if (command === 'ingest' && args.length === 2) return ingest(...args);
+  if (command === 'ack' && args.length > 2) throw new Error('ack no longer accepts proof paths; use the bound ingest command');
+  if (command === 'ack' && args.length === 2) return acknowledge(...args);
+  throw new Error('Usage: node apps/posthog-export/cli.mjs stage EXPORT.jsonl STATE_DIR\n       node apps/posthog-export/cli.mjs ingest STATE_DIR BATCH\n       node apps/posthog-export/cli.mjs ack STATE_DIR BATCH');
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   main().then(result => console.log(JSON.stringify(result, null, 2))).catch(error => { console.error(error.message); process.exitCode = 1; });

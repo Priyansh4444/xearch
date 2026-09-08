@@ -1,10 +1,11 @@
 import test from 'node:test';
 import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { normalizeEvent, stage, acknowledge } from './cli.mjs';
+import { normalizeEvent, stage, ingest, acknowledge } from './cli.mjs';
 
 const author = { id: '42', screen_name: 'alice', name: 'Alice', followers: 20, following: 5, verification: { verified: false }, joined: '2010-01-01T00:00:00Z' };
 const post = { id: '123', text: 'Full text 😀', author, likes: 1, reposts: 2, quotes: 3, replies: 4, created_timestamp: 1700000000 };
@@ -17,6 +18,30 @@ async function fixture(t) {
   const input = path.join(dir, 'export.jsonl'), state = path.join(dir, 'state');
   const write = events => fs.writeFile(input, events.map(e => typeof e === 'string' ? e : JSON.stringify(e)).join('\n') + '\n');
   return { dir, input, state, write };
+}
+// Native child-process boundary is mocked: tests never run Cargo or contact Convex.
+function mockIndexer({ offset, rejected = false, code = 0, signal = null, error, during } = {}) {
+  return async (command, args, options) => {
+    assert.equal(command, 'cargo');
+    assert.ok(path.isAbsolute(options.cwd));
+    assert.ok(path.isAbsolute(args[args.indexOf('--manifest-path') + 1]));
+    assert.ok(path.isAbsolute(args[args.indexOf('--lexicons') + 1]));
+    const dataDir = args[args.indexOf('--data-dir') + 1];
+    const checkpoint = args[args.indexOf('--checkpoint') + 1];
+    const quarantine = args[args.indexOf('--quarantine') + 1];
+    const [filename] = await fs.readdir(dataDir);
+    const rows = (await fs.readFile(path.join(dataDir, filename), 'utf8')).trim().split('\n').length;
+    const attempt = JSON.parse(await fs.readFile(path.join(path.dirname(checkpoint), 'attempt.json'), 'utf8'));
+    assert.equal(attempt.status, 'started');
+    assert.equal(attempt.checkpoint, checkpoint);
+    assert.equal(attempt.quarantine, quarantine);
+    assert.equal(await fs.realpath(quarantine), quarantine);
+    if (error) throw new Error(error);
+    await fs.writeFile(checkpoint, JSON.stringify({ config_hash: 'test', offsets: { [filename]: offset ?? rows } }));
+    if (rejected) await fs.writeFile(path.join(quarantine, filename), 'rejected record\n');
+    if (during) await during({ checkpoint, quarantine, dataDir, filename, attempt });
+    return { code, signal };
+  };
 }
 test('object/string properties, closed fields, epoch seconds/ms, quotes and identity separation', () => {
   const e = event([{ ...post, created_timestamp: 1700000000000, quote: { ...post, id: '124' }, replying_to: { status: '122' } }]);
@@ -58,17 +83,16 @@ test('stage, retry, checkpoint-gated ack, content dedup and changed metrics', as
   assert.equal(batch.records, 2); assert.equal(batch.quarantineCount, 1);
   await assert.rejects(stage(f.input, f.state), /pending batch/);
   await assert.rejects(fs.stat(path.join(f.state, 'ledger.json')), /ENOENT/);
-  const checkpoint = path.join(f.dir, 'checkpoint.json'), quarantine = path.join(f.dir, 'quarantine');
-  await fs.mkdir(quarantine);
-  const filename = `${batch.batch}.jsonl`;
-  await fs.writeFile(checkpoint, JSON.stringify({ config_hash: 'test', offsets: { [filename]: 1 } }));
-  await assert.rejects(acknowledge(f.state, batch.batch, checkpoint, quarantine), /complete batch/);
-  await fs.writeFile(checkpoint, JSON.stringify({ config_hash: 'test', offsets: { [filename]: 2 } }));
-  await fs.writeFile(path.join(quarantine, filename), 'rejected record\n');
-  await assert.rejects(acknowledge(f.state, batch.batch, checkpoint, quarantine), /quarantined/);
-  await fs.unlink(path.join(quarantine, filename));
-  assert.equal((await acknowledge(f.state, batch.batch, checkpoint, quarantine)).acknowledged, 2);
-  assert.equal((await acknowledge(f.state, batch.batch, checkpoint, quarantine)).alreadyAcknowledged, true);
+  await assert.rejects(acknowledge(f.state, batch.batch), /no bound ingestion attempt/);
+  await assert.rejects(acknowledge(f.state, batch.batch, 'wrong-checkpoint', 'wrong-quarantine'), /no longer accepts proof paths/);
+  await assert.rejects(ingest(f.state, batch.batch, { run: mockIndexer({ offset: 1 }) }), /complete batch/);
+  await assert.rejects(ingest(f.state, batch.batch, { run: mockIndexer({ rejected: true }) }), /quarantined/);
+  assert.equal((await ingest(f.state, batch.batch, { run: mockIndexer() })).acknowledged, 2);
+  assert.equal((await acknowledge(f.state, batch.batch)).alreadyAcknowledged, true);
+  const attempts = await fs.readdir(path.join(batch.directory, 'attempts'));
+  assert.equal(attempts.length, 3); // Fresh retries retain prior failure evidence.
+  const rejections = await Promise.all(attempts.map(async id => fs.readdir(path.join(batch.directory, 'attempts', id, 'quarantine'))));
+  assert.equal(rejections.flat().length, 1);
   await f.write([event(), event([{ ...post, likes: 8 }], { captured_at: '2025-01-02T00:00:00Z' }), event([{ ...post, text: 'Edited' }], { captured_at: '2025-01-03T00:00:00Z' })]);
   const next = await stage(f.input, f.state);
   assert.equal(next.records, 1); assert.equal(next.quarantineCount, 1);
@@ -80,7 +104,7 @@ test('file tampering and concurrent state lock block ack/staging', async t => {
   const f = await fixture(t); await f.write([event()]);
   const batch = await stage(f.input, f.state);
   await fs.appendFile(path.join(batch.directory, 'ingress', `${batch.batch}.jsonl`), '\n');
-  await assert.rejects(acknowledge(f.state, batch.batch, 'unused', 'unused'), /changed/);
+  await assert.rejects(ingest(f.state, batch.batch, { run: mockIndexer() }), /changed/);
   await fs.writeFile(path.join(f.state, '.lock'), 'stale');
   await assert.rejects(stage(f.input, f.state), /state locked/);
 });
@@ -114,12 +138,7 @@ test('out-of-order snapshots select newest; public URLs omit query credentials',
 for (const mixed of [false, true]) {
   test(`unchanged newer snapshots advance cross-run watermarks (${mixed ? 'mixed delta' : 'zero delta'})`, async t => {
     const f = await fixture(t);
-    const checkpoint = path.join(f.dir, 'checkpoint.json'), quarantine = path.join(f.dir, 'quarantine');
-    await fs.mkdir(quarantine);
-    const ack = async batch => {
-      await fs.writeFile(checkpoint, JSON.stringify({ config_hash: 'test', offsets: { [`${batch.batch}.jsonl`]: batch.records } }));
-      return acknowledge(f.state, batch.batch, checkpoint, quarantine);
-    };
+    const ack = batch => ingest(f.state, batch.batch, { run: mockIndexer() });
     await f.write([event()]);
     await ack(await stage(f.input, f.state));
     const newer = '2025-01-03T00:00:00Z';
@@ -166,4 +185,61 @@ test('raw line byte bound accepts the boundary and normal unterminated JSONL', a
   const batch = await stage(f.input, f.state);
   assert.equal(batch.records, 2);
   assert.equal(batch.quarantineCount, 0);
+});
+
+for (const failure of [{ code: 1 }, { code: null, signal: 'SIGTERM' }, { error: 'spawn failed' }]) {
+  test(`unsuccessful process cannot acknowledge: ${JSON.stringify(failure)}`, async t => {
+    const f = await fixture(t); await f.write([event()]);
+    const batch = await stage(f.input, f.state);
+    await assert.rejects(ingest(f.state, batch.batch, { run: mockIndexer(failure) }), /process failed|spawn failed/);
+    await assert.rejects(acknowledge(f.state, batch.batch), /did not complete successfully/);
+    await assert.rejects(fs.stat(path.join(f.state, '.lock')), /ENOENT/);
+    assert.equal((await ingest(f.state, batch.batch, { run: mockIndexer() })).acknowledged, 2);
+  });
+}
+test('successful process can resume ack after local ledger write failure', async t => {
+  const f = await fixture(t); await f.write([event()]);
+  const batch = await stage(f.input, f.state);
+  await assert.rejects(ingest(f.state, batch.batch, { run: mockIndexer({ during: async () => {
+    await fs.mkdir(path.join(f.state, 'ledger.json'));
+  } }) }), /EISDIR/);
+  await fs.rmdir(path.join(f.state, 'ledger.json'));
+  assert.equal((await acknowledge(f.state, batch.batch)).acknowledged, 2);
+});
+test('successful process cannot ack a batch changed while it ran, even with matching checkpoint', async t => {
+  const f = await fixture(t); await f.write([event()]);
+  const batch = await stage(f.input, f.state);
+  await assert.rejects(ingest(f.state, batch.batch, { run: mockIndexer({ during: async ({ dataDir, filename }) => {
+    await fs.appendFile(path.join(dataDir, filename), '\n');
+  } }) }), /staged file changed/);
+  await assert.rejects(fs.stat(path.join(f.state, 'ledger.json')), /ENOENT/);
+});
+test('wrong quarantine path cannot be substituted for a rejected bound attempt', async t => {
+  const f = await fixture(t); await f.write([event()]);
+  const batch = await stage(f.input, f.state);
+  await assert.rejects(ingest(f.state, batch.batch, { run: mockIndexer({ rejected: true }) }), /quarantined/);
+  const clean = path.join(f.dir, 'clean'); await fs.mkdir(clean);
+  await assert.rejects(acknowledge(f.state, batch.batch, path.join(f.dir, 'checkpoint.json'), clean), /no longer accepts proof paths/);
+  await assert.rejects(acknowledge(f.state, batch.batch), /quarantined/);
+});
+
+test('legacy CLI proof-path overrides fail closed before touching state', () => {
+  const result = spawnSync(process.execPath, [new URL('./cli.mjs', import.meta.url).pathname, 'ack', 'unused', 'unused', 'checkpoint', 'quarantine'], { encoding: 'utf8' });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /no longer accepts proof paths/);
+});
+test('state stays locked while the child runs and ack validates recorded attempt hash', async t => {
+  const f = await fixture(t); await f.write([event()]);
+  const batch = await stage(f.input, f.state);
+  await assert.rejects(ingest(f.state, batch.batch, { run: mockIndexer({ during: async () => {
+    await assert.rejects(stage(f.input, f.state), /state locked/);
+    await assert.rejects(acknowledge(f.state, batch.batch), /state locked/);
+    await fs.mkdir(path.join(f.state, 'ledger.json'));
+  } }) }), /EISDIR/);
+  await fs.rmdir(path.join(f.state, 'ledger.json'));
+  const latest = JSON.parse(await fs.readFile(path.join(batch.directory, 'latest-attempt.json'), 'utf8'));
+  const attemptFile = path.join(batch.directory, 'attempts', latest.attemptId, 'attempt.json');
+  const attempt = JSON.parse(await fs.readFile(attemptFile, 'utf8'));
+  await fs.writeFile(attemptFile, JSON.stringify({ ...attempt, sha256: 'mismatched' }));
+  await assert.rejects(acknowledge(f.state, batch.batch), /does not match immutable batch/);
 });
