@@ -125,7 +125,10 @@ export const search = query({
         .query("tweets")
         .withIndex("by_author_time", (q) => withTimeRange(
           q.eq("authorId", xq.filters.authorId!),
-          { since: xq.filters.since ?? undefined, until: xq.filters.until ?? undefined },
+          {
+            since: xq.filters.since ?? undefined,
+            until: xq.filters.until ?? undefined,
+          },
         ))
         .order("desc")
         .take(RERANK_CANDIDATES);

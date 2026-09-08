@@ -10,7 +10,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 // writes. Read ONLY that one variable — never expose the rest of the file (it
 // also holds CONVEX_DEPLOY_KEY) to the client bundle.
 function convexUrl(): string {
-  const fromEnv = process.env.VITE_CONVEX_URL;
+  const fromEnv = process.env["VITE_CONVEX_URL"];
   if (fromEnv !== undefined && fromEnv !== "") return fromEnv;
   try {
     const env = readFileSync(resolve(here, "../../.env.local"), "utf8");
@@ -25,6 +25,8 @@ function convexUrl(): string {
 }
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [
+    react({ compiler: true }),
+  ],
   define: { __CONVEX_URL__: JSON.stringify(convexUrl()) },
 });

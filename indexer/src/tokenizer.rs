@@ -1,4 +1,6 @@
-//! Tokenizer twin A (Rust). Twin B: convex/engine/tokenize.ts. The rules are the
+//! Tokenizer twin A (Rust).
+//!
+//! Twin B: convex/engine/tokenize.ts. The rules are the
 //! spec (DESIGN §12.2, tokenizerVersion 1); shared/fixtures/tokenizer-golden.jsonl
 //! is the judge — `cargo test golden` must pass whenever the TS suite passes.
 //! Any divergence is a red test, never a silent recall bug (RISKS T1).
@@ -18,7 +20,7 @@ pub const TOKENIZER_VERSION: u32 = 1;
 // Generating from Node keeps twin A byte-identical to the regex twin B runs.
 
 fn is_emoji(c: char) -> bool {
-    let cp = c as u32;
+    let cp = u32::from(c);
     EXTENDED_PICTOGRAPHIC
         .binary_search_by(|&(lo, hi)| {
             if cp < lo {
@@ -32,10 +34,11 @@ fn is_emoji(c: char) -> bool {
         .is_ok()
 }
 
-fn is_cjk(c: char) -> bool {
+const fn is_cjk(c: char) -> bool {
     // Mirrors CJK_RE in tokenize.ts (Hiragana/Katakana, Han ext-A, Han, compat, Hangul).
-    matches!(c as u32,
-        0x3040..=0x30ff | 0x3400..=0x4dbf | 0x4e00..=0x9fff | 0xf900..=0xfaff | 0xac00..=0xd7af)
+    matches!(c,
+        '\u{3040}'..='\u{30ff}' | '\u{3400}'..='\u{4dbf}' | '\u{4e00}'..='\u{9fff}'
+        | '\u{f900}'..='\u{faff}' | '\u{ac00}'..='\u{d7af}')
 }
 
 fn is_word(c: char) -> bool {
@@ -51,7 +54,10 @@ pub struct Tokenized {
     pub has_link: bool,
 }
 
-pub fn tokenize(raw: &str, stopwords: &std::collections::HashSet<String>) -> Tokenized {
+pub fn tokenize<S: std::hash::BuildHasher>(
+    raw: &str,
+    stopwords: &std::collections::HashSet<String, S>,
+) -> Tokenized {
     // Mirrors tokenize.ts step-for-step:
     // 1. NFKC + lowercase.
     let text: String = raw.nfkc().collect::<String>().to_lowercase();
@@ -69,22 +75,19 @@ pub fn tokenize(raw: &str, stopwords: &std::collections::HashSet<String>) -> Tok
         }
     };
 
-    let mut i = 0;
-    while i < chars.len() {
-        let c = chars[i];
+    let mut i = 0_usize;
+    while let Some(&c) = chars.get(i) {
         if c == '#' || c == '@' || c == '$' {
-            let (run, next) = take_word_run(&chars, i + 1);
+            let (run, next) = take_word_run(&chars, i.saturating_add(1));
             if run.is_empty() {
-                i += 1;
+                i = i.saturating_add(1);
                 continue;
             }
-            let is_numeric = run.chars().all(|ch| ch.is_numeric());
-            if c == '$' && is_numeric {
-                push(run); // "$99" -> "99"; the ~price aspect is the aspect emitter's job
-            } else {
+            let is_numeric = run.chars().all(char::is_numeric);
+            if c != '$' || !is_numeric {
                 push(format!("{c}{run}"));
-                push(run);
             }
+            push(run); // "$99" -> "99"; other prefixes also emit the bare term.
             i = next;
         } else if is_cjk(c) {
             let (run, next) = take_run(&chars, i, is_cjk);
@@ -103,15 +106,20 @@ pub fn tokenize(raw: &str, stopwords: &std::collections::HashSet<String>) -> Tok
             push(run);
             i = next;
         } else {
-            i += 1;
+            i = i.saturating_add(1);
         }
     }
 
     let mut counts: HashMap<String, u32> = HashMap::new();
     for t in &tokens {
-        *counts.entry(t.clone()).or_insert(0) += 1;
+        let count = counts.entry(t.clone()).or_insert(0);
+        *count = count.saturating_add(1);
     }
-    Tokenized { tokens, counts, has_link }
+    Tokenized {
+        tokens,
+        counts,
+        has_link,
+    }
 }
 
 /// Word run: letters/digits/underscore plus apostrophe when flanked by word chars.
@@ -120,18 +128,18 @@ pub fn tokenize(raw: &str, stopwords: &std::collections::HashSet<String>) -> Tok
 fn take_word_run(chars: &[char], start: usize) -> (String, usize) {
     let mut i = start;
     let mut out = String::new();
-    while i < chars.len() {
-        let c = chars[i];
+    while let Some(&c) = chars.get(i) {
         if is_word(c) && !is_cjk(c) {
             out.push(c);
-            i += 1;
+            i = i.saturating_add(1);
         } else if (c == '\'' || c == '\u{2019}')
             && !out.is_empty()
-            && i + 1 < chars.len()
-            && is_word(chars[i + 1])
+            && chars
+                .get(i.saturating_add(1))
+                .is_some_and(|&next| is_word(next))
         {
             out.push('\''); // normalize curly apostrophe
-            i += 1;
+            i = i.saturating_add(1);
         } else {
             break;
         }
@@ -142,9 +150,9 @@ fn take_word_run(chars: &[char], start: usize) -> (String, usize) {
 fn take_run(chars: &[char], start: usize, pred: fn(char) -> bool) -> (Vec<char>, usize) {
     let mut i = start;
     let mut out = Vec::new();
-    while i < chars.len() && pred(chars[i]) {
-        out.push(chars[i]);
-        i += 1;
+    while let Some(&c) = chars.get(i).filter(|&&c| pred(c)) {
+        out.push(c);
+        i = i.saturating_add(1);
     }
     (out, i)
 }
@@ -156,37 +164,36 @@ fn dedupe_preserving_order(run: &[char]) -> Vec<char> {
 
 /// (?:https?://|www\.)\S+ replaced by a single space — regex-free scan with the
 /// same observable behavior as the TS regex: a prefix match can start mid-token
-/// ("foohttps://x" strips from the prefix on) and consumes to whitespace.
+/// ("<foohttps://x>" strips from the prefix on) and consumes to whitespace.
 fn strip_urls(text: &str) -> (String, bool) {
-    let chars: Vec<char> = text.chars().collect();
     let mut out = String::with_capacity(text.len());
     let mut has_link = false;
-    let mut i = 0;
-    while i < chars.len() {
-        let m = ["https://", "http://", "www."]
-            .iter()
-            .any(|p| chars[i..].starts_with(&p.chars().collect::<Vec<_>>()[..]));
-        if m {
+    let mut chars = text.char_indices().peekable();
+    while let Some((offset, ch)) = chars.next() {
+        // char_indices produces UTF-8 boundaries. Borrow the suffix instead of
+        // allocating three prefix vectors for every character in the input.
+        let suffix = text.get(offset..).unwrap_or_default();
+        let is_url = suffix.starts_with("https://")
+            || suffix.starts_with("http://")
+            || suffix.starts_with("www.");
+        if is_url {
             has_link = true;
-            while i < chars.len() && !chars[i].is_whitespace() {
-                i += 1;
+            while chars.peek().is_some_and(|(_, next)| !next.is_whitespace()) {
+                chars.next();
             }
             out.push(' ');
         } else {
-            out.push(chars[i]);
-            i += 1;
+            out.push(ch);
         }
     }
     (out, has_link)
 }
 
 /// CJK run -> overlapping bigrams (RISKS T2). Exposed for unit tests.
+#[must_use]
 pub fn cjk_bigrams(run: &[char]) -> Vec<String> {
-    if run.is_empty() {
-        return Vec::new();
-    }
-    if run.len() == 1 {
-        return vec![run[0].to_string()];
+    if let [single] = run {
+        return vec![single.to_string()];
     }
     run.windows(2).map(|w| w.iter().collect()).collect()
 }
@@ -194,6 +201,19 @@ pub fn cjk_bigrams(run: &[char]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn url_scan_preserves_boundaries_and_unicode() {
+        for (input, expected, has_link) in [
+            ("caféhttps://x.test/path fin", "café  fin", true),
+            ("https://x.test\nwww.example.test", " \n ", true),
+            ("日本語 🚀 https://x.test", "日本語 🚀  ", true),
+            ("http:// www. https://", "     ", true),
+            ("no links here", "no links here", false),
+        ] {
+            assert_eq!(strip_urls(input), (expected.to_owned(), has_link));
+        }
+    }
 
     #[derive(serde::Deserialize)]
     struct GoldenCase {

@@ -40,9 +40,9 @@ export interface Candidate {
   feedbackVotes: number; // Σ votes for (queryKey, tweet), pre-clamped by caller? no — clamped here
   /** RT/quote chain edges for representative dedup (K5). Source-id space, so a
    * retweet collapses with its original via sourceTweetId. */
-  retweetOfTweetId?: string;
-  quotedTweetId?: string;
-  sourceTweetId?: string;
+  retweetOfTweetId?: string | undefined;
+  quotedTweetId?: string | undefined;
+  sourceTweetId?: string | undefined;
 }
 
 export interface Scored {

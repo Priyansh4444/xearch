@@ -22,9 +22,9 @@ export interface PostingsRead {
     | "by_term_author_time"
     | "by_term_media_score";
   /** Equality prefix beyond `term` (authorId or mediaType), when the index has one. */
-  eq?: { authorId?: string; mediaType?: string };
+  eq?: { authorId?: string | undefined; mediaType?: string | undefined } | undefined;
   /** createdAt range for time-ordered indexes; postFilter for score-ordered ones. */
-  timeRange?: { since?: number; until?: number };
+  timeRange?: { since?: number | undefined; until?: number | undefined } | undefined;
   order: "desc";
   limit: number; // REQUIRED — the invariant, in a type
 }
@@ -39,11 +39,11 @@ export interface ReadPlan {
   excludes: string[];
   /** Post-intersection predicates the executor applies in memory. */
   postFilters: {
-    since?: number;
-    until?: number;
-    media?: string;
-    minLikes?: number;
-    lang?: string;
+    since?: number | undefined;
+    until?: number | undefined;
+    media?: string | undefined;
+    minLikes?: number | undefined;
+    lang?: string | undefined;
   };
 }
 
@@ -79,7 +79,10 @@ function readFor(term: string, xq: XQuery): PostingsRead {
   const f = xq.filters;
   const timeRange =
     f.since !== null || f.until !== null
-      ? { since: f.since ?? undefined, until: f.until ?? undefined }
+      ? {
+          ...(f.since !== null ? { since: f.since } : {}),
+          ...(f.until !== null ? { until: f.until } : {}),
+        }
       : undefined;
   if (f.authorId !== null) {
     return {
@@ -101,7 +104,13 @@ function readFor(term: string, xq: XQuery): PostingsRead {
     };
   }
   if (xq.sort === "latest" || timeRange !== undefined) {
-    return { term, index: "by_term_time", timeRange, order: "desc", limit: PER_TERM_CAP };
+    return {
+      term,
+      index: "by_term_time",
+      timeRange,
+      order: "desc",
+      limit: PER_TERM_CAP,
+    };
   }
   return { term, index: "by_term_score", order: "desc", limit: PER_TERM_CAP };
 }

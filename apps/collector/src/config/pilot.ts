@@ -3,6 +3,7 @@
 
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import * as Effect from "effect/Effect";
 
 export const PILOT_CONFIG_VERSION = 2;
 
@@ -32,6 +33,17 @@ export interface PilotConfig {
   coverageFloor: number;
   selectedOn: string;
   accounts: PilotAccount[];
+}
+
+export class PilotConfigError extends Error {
+  readonly _tag = "PilotConfigError";
+
+  constructor(
+    readonly path: string,
+    readonly cause: unknown,
+  ) {
+    super(`failed to load pilot config ${path}`);
+  }
 }
 
 export function parsePilotConfig(value: unknown): PilotConfig {
@@ -96,7 +108,26 @@ export function parsePilotConfig(value: unknown): PilotConfig {
 }
 
 export async function loadPilotConfig(path: string): Promise<PilotConfig> {
-  return parsePilotConfig(JSON.parse(await readFile(path, "utf8")) as unknown);
+  return Effect.runPromise(loadPilotConfigEffect(path));
+}
+
+/**
+ * Load and validate a pilot config with an explicit, typed failure channel.
+ * The Promise wrapper above remains for the existing CLI surface; new callers
+ * should compose this Effect so file and JSON/configuration failures stay
+ * distinguishable and can be retried or reported at their boundary.
+ */
+export function loadPilotConfigEffect(path: string): Effect.Effect<PilotConfig, PilotConfigError> {
+  const read = Effect.tryPromise({
+    try: () => readFile(path, "utf8"),
+    catch: (cause) => new PilotConfigError(path, cause),
+  });
+  return Effect.flatMap(read, (text) =>
+    Effect.try({
+      try: () => parsePilotConfig(JSON.parse(text) as unknown),
+      catch: (cause) => new PilotConfigError(path, cause),
+    }),
+  );
 }
 
 /** Restrict a config to the named handles (case-insensitive), preserving config order. */

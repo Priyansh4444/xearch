@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactElement } from "react";
+import { useEffect, useState, type ReactElement } from "react";
 import { useMutation, useQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "../../../convex/_generated/api";
@@ -26,13 +26,20 @@ const DEMO_QUERIES = ["bun", "pricing", "rust", "react server components", "agen
 
 const DEBOUNCE_MS = 250;
 
-export function App(): ReactElement {
-  const params = new URLSearchParams(window.location.search);
-  const initial = params.get("q") ?? "";
-  const [input, setInput] = useState(initial);
-  const [query, setQuery] = useState(initial.trim());
-  const [sort, setSort] = useState<Sort>(params.get("sort") === "latest" ? "latest" : "top");
-  const [lane, setLane] = useState<Lane>(params.get("lane") === "baseline" ? "baseline" : "xearch");
+function useSearchPage() {
+  const [initial] = useState(() => {
+    const params = new URLSearchParams(window.location.search);
+    return {
+      input: params.get("q") ?? "",
+      query: (params.get("q") ?? "").trim(),
+      sort: params.get("sort") === "latest" ? ("latest" as const) : ("top" as const),
+      lane: params.get("lane") === "baseline" ? ("baseline" as const) : ("xearch" as const),
+    };
+  });
+  const [input, setInput] = useState(initial.input);
+  const [query, setQuery] = useState(initial.query);
+  const [sort, setSort] = useState<Sort>(initial.sort);
+  const [lane, setLane] = useState<Lane>(initial.lane);
   const inputError = queryInputError(query);
   const canVote = useQuery(api.feedback.canVote);
 
@@ -62,22 +69,7 @@ export function App(): ReactElement {
     query === "" || inputError !== null || lane !== "baseline" ? "skip" : { raw: query },
   );
 
-  const current: Shown | undefined = useMemo(() => {
-    if (lane === "baseline") {
-      return baseline === undefined
-        ? undefined
-        : { error: null, results: baseline, ladder: null, queryKey: null, terms: query.split(/\s+/) };
-    }
-    if (full === undefined) return undefined;
-    const q = full.appliedQuery;
-    return {
-      error: full.error,
-      results: full.results,
-      ladder: full.ladder,
-      queryKey: full.queryKey,
-      terms: [...q.must, ...q.should, ...q.phrases.flat(), ...q.exclude.map((t) => `-${t}`)],
-    };
-  }, [lane, full, baseline, query]);
+  const current = presentResults(lane, query, full, baseline);
 
   const shown = input.trim() === query ? current : undefined;
   const error = inputError ?? shown?.error;
@@ -85,6 +77,36 @@ export function App(): ReactElement {
   const operatorSort = full !== undefined && Object.values(full.trace.consumed).includes("sort");
   const activeSort = full?.appliedQuery.sort ?? sort;
 
+  const pickQuery = (next: string) => {
+    setInput(next);
+    setQuery(next);
+  };
+  return { input, setInput, query, setSort, lane, setLane, shown, error, searching,
+    operatorSort, activeSort, canVote: canVote === true, pickQuery };
+}
+
+function presentResults(
+  lane: Lane,
+  query: string,
+  full: SearchReturn | undefined,
+  baseline: BaselineResults | undefined,
+): Shown | undefined {
+  if (lane === "baseline") {
+    return baseline === undefined ? undefined : {
+      error: null, results: baseline, ladder: null, queryKey: null, terms: query.split(/\s+/),
+    };
+  }
+  if (full === undefined) return undefined;
+  const q = full.appliedQuery;
+  return {
+    error: full.error, results: full.results, ladder: full.ladder, queryKey: full.queryKey,
+    terms: [...q.must, ...q.should, ...q.phrases.flat(), ...q.exclude.map((term) => `-${term}`)],
+  };
+}
+
+export function App(): ReactElement {
+  const { input, setInput, query, setSort, lane, setLane, shown, error, searching,
+    operatorSort, activeSort, canVote, pickQuery } = useSearchPage();
   return (
     <div className="page">
       <header className="masthead">
@@ -99,11 +121,10 @@ export function App(): ReactElement {
           onChange={(e) => setInput(e.target.value)}
           placeholder="search 164,959 posts"
           aria-label="Search posts"
-          autoFocus
         />
         {/* Only while the input is ahead of the executed query — typing, not idle. */}
         {input.trim() !== query ? (
-          <Typeahead input={input} onPick={(q) => { setInput(q); setQuery(q); }} />
+          <Typeahead input={input} onPick={pickQuery} />
         ) : null}
       </div>
 
@@ -141,8 +162,8 @@ export function App(): ReactElement {
         error={error}
         shown={shown}
         searching={searching}
-        canVote={canVote === true}
-        onPick={(q) => { setInput(q); setQuery(q); }}
+        canVote={canVote}
+        onPick={pickQuery}
       />
 
       <footer className="colophon">
@@ -379,18 +400,22 @@ function Media({ tweet }: { tweet: Result }) {
 
 /** Underline literal hits — the terms that actually gated/boosted retrieval. */
 function highlight(text: string, terms: string[]) {
-  const words = terms
-    .map((w) => w.toLowerCase())
-    .filter((w) => w.length > 0 && !w.startsWith("-") && !w.startsWith("~"));
-  if (words.length === 0) return text;
+  const words = new Set<string>();
+  for (const term of terms) {
+    const word = term.toLowerCase();
+    if (word.length > 0 && !word.startsWith("-") && !word.startsWith("~")) {
+      words.add(word);
+    }
+  }
+  if (words.size === 0) return text;
   const parts = text.split(/(\s+)/);
-  return parts.map((part, i) =>
-    words.includes(part.toLowerCase().replace(/^[^\p{L}\p{N}#@$]+|[^\p{L}\p{N}]+$/gu, "")) ? (
-      <mark key={i}>{part}</mark>
-    ) : (
-      part
-    ),
-  );
+  let markId = 0;
+  return parts.map((part) => {
+    const normalized = part.toLowerCase().replace(/^[^\p{L}\p{N}#@$]+|[^\p{L}\p{N}]+$/gu, "");
+    if (!words.has(normalized)) return part;
+    markId += 1;
+    return <mark key={`${normalized}-${markId}`}>{part}</mark>;
+  });
 }
 
 const formatter = new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 });

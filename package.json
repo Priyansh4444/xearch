@@ -16,16 +16,19 @@
     "test:golden": "vitest run tests/tokenizer.golden.test.ts",
     "codegen": "convex codegen",
     "typecheck": "tsc --noEmit && pnpm --filter xearch-web typecheck",
-    "web": "pnpm --filter xearch-web dev"
+    "web": "pnpm --filter xearch-web dev",
+    "doctor": "react-doctor --no-telemetry --no-supply-chain"
   },
   "dependencies": {
-    "convex": "^1.17.0"
+    "convex": "^1.45.0",
+    "effect": "4.0.0-rc.112"
   },
   "devDependencies": {
-    "@types/node": "^24.13.3",
+    "@types/node": "^26.4.1",
     "convex-test": "^0.0.56",
     "jsdom": "^30.0.1",
-    "typescript": "^5.6.0",
-    "vitest": "^2.1.0"
+    "react-doctor": "^0.9.13",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.0"
   }
 }

@@ -157,4 +157,5 @@ pub const EXTENDED_PICTOGRAPHIC: &[(u32, u32)] = &[
     (0x1F947, 0x1F9FF),
     (0x1FA58, 0x1FA5F),
     (0x1FA6E, 0x1FAFF),
-    (0x1FC00, 0x1FFFD),];
+    (0x1FC00, 0x1FFFD),
+];

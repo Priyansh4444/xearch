@@ -1,8 +1,36 @@
-//! Wire types. Serde IS the ingress validator (docs/INGRESS.md): a line that fails
-//! to deserialize is quarantined, never "fixed up". Outbound types mirror the
-//! validators in convex/ingest.ts field-for-field — that file is the contract owner.
+//! Wire types.
+//!
+//! Serde IS the ingress validator (docs/INGRESS.md): a line that fails to
+//! deserialize is quarantined, never "fixed up". Outbound types mirror the
+//! validators in convex/ingest.ts field-for-field.
 
 use serde::{Deserialize, Serialize};
+
+/// Whether an author row came from a complete source record or was synthesized
+/// to satisfy a tweet's foreign-key-like author reference.
+///
+/// The Convex wire contract remains a boolean (`isStub`); keeping the enum in
+/// the Rust domain model prevents callers from passing an arbitrary boolean
+/// when constructing an author row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AuthorKind {
+    Full,
+    Stub,
+}
+
+impl AuthorKind {
+    #[must_use]
+    pub const fn is_stub(&self) -> bool {
+        matches!(self, Self::Stub)
+    }
+}
+
+fn serialize_author_kind<S>(kind: &AuthorKind, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serializer.serialize_bool(kind.is_stub())
+}
 
 // ---------- Ingress (JSONL, INGRESS.md §1–2) ----------
 
@@ -137,7 +165,8 @@ pub struct AuthorOut {
     pub follower_count: u64,
     pub following_count: u64,
     pub verified: bool,
-    pub is_stub: bool,
+    #[serde(serialize_with = "serialize_author_kind")]
+    pub is_stub: AuthorKind,
 }
 
 #[derive(Debug, Serialize)]
