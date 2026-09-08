@@ -113,7 +113,7 @@ export const search = query({
       level = plan.level;
       let prfTerms: string[] | undefined;
       if (plan.level === "L2" && matches.size < MIN_RESULTS && matches.size > 0) {
-        prfTerms = await minePrfTerms(ctx, matches, allTerms, dfs);
+        prfTerms = await minePrfTerms(ctx, matches, allTerms, dfs, tweets);
       }
       plan = escalate(plan, matches.size, xq, dfs, prfTerms);
     }
@@ -302,11 +302,12 @@ async function minePrfTerms(
   matches: Map<string, { tf: Map<string, number> }>,
   queryTerms: string[],
   dfs: Map<string, number>,
+  hydrated: Map<string, Doc<"tweets">>,
 ): Promise<string[]> {
   const known = new Set(queryTerms);
   const counts = new Map<string, number>();
   for (const tweetId of [...matches.keys()].slice(0, 20)) {
-    const t = await ctx.db.get(tweetId as Id<"tweets">);
+    const t = hydrated.get(tweetId) ?? (await ctx.db.get(tweetId as Id<"tweets">));
     if (t === null) continue;
     for (const tok of new Set(tokenize(t.text).tokens)) {
       if (known.has(tok) || tok.length < 3) continue;

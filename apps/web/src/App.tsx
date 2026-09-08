@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactElement } from "react";
 import { useMutation, useQuery } from "convex/react";
+import { ConvexError } from "convex/values";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "../../../convex/_generated/api";
 import { queryInputError } from "../../../convex/engine/constraints";
@@ -282,7 +283,7 @@ function Typeahead({ input, onPick }: { input: string; onPick: (q: string) => vo
         .filter((s) => s.term !== lastWord)
         .slice(0, 5)
         .map((s) => (
-          <li key={s.term}>
+          <li key={s.term} role="option">
             <button type="button" onClick={() => onPick(complete(s.term))}>
               {complete(s.term)}
               <span className="df">{s.df}</span>
@@ -311,8 +312,11 @@ function ResultRow({ tweet, terms, queryKey }: ResultRowProps): ReactElement {
     try {
       await vote({ queryKey, tweetId: tweet._id, vote: value });
       setVoted(value);
-    } catch {
-      setVoteError("Vote failed. Please try again.");
+    } catch (error: unknown) {
+      const message = error instanceof ConvexError && typeof error.data === "string"
+        ? error.data
+        : "Vote failed. Please try again.";
+      setVoteError(message);
     } finally {
       setVoting(false);
     }

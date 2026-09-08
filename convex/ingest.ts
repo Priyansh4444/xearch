@@ -172,8 +172,8 @@ export const ingestBatch = internalMutation({
       }
     }
 
-    // Keep dfDeltas in the wire contract for existing clients. Only the server
-    // knows which tweets were newly inserted, so client deltas are not applied.
+    // Keep dfDeltas in the wire contract for existing clients. It is accepted
+    // and ignored; the server derives DF from newly inserted postings.
     for (const [term, delta] of insertedDfs) {
       const existing = await ctx.db
         .query("terms")

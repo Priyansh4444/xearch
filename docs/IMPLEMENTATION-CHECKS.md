@@ -29,9 +29,9 @@ access, ingestion mutations, network throughput, or a representative corpus.
 Commands from the repository root:
 
 ```sh
-cargo +nightly bench --manifest-path indexer/Cargo.toml --bench tokenizer -- --save-baseline before-url-scan
+cargo +nightly-2026-08-28 bench --manifest-path indexer/Cargo.toml --bench tokenizer -- --save-baseline before-url-scan
 # After changing the tokenizer:
-cargo +nightly bench --manifest-path indexer/Cargo.toml --bench tokenizer -- --baseline before-url-scan
+cargo +nightly-2026-08-28 bench --manifest-path indexer/Cargo.toml --bench tokenizer -- --baseline before-url-scan
 ```
 
 After the URL scan and checked-indexing changes, the batch estimate changed
@@ -52,8 +52,7 @@ tokenizer-version/reindex decision, not a silent performance refactor.
 
 ## Remaining gates
 
-- Strict Clippy still fails outside the tokenizer. Do not treat successful
-  `cargo test` or `clippy --fix` as a passing Clippy gate.
+- Strict Clippy runs with warnings denied across all targets.
 - The earlier authority and boost implementations need algorithm-specific tests;
   existing tokenizer/backfill tests do not validate them.
 - React Doctor reports no issues after separating query orchestration into

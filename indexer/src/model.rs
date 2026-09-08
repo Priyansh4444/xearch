@@ -118,7 +118,9 @@ pub struct AuthorIn {
 pub struct IngestBatch {
     pub tweets: Vec<TweetOut>,
     pub authors: Vec<AuthorOut>,
-    pub df_deltas: Vec<DfDelta>, // pre-aggregated per batch (RISKS O2)
+    /// Compatibility field accepted for existing clients. Convex ignores it
+    /// and derives document frequency from newly inserted postings.
+    pub df_deltas: Vec<DfDelta>,
     pub config_hash: String,
 }
 

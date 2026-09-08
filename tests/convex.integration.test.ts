@@ -4,12 +4,13 @@ import { describe, expect, test } from "vitest";
 import { api, internal } from "../convex/_generated/api";
 import schema from "../convex/schema";
 
-const modules = {
-  "../convex/_generated/server.ts": () => import("../convex/_generated/server"),
-  "../convex/ingest.ts": () => import("../convex/ingest"),
-  "../convex/search.ts": () => import("../convex/search"),
-  "../convex/feedback.ts": () => import("../convex/feedback"),
-};
+declare global {
+  interface ImportMeta {
+    glob(pattern: string): Record<string, () => Promise<unknown>>;
+  }
+}
+
+const modules = import.meta.glob("../convex/**/*.*s");
 
 function tweet(tweetId: string, text = "apple", terms = ["apple"]) {
   return {
