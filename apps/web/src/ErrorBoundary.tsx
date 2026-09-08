@@ -1,30 +1,35 @@
-import { Component, type ReactNode } from "react";
+import {
+  ErrorBoundary as ReactErrorBoundary,
+  type FallbackProps,
+} from "react-error-boundary";
+import type { ReactNode } from "react";
 
-interface State {
-  error: Error | null;
+interface SearchErrorBoundaryProps {
+  children: ReactNode;
 }
 
 /**
  * Catches errors thrown by useQuery (deployment unreachable, server error) and
  * turns them into a recoverable state instead of a blank page.
  */
-export class SearchErrorBoundary extends Component<{ children: ReactNode }, State> {
-  override state: State = { error: null };
+export function SearchErrorBoundary({ children }: SearchErrorBoundaryProps) {
+  return (
+    <ReactErrorBoundary FallbackComponent={SearchErrorFallback}>
+      {children}
+    </ReactErrorBoundary>
+  );
+}
 
-  static getDerivedStateFromError(error: Error): State {
-    return { error };
-  }
-
-  override render() {
-    if (this.state.error === null) return this.props.children;
-    return (
-      <div className="error-state" role="alert">
-        <p className="error-title">Search is unreachable.</p>
-        <p className="error-detail">{this.state.error.message}</p>
-        <button type="button" onClick={() => this.setState({ error: null })}>
-          Try again
-        </button>
-      </div>
-    );
-  }
+function SearchErrorFallback({ error, resetErrorBoundary }: FallbackProps) {
+  return (
+    <div className="error-state" role="alert">
+      <p className="error-title">Search is unreachable.</p>
+      <p className="error-detail">
+        {error instanceof Error ? error.message : "An unknown search error occurred."}
+      </p>
+      <button type="button" onClick={resetErrorBoundary}>
+        Try again
+      </button>
+    </div>
+  );
 }
