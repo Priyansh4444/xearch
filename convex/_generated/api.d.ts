@@ -8,6 +8,7 @@
  * @module
  */
 
+import type * as answers from "../answers.js";
 import type * as engine_constraints from "../engine/constraints.js";
 import type * as engine_parse from "../engine/parse.js";
 import type * as engine_plan from "../engine/plan.js";
@@ -17,6 +18,8 @@ import type * as engine_xquery from "../engine/xquery.js";
 import type * as feedback from "../feedback.js";
 import type * as ingest from "../ingest.js";
 import type * as search from "../search.js";
+import type * as tierC from "../tierC.js";
+import type * as vector from "../vector.js";
 
 import type {
   ApiFromModules,
@@ -25,6 +28,7 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  answers: typeof answers;
   "engine/constraints": typeof engine_constraints;
   "engine/parse": typeof engine_parse;
   "engine/plan": typeof engine_plan;
@@ -34,6 +38,8 @@ declare const fullApi: ApiFromModules<{
   feedback: typeof feedback;
   ingest: typeof ingest;
   search: typeof search;
+  tierC: typeof tierC;
+  vector: typeof vector;
 }>;
 
 /**

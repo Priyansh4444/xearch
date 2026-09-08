@@ -4,10 +4,6 @@ A search engine for tweets, built on Convex. Rust does ingest/tokenize/score off
 Convex stores **all serving state**, understands queries, ranks, and streams results
 reactively to a React 19 frontend.
 
-The current implementation ships the rules-only lexical path (parser tiers A+B,
-bounded retrieval, ranking, and feedback). The LLM and vector sections below are
-design extensions, not active Convex modules or schema tables.
-
 Companion documents — this file is the *what/why*; these are the *how*:
 
 | Doc | Contents |
@@ -150,6 +146,39 @@ export default defineSchema({
     .index("by_authorId", ["authorId"])
     .index("by_handle", ["handle"]),
 
+  // Loose Parser Tier C cache: raw query -> canonical IR (see §4).
+  queryCache: defineTable({
+    normalizedRaw: v.string(),    // trimmed/lowercased raw query
+    ir: v.string(),               // JSON-serialized XQuery
+    source: v.union(v.literal("rules"), v.literal("llm")),
+  })
+    .index("by_raw", ["normalizedRaw"]),
+
+  // Image/media embeddings (see §11).
+  mediaEmbeddings: defineTable({
+    tweetId: v.id("tweets"),
+    mediaUrl: v.string(),
+    embedding: v.array(v.float64()),
+    createdAt: v.number(),
+  })
+    .vectorIndex("by_embedding", {
+      vectorField: "embedding",
+      dimensions: 768,            // SigLIP base; 512 if CLIP ViT-B/32
+      filterFields: ["createdAt"],
+    }),
+
+  // Tweet-text embeddings for semantic recall (ladder L4, §5.2 / §11).
+  tweetEmbeddings: defineTable({
+    tweetId: v.id("tweets"),
+    embedding: v.array(v.float64()),
+    createdAt: v.number(),
+  })
+    .vectorIndex("by_embedding", {
+      vectorField: "embedding",
+      dimensions: 384,            // bge-small-en-v1.5 / MiniLM-L6 class
+      filterFields: ["createdAt"],
+    }),
+
   // Explicit relevance feedback: 👍/👎 on results (see §6.3).
   searchFeedback: defineTable({
     queryKey: v.string(),         // hash of canonical XQuery IR
@@ -160,6 +189,14 @@ export default defineSchema({
     .index("by_query_tweet", ["queryKey", "tweetId"])
     .index("by_tweet", ["tweetId"]),
 
+  // AI answer mode output, streamed + cached (see §10).
+  answers: defineTable({
+    queryKey: v.string(),         // hash of canonical IR
+    status: v.union(v.literal("pending"), v.literal("streaming"), v.literal("done")),
+    text: v.string(),
+    citedTweetIds: v.array(v.id("tweets")),
+  })
+    .index("by_query", ["queryKey"]),
 });
 ```
 

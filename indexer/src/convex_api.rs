@@ -54,6 +54,22 @@ impl ConvexClient {
         serde_json::from_value(value).context("ingestBatch ack shape")
     }
 
+    /// # Errors
+    ///
+    /// Returns an error when Convex rejects the mutation or all retries fail.
+    pub fn apply_metrics(&self, updates_json: &serde_json::Value) -> Result<()> {
+        self.mutation("ingest:applyMetrics", updates_json)?;
+        Ok(())
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error when Convex rejects the mutation or all retries fail.
+    pub fn upsert_authority(&self, rows_json: &serde_json::Value) -> Result<()> {
+        self.mutation("ingest:upsertAuthority", rows_json)?;
+        Ok(())
+    }
+
     /// POST {deployment}/api/mutation. Batches are atomic server-side and
     /// idempotent on tweetId, so wholesale retry is always safe.
     ///

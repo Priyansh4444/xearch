@@ -7,13 +7,14 @@ against design red flags, then synthesized.
 
 ## Problem
 
-Three runtimes must agree on meaning while staying independently buildable: a Rust
-indexer (offline, 24/7), Convex functions (parse/retrieve/rank/serve), and a React 19
-frontend. The dangerous failure mode is drift — two
+Four runtimes must agree on meaning while staying independently buildable: a Rust
+indexer (offline, 24/7), Convex functions (parse/retrieve/rank/serve), an LLM sidecar
+(Tier C + answers), and a React 19 frontend. The dangerous failure mode is drift — two
 tokenizers that disagree, an IR the parser emits but retrieval half-understands, wire
 payloads that change shape silently. Constraints from DESIGN.md that the code shape
 must honor: the rules-only path is one reactive Convex query (speed invariant); all
-serving state in Convex; retrieval is a pure function of the IR.
+serving state in Convex; retrieval is a pure function of the IR; slow lanes (LLM,
+vectors) upgrade results asynchronously rather than blocking.
 
 ## Usage (caller's view)
 
@@ -33,12 +34,17 @@ const hints = useQuery(api.search.suggest, { prefix: "conv" });      // typeahea
 const vote = useMutation(api.feedback.vote);                          // 👍/👎
 vote({ queryKey: serp.queryKey, tweetId, vote: 1 }); // requires trusted Convex identity
 
+// Answer mode — explicit user action only; streams via subscription
+const req = useAction(api.answers.request);                           // kick off
+const answer = useQuery(api.answers.get, { queryKey: serp.queryKey }); // stream in
 ```
 
-The Rust indexer sees one internal mutation:
+The Rust indexer sees a **one-verb API** (plus two maintenance verbs):
 
 ```
 POST /api/mutation  internal.ingest.ingestBatch   { batch: IngestBatch }   // everything
+POST /api/mutation  internal.ingest.applyMetrics  { updates: MetricsDelta[] }
+POST /api/mutation  internal.ingest.upsertAuthority { rows: AuthorityRow[] }
 ```
 
 The LLM sidecar is invoked *by* Convex (action), never the reverse.
@@ -72,6 +78,9 @@ flowchart TD
     SEARCH["search.ts — public query"]
     INGEST["ingest.ts — internal mutations"]
     FB["feedback.ts"]
+    TIERC["tierC.ts — action"]
+    ANS["answers.ts — action"]
+    VEC["vector.ts — action"]
   end
 
   UI["React 19 frontend"]
@@ -89,8 +98,11 @@ flowchart TD
   SEARCH --> PARSE
   SEARCH --> PLAN
   SEARCH --> RANK
+  TIERC -->|XQuery JSON| SCHEMA
   UI --> SEARCH
   UI --> FB
+  UI --> ANS
+  ANS --> VEC
 ```
 
 Load-bearing decisions:
@@ -112,22 +124,22 @@ Load-bearing decisions:
    |---|---|---|---|
    | `IngressRecord` (JSONL) | docs/INGRESS.md + `indexer/src/model.rs` | indexer | quarantine + counter |
    | `IngestBatch` (wire) | `convex/ingest.ts` validators | indexer → Convex | Convex validator rejects |
-   | `XQuery` (IR) | `convex/engine/xquery.ts` + docs/PARSER.md schema | parser tiers → plan/rank/feedback | JSON Schema + version field |
+   | `XQuery` (IR) | `convex/engine/xquery.ts` + docs/PARSER.md schema | parser tiers → plan/rank/caches | JSON Schema + version field |
    | Tokenizer behavior | spec in DESIGN §12.2 | Rust twin + TS twin | `shared/fixtures/tokenizer-golden.jsonl`, run by both test suites |
-   | Parser semantics | docs/PARSER.md | Tier A/B | `shared/fixtures/parser-golden.jsonl`, slot-F1 gate |
+   | Parser semantics | docs/PARSER.md | Tier A/B/C | `shared/fixtures/parser-golden.jsonl`, slot-F1 gate |
 
 4. **Two tokenizer twins over one rule set, guarded by goldens.** We deliberately do
    NOT use a segmentation library on one side only: both twins implement the same
    explicitly-specified character-class rules, and the golden fixture is the
    authority. A divergence is a failing test, not a silent recall bug.
-5. **The serving surface contains only implemented lanes.** Feedback is persisted
-   because it changes ranking. LLM, answer, and vector-search experiments stay out of
-   the schema and public API until they have a complete implementation and test path.
+5. **Slow lanes are tables, not calls.** Tier C writes `queryCache`; answers stream
+   into `answers`; authority lands in `authors`. The UI never awaits a slow thing —
+   it subscribes, and Convex reactivity delivers the upgrade. Per
+   separate-before-serializing-shared-state: each lane has a single writer.
 
-Interface depth: the public surface is the search query, typeahead query, and feedback
-mutation;
-behind it hide tokenization, two parser tiers, lexicons, ladder planning, BM25/RRF
-math, and feedback aggregation. Callers cannot reach internal stages —
+Interface depth: the public surface is three queries/mutations + two actions;
+behind it hide tokenization, three parser tiers, lexicons, ladder planning, BM25/RRF
+math, feedback aggregation, and cache policy. Callers cannot reach internal stages —
 there is no "call the parser yourself" endpoint to misuse.
 
 ## Synthesis decision
@@ -142,8 +154,8 @@ there is no "call the parser yourself" endpoint to misuse.
 - **Candidate C — everything-as-tables** (parses and SERPs materialized into tables,
   UI subscribes to result rows). Rejected for the hot path — it duplicates what
   Convex reactive queries already are, and adds GC/invalidation machinery. **Adopted
-  selectively** for the genuinely-async lane where it earns its keep:
-  `searchFeedback`.
+  selectively** for the genuinely-async lanes where it earns its keep: `queryCache`,
+  `answers`, `searchFeedback`.
 
 ## Tradeoffs accepted
 

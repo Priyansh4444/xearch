@@ -41,6 +41,9 @@ convex/            all serving state + query-side logic
   search.ts        public query (the thin shell) + typeahead + baseline
   ingest.ts        internal mutations                 [contract #2]
   feedback.ts      👍/👎 keyed by queryKey
+  tierC.ts         LLM semantic layer (action, cached)
+  answers.ts       AI answer mode (explicit user action only)
+  vector.ts        ladder L4 semantic rescue + image search
 config/
   collection/      language-neutral collection run definitions
 indexer/           Rust, stateless — crashes are boring
@@ -62,10 +65,8 @@ archived corpus (164,959 posts), and the full `search` query runs Tier A+B
 parsing (operators, dates, entities, aspects, glue), the L0–L3 recall ladder
 with bounded reads, and the deterministic reranker with live feedback votes.
 `apps/web` is the SERP: Top/Latest tabs, typeahead, votes, and an A/B lane
-toggle against Convex full-text baseline. Optional LLM, answer, and vector-search
-lanes are intentionally out of the serving surface until they have a complete
-implementation and test path; the core lexical search remains the only production
-search path.
+toggle against Convex full-text baseline. Remaining build list: tierC →
+vectors/answers → indexer tail/refresh (Tweepcred, boost propagation).
 
 The branch's review fixes are documented in [docs/SEARCH-REVIEW.md](docs/SEARCH-REVIEW.md).
 They have not been deployed. Voting now requires trusted Convex identity; no auth

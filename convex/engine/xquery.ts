@@ -69,7 +69,7 @@ export const emptyXQuery = (): XQuery => ({
 /**
  * Canonical JSON: fixed key order, sorted term arrays, null (never undefined).
  * INVARIANT: two XQuery values meaning the same thing serialize identically —
- * this string is the identity used by feedback and result ranking.
+ * this string is the identity used by queryCache, answers, and feedback.
  */
 export function canonicalJson(xq: XQuery): string {
   const sorted = (xs: string[]) => [...xs].sort();
@@ -110,4 +110,22 @@ export function queryKey(xq: XQuery): string {
     h = (h * prime) & mask;
   }
   return h.toString(16).padStart(16, "0");
+}
+
+/** Parse + validate an untrusted JSON string (Tier C output, cache rows). */
+export function parseXQueryJson(json: string): XQuery | null {
+  // TODO: field-by-field validation against the closed enums (PARSER §1).
+  // Constrained decoding makes malformed Tier C output unrepresentable, but cache
+  // rows written by older versions still cross this boundary — validate anyway.
+  throw new Error("not implemented: parseXQueryJson");
+}
+
+/**
+ * Merge a Tier C refinement into an A+B parse. Tier C may FILL empty slots and
+ * ADD should/aspects; it may never contradict operator-set slots (PARSER §2).
+ */
+export function mergeRefinement(base: XQuery, refined: XQuery): XQuery {
+  // TODO: slot-wise merge honoring the may-not-override rule; count overridden
+  // attempts into the trace for the eval harness.
+  throw new Error("not implemented: mergeRefinement");
 }
