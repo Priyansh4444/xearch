@@ -1,12 +1,14 @@
 //! Offline cross-runtime contract checks. No database or HTTP server.
 use std::{fs, path::Path, process::Command, time::{SystemTime, UNIX_EPOCH}};
 use xearch_indexer::model::IngressRecord;
+use std::sync::atomic::{AtomicU64, Ordering};
+static NEXT_STATE: AtomicU64 = AtomicU64::new(0);
 
 fn stage_fixture(fixture: &str) -> Vec<IngressRecord> {
     let version = Command::new("node").arg("--version").output().expect("Node 24 must be installed");
     assert!(version.status.success() && String::from_utf8_lossy(&version.stdout).starts_with("v24."), "Node 24 required; got {}", String::from_utf8_lossy(&version.stdout));
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
-    let state = std::env::temp_dir().join(format!("xearch-posthog-{}-{}", std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
+    let state = std::env::temp_dir().join(format!("xearch-posthog-{}-{}-{}", std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos(), NEXT_STATE.fetch_add(1, Ordering::Relaxed)));
     let output = Command::new("node")
         .current_dir(root)
         .args(["apps/posthog-export/cli.mjs", "stage", fixture])
