@@ -302,3 +302,25 @@ test('bound acknowledgement rejects edited attempt paths', async t => {
   await fs.writeFile(attemptFile, JSON.stringify({ ...attempt, quarantine: f.dir }));
   await assert.rejects(acknowledge(f.state, batch.batch), /paths do not match/);
 });
+
+for (const kind of ['alternate-name', 'directory', 'symlink']) {
+  test(`all bound quarantine entries fail closed: ${kind}`, async t => {
+    const f = await fixture(t); await f.write([event()]);
+    const batch = await stage(f.input, f.state);
+    await assert.rejects(ingest(f.state, batch.batch, { run: mockIndexer({ during: async ({ quarantine }) => {
+      const entry = path.join(quarantine, 'unexpected');
+      if (kind === 'directory') await fs.mkdir(entry);
+      else if (kind === 'symlink') await fs.symlink(f.input, entry);
+      else await fs.writeFile(entry, 'rejected record\n');
+    } }) }), /quarantined records or unexpected entries/);
+    await assert.rejects(fs.stat(path.join(f.state, 'ledger.json')), /ENOENT/);
+  });
+}
+test('empty quarantine files do not hide the clean attempt', async t => {
+  const f = await fixture(t); await f.write([event()]);
+  const batch = await stage(f.input, f.state);
+  const result = await ingest(f.state, batch.batch, { run: mockIndexer({ during: async ({ quarantine }) => {
+    await fs.writeFile(path.join(quarantine, 'empty.jsonl'), '');
+  } }) });
+  assert.equal(result.acknowledged, 2);
+});

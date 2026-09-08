@@ -67,7 +67,9 @@ checkpoint offset, unchanged batch hash, and the **same bound quarantine path**
 before updating the ledger. Rejected lines also advance Rust offsets, so exit
 status and checkpoint alone are insufficient. The indexer writes quarantine
 files only for rejects; a missing file in this generated directory is normal
-for clean ingestion. No fake empty proof file is created.
+for clean ingestion. All entries are checked regardless of filename; nonempty
+files, subdirectories, and symlinks block ack. Empty regular files are harmless.
+No fake empty proof file is created.
 
 If acknowledgement fails after process success, rerun only the local check:
 

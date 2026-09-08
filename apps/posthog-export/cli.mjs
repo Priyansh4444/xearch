@@ -281,10 +281,10 @@ async function acknowledgeLocked(state, batch) {
   requireValue(typeof checkpoint.configHash === 'string' || typeof checkpoint.config_hash === 'string', 'invalid indexer checkpoint');
   requireValue(checkpoint.offsets?.[manifest.filename] === manifest.records, 'checkpoint does not cover the complete batch; rerun ingest');
   requireValue((await fs.stat(quarantineDir)).isDirectory(), 'bound quarantine path is not a directory');
-  try {
-    const q = await fs.readFile(path.join(quarantineDir, manifest.filename), 'utf8');
-    requireValue(q.trim() === '', 'indexer quarantined records; resolve/retry before ack');
-  } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  for (const name of await fs.readdir(quarantineDir)) {
+    const entry = await fs.lstat(path.join(quarantineDir, name));
+    requireValue(entry.isFile() && entry.size === 0, 'indexer quarantined records or unexpected entries; resolve/retry before ack');
+  }
   for (const entry of manifest.entries) ledger.records[entry.key] = { hash: entry.hash, textHash: entry.textHash, captured: entry.captured };
   ledger.acked.push(batch);
   await atomic(path.join(state, 'ledger.json'), ledger);
