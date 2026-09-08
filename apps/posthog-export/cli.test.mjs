@@ -243,3 +243,62 @@ test('state stays locked while the child runs and ack validates recorded attempt
   await fs.writeFile(attemptFile, JSON.stringify({ ...attempt, sha256: 'mismatched' }));
   await assert.rejects(acknowledge(f.state, batch.batch), /does not match immutable batch/);
 });
+
+for (const mode of ['success', 'nonzero', 'signal', 'missing-executable']) {
+  test(`native subprocess boundary with fake Cargo: ${mode}`, async t => {
+    const f = await fixture(t); await f.write([event()]);
+    const batch = await stage(f.input, f.state);
+    const bin = path.join(f.dir, 'bin'); await fs.mkdir(bin);
+    if (mode !== 'missing-executable') await fs.writeFile(path.join(bin, 'cargo'), `#!${process.execPath}
+const fs = require('node:fs');
+const path = require('node:path');
+const args = process.argv.slice(2);
+if (args[0] !== 'run' || args.at(-1) !== 'backfill') process.exit(9);
+if (process.env.FAKE_CARGO_MODE === 'nonzero') process.exit(17);
+if (process.env.FAKE_CARGO_MODE === 'signal') process.kill(process.pid, 'SIGTERM');
+else {
+  const dataDir = args[args.indexOf('--data-dir') + 1];
+  const checkpoint = args[args.indexOf('--checkpoint') + 1];
+  const filename = fs.readdirSync(dataDir)[0];
+  const rows = fs.readFileSync(path.join(dataDir, filename), 'utf8').trim().split('\\n').length;
+  fs.writeFileSync(checkpoint, JSON.stringify({ config_hash: 'fake', offsets: { [filename]: rows } }));
+}
+`, { mode: 0o700 });
+    const alias = path.join(f.dir, 'state-link'); await fs.symlink(f.state, alias);
+    const result = spawnSync(process.execPath, [new URL('./cli.mjs', import.meta.url).pathname, 'ingest', alias, batch.batch], {
+      cwd: f.dir, encoding: 'utf8', env: { ...process.env, PATH: bin, FAKE_CARGO_MODE: mode }, timeout: 10_000,
+    });
+    assert.equal(result.error, undefined);
+    const latest = JSON.parse(await fs.readFile(path.join(batch.directory, 'latest-attempt.json'), 'utf8'));
+    const attempt = JSON.parse(await fs.readFile(path.join(batch.directory, 'attempts', latest.attemptId, 'attempt.json'), 'utf8'));
+    assert.equal(attempt.status, mode === 'success' ? 'succeeded' : 'failed');
+    if (mode === 'success') {
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(JSON.parse(result.stdout).acknowledged, 2);
+    } else {
+      assert.equal(result.status, 1, result.stderr);
+      await assert.rejects(acknowledge(f.state, batch.batch), /did not complete successfully/);
+    }
+    await assert.rejects(fs.stat(path.join(f.state, '.lock')), /ENOENT/);
+  });
+}
+for (const missing of ['checkpoint', 'quarantine']) {
+  test(`bound acknowledgement rejects missing ${missing}`, async t => {
+    const f = await fixture(t); await f.write([event()]);
+    const batch = await stage(f.input, f.state);
+    await assert.rejects(ingest(f.state, batch.batch, { run: mockIndexer({ during: async proof => {
+      await fs.rm(proof[missing], { recursive: true });
+    } }) }), /ENOENT/);
+    await assert.rejects(fs.stat(path.join(f.state, 'ledger.json')), /ENOENT/);
+  });
+}
+test('bound acknowledgement rejects edited attempt paths', async t => {
+  const f = await fixture(t); await f.write([event()]);
+  const batch = await stage(f.input, f.state);
+  await assert.rejects(ingest(f.state, batch.batch, { run: mockIndexer({ offset: 1 }) }), /complete batch/);
+  const latest = JSON.parse(await fs.readFile(path.join(batch.directory, 'latest-attempt.json'), 'utf8'));
+  const attemptFile = path.join(batch.directory, 'attempts', latest.attemptId, 'attempt.json');
+  const attempt = JSON.parse(await fs.readFile(attemptFile, 'utf8'));
+  await fs.writeFile(attemptFile, JSON.stringify({ ...attempt, quarantine: f.dir }));
+  await assert.rejects(acknowledge(f.state, batch.batch), /paths do not match/);
+});

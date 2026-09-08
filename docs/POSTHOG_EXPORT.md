@@ -92,7 +92,9 @@ This is a **local accidental-path-mismatch guard**, not an authenticated server
 receipt. It trusts the local Cargo executable on PATH, the indexer implementation,
 and unmodified local state. A malicious operator can forge or alter local files;
 this wrapper does not protect against that. Keep state private and back it up.
-No live ingest was run to validate this wrapper; tests mock the process boundary.
+No live ingest was run to validate this wrapper. Tests mock the process boundary
+and exercise native spawning with a temporary fake Cargo executable, including
+exit errors, signals, and missing executables; they never run the real indexer.
 
 ## Deduplication and failure behavior
 
