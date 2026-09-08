@@ -4,8 +4,7 @@
 //! produces a tweet row, postings, and df deltas.
 
 use crate::model::{
-    AuthorIn, AuthorKind, AuthorOut, DfDelta, IngestBatch, MediaType, Metrics, PostingOut, TweetIn,
-    TweetOut,
+    AuthorIn, AuthorKind, AuthorOut, DfDelta, IngestBatch, MediaType, PostingOut, TweetIn, TweetOut,
 };
 use crate::tokenizer::tokenize;
 use color_eyre::eyre::Result;
@@ -267,41 +266,6 @@ pub fn quantize(static_score: f64, buckets: u16) -> u8 {
     (0..=u8::MAX)
         .find(|candidate| f64::from(*candidate) > bounded)
         .map_or(u8::MAX, |candidate| candidate.saturating_sub(1))
-}
-
-/// Boost propagation (DESIGN §6.1, refresh mode): one hop at 0.5x.
-///
-/// Uses quotedTweetId / retweetOfTweetId edges and returns per-target
-/// `propagated_boost` values for `ingest::applyMetrics`.
-#[must_use]
-pub fn propagate_boosts<S: std::hash::BuildHasher>(
-    edges: &[(String, Option<String>, Option<String>)],
-    metrics: &HashMap<String, Metrics, S>,
-) -> HashMap<String, f64> {
-    let mut boosts = HashMap::new();
-    for (tweet_id, quoted_id, retweeted_id) in edges {
-        let Some(source) = metrics.get(tweet_id) else {
-            continue;
-        };
-        let engagement = 4.0f64.mul_add(
-            metric_as_f64(source.quotes),
-            3.0f64.mul_add(
-                metric_as_f64(source.retweets),
-                2.0f64.mul_add(metric_as_f64(source.replies), metric_as_f64(source.likes)),
-            ),
-        );
-        let boost = 0.5 * engagement.ln_1p();
-        for target in [quoted_id.as_ref(), retweeted_id.as_ref()]
-            .into_iter()
-            .flatten()
-        {
-            boosts
-                .entry(target.clone())
-                .and_modify(|value| *value += boost)
-                .or_insert(boost);
-        }
-    }
-    boosts
 }
 
 #[cfg(test)]

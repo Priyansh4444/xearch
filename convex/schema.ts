@@ -74,37 +74,6 @@ export default defineSchema({
     .index("by_authorId", ["authorId"])
     .index("by_handle", ["handle"]),
 
-  // Tier C output, cached forever per phrasing (PARSER §4).
-  queryCache: defineTable({
-    normalizedRaw: v.string(),
-    xqueryJson: v.string(), // canonical XQuery JSON (engine/xquery.ts owns the shape)
-    paraphrases: v.array(v.string()),
-    hyde: v.optional(v.string()),
-    source: v.union(v.literal("llm"), v.literal("human-correction")),
-    lexiconVersion: v.number(), // evict when lexicon changes
-  }).index("by_raw", ["normalizedRaw"]),
-
-  tweetEmbeddings: defineTable({
-    tweetId: v.id("tweets"),
-    embedding: v.array(v.float64()),
-    createdAt: v.number(),
-  }).vectorIndex("by_embedding", {
-    vectorField: "embedding",
-    dimensions: 384, // bge-small / MiniLM class — must match indexer's text model
-    filterFields: ["createdAt"],
-  }),
-
-  mediaEmbeddings: defineTable({
-    tweetId: v.id("tweets"),
-    mediaUrl: v.string(),
-    embedding: v.array(v.float64()),
-    createdAt: v.number(),
-  }).vectorIndex("by_embedding", {
-    vectorField: "embedding",
-    dimensions: 768, // SigLIP base — must match indexer's image model
-    filterFields: ["createdAt"],
-  }),
-
   // Explicit relevance feedback, keyed by canonical queryKey (DESIGN §6.3).
   searchFeedback: defineTable({
     queryKey: v.string(),
@@ -131,20 +100,6 @@ export default defineSchema({
     windowStart: v.number(),
     writes: v.number(),
   }).index("by_voter", ["voterId"]),
-
-  // AI answer mode output (DESIGN §10). Single writer: the answers action.
-  answers: defineTable({
-    queryKey: v.string(),
-    status: v.union(
-      v.literal("pending"),
-      v.literal("streaming"),
-      v.literal("done"),
-      v.literal("refused"), // grounding floor not met — an explicit state, not an error
-    ),
-    text: v.string(),
-    citedTweetIds: v.array(v.id("tweets")),
-    createdAt: v.number(),
-  }).index("by_query", ["queryKey"]),
 
   // Which config indexed this corpus (RISKS O4). One row per ingest run.
   meta: defineTable({

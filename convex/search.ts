@@ -57,9 +57,7 @@ export const search = query({
     cursor: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    // 0. Tier C refinement merge lands when tierC.ts exists; the reactive re-run
-    //    machinery is already in place because this is a plain Convex query.
-    // 1. Parse.
+    // Parse.
     const inputError = queryInputError(args.raw);
     if (inputError !== null) return invalidSearch(inputError);
     const parsed = await tierB(tierA(args.raw), deps(ctx));

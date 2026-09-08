@@ -1,7 +1,8 @@
 # The Loose Parser, made concrete
 
-DESIGN §4 is the theory. This is the buildable artifact: exact IR schema, tier
-contracts, the Tier C prompt + grammar, and the eval protocol that gates changes.
+DESIGN §4 is the theory. This is the buildable artifact for parser tiers A and B:
+the exact IR schema, tier contracts, and the eval protocol that gates changes.
+Tier C remains a design extension and has no active Convex module.
 Source of truth for types: `convex/engine/xquery.ts`.
 
 ## 1. The IR, exactly
@@ -32,11 +33,9 @@ Rules that make the IR canonical (→ stable `queryKey = fnv1a64(canonicalJson)`
 keys in fixed order, arrays sorted (must/should/exclude/aspects lexicographic;
 phrases by first token), all times absolute epoch ms, absent = null (never missing
 key), terms already tokenizer-normalized. Two phrasings that mean the same thing
-MUST hash identically — that's what makes queryCache, answers cache, and feedback
-aggregation work.
+MUST hash identically — that's what makes feedback aggregation work.
 
-Presentation mode (list vs AI answer) is NOT in the IR — it rides in the request
-envelope (`mode: "list" | "answer"`), user-chosen only.
+Presentation mode is not in the IR; the current request envelope is list-only.
 
 The serving shell rejects requests over 512 characters or 12 input tokens, and
 parses with at most 12 indexed terms/aspects. Unknown explicit `from:` handles
@@ -133,7 +132,10 @@ GBNF converter) from §3.1's schema at build time, so schema and grammar cannot 
 Serve via llama.cpp `--grammar-file`; repetition penalty 1.0 (penalties suppress
 structural tokens); temperature 0; max ~350 output tokens.
 
-## 4. Trigger, cache, refinement
+## 4. Planned Tier C extension
+
+The following behavior is specified for a future implementation. It is not part of
+the current serving path and has no backing table or action.
 
 - **Trigger** (all must hold): ≥1 leftover non-glue token after B; ≥4 words or an
   interrogative shape; no cached IR for `normalizedRaw`. Plus the manual trigger:

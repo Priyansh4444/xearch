@@ -21,7 +21,7 @@ use xearch_indexer::tokenizer::TOKENIZER_VERSION;
 struct Cli {
     #[command(subcommand)]
     mode: Mode,
-    /// Directory of JSONL ingress files (INGRESS.md); watched in tail mode.
+    /// Directory of JSONL ingress files (INGRESS.md).
     #[arg(long, default_value = "./data")]
     data_dir: std::path::PathBuf,
     #[arg(long, default_value = "./checkpoint.json")]
@@ -41,11 +41,6 @@ struct Cli {
 enum Mode {
     /// Bulk-load a corpus directory (throughput target: >=500 tweets/s).
     Backfill,
-    /// Follow new files 24/7 (lag target: <5s from append to searchable).
-    Tail,
-    /// Re-bucket scores, apply metric re-crawls + boost propagation, run
-    /// Tweepcred, backfill embeddings.
-    Refresh,
 }
 
 fn main() -> Result<()> {
@@ -53,10 +48,6 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.mode {
         Mode::Backfill => backfill(&cli),
-        Mode::Tail => Err(color_eyre::eyre::eyre!("tail mode is not implemented yet")),
-        Mode::Refresh => Err(color_eyre::eyre::eyre!(
-            "refresh mode is not implemented yet"
-        )),
     }
 }
 
