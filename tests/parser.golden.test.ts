@@ -7,11 +7,10 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { mapAspects, tierA, tierB, type TierBDeps } from "../convex/engine/parse";
+import { COMMON_DF_FLOOR } from "../convex/search";
 
 const NOW = Date.UTC(2026, 8, 7, 12); // fixed clock: 2026-09-07T12:00Z
 const DAY = 86_400_000;
-const COMMON_DF_FLOOR = 1000;
-
 const AUTHORS: Record<string, string> = {
   jamwt: "id-jamwt",
   elonmusk: "id-elonmusk",

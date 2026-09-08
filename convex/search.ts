@@ -41,7 +41,7 @@ function invalidSearch(error: string) {
  * ~0.12% of the 165k corpus: separates names (karpathy df 91, elonmusk 126) from
  * handle-colliding vocabulary (typescript 298, rust 666, react 941).
  */
-const COMMON_DF_FLOOR = 200;
+export const COMMON_DF_FLOOR = 200;
 
 // Corpus stats for BM25. Estimates are fine here: rel is max-normalized over the
 // candidate set, so only the idf RATIO between terms matters, which is insensitive
