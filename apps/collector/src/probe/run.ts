@@ -13,6 +13,7 @@ import {
   parseNonEmptyString,
   parseNonNegativeNumber,
 } from "../contracts/primitives.ts";
+import { parseProviderMediaType } from "../contracts/media.ts";
 import { parseProviderStatus, type ProviderStatus } from "../normalization/mapping.ts";
 
 const CHECKPOINT_VERSION = 1;
@@ -282,9 +283,10 @@ export function analyzeTimelinePage(
 
     if (status.media?.all !== undefined && status.media.all !== null) {
       for (const media of status.media.all) {
-        if (media.type === "photo" || media.type === "mosaic_photo") kinds.images += 1;
-        else if (media.type === "video") kinds.videos += 1;
-        else if (media.type === "gif") kinds.gifs += 1;
+        const mediaType = parseProviderMediaType(media.type);
+        if (mediaType === "photo" || mediaType === "mosaic_photo") kinds.images += 1;
+        else if (mediaType === "video") kinds.videos += 1;
+        else if (mediaType === "gif") kinds.gifs += 1;
       }
     }
   }

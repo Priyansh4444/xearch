@@ -7,6 +7,10 @@ import {
   parseNonNegativeNumber,
 } from "../src/contracts/primitives.ts";
 import { mean, percentile } from "../src/contracts/statistics.ts";
+import {
+  parseProviderMediaType,
+  toIngressMediaType,
+} from "../src/contracts/media.ts";
 
 describe("collector shared contracts", () => {
   test("parses only finite, non-negative numeric boundary values", () => {
@@ -29,5 +33,11 @@ describe("collector shared contracts", () => {
     expect(mean([])).toBeNull();
     expect(mean([2, 4])).toBe(3);
     expect(percentile([10, 20, 30], 0.5)).toBe(20);
+  });
+
+  test("keeps provider media values closed at the acquisition boundary", () => {
+    expect(parseProviderMediaType("photo")).toBe("photo");
+    expect(parseProviderMediaType("future_format")).toBeNull();
+    expect(toIngressMediaType("mosaic_photo")).toBe("image");
   });
 });

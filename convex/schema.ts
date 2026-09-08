@@ -3,13 +3,7 @@
 // do not add indexes speculatively — each one is a full copy of its table.
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
-
-export const mediaType = v.union(
-  v.literal("none"),
-  v.literal("image"),
-  v.literal("video"),
-  v.literal("gif"),
-);
+import { mediaTypeValidator } from "./contracts/media";
 
 export default defineSchema({
   tweets: defineTable({
@@ -28,7 +22,7 @@ export default defineSchema({
     retweetOfTweetId: v.optional(v.string()),
     inReplyToTweetId: v.optional(v.string()),
     lang: v.optional(v.string()),
-    mediaType,
+    mediaType: mediaTypeValidator,
     mediaUrls: v.array(v.string()),
     hasLink: v.boolean(),
     tokenCount: v.number(), // BM25 length (near-binary, but keep the data)
@@ -51,7 +45,7 @@ export default defineSchema({
     // denormalized for filter pushdown — postings answer queries alone (DESIGN §2)
     authorId: v.string(),
     createdAt: v.number(),
-    mediaType, // string enum, matches tweets.mediaType
+    mediaType: mediaTypeValidator, // matches tweets.mediaType
     scoreBucket: v.number(), // 0..255 quantized static score; NOT live engagement
   })
     .index("by_term_score", ["term", "scoreBucket"])

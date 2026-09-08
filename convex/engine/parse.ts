@@ -10,6 +10,7 @@ import {
   type MediaFilter,
   type XQuery,
 } from "./xquery";
+import { VISUAL_MEDIA_TYPES } from "../contracts/media";
 import aspectsFile from "../../shared/lexicons/aspects.json";
 
 export interface ParseTrace {
@@ -68,10 +69,12 @@ export function tierA(raw: string): { xq: XQuery; trace: ParseTrace } {
     },
     since: (val) => setTime("since", val),
     until: (val) => setTime("until", val),
-    has: (val) =>
-      ["image", "video", "gif"].includes(val)
-        ? ((xq.filters.media = val as MediaFilter), true)
-        : false,
+    has: (val) => {
+      const media = VISUAL_MEDIA_TYPES.find((type) => type === val);
+      if (media === undefined) return false;
+      xq.filters.media = media;
+      return true;
+    },
     min_likes: (val) =>
       /^\d+$/.test(val) ? ((xq.filters.minLikes = Number(val)), true) : false,
     lang: (val) =>

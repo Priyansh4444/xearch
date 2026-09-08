@@ -3,6 +3,8 @@
 // ever sees the raw query string. Mirrored by docs/PARSER.md §1 (JSON Schema) and
 // the Tier C output grammar. Bump `v` on any breaking change.
 
+import type { VisualMediaType } from "../contracts/media";
+
 export const XQUERY_VERSION = 1 as const;
 
 export type Intent =
@@ -14,7 +16,7 @@ export type Intent =
   | "compare"
   | "event";
 
-export type MediaFilter = "image" | "video" | "gif";
+export type MediaFilter = VisualMediaType;
 
 export interface XQueryFilters {
   authorId: string | null; // resolved id — NEVER a handle or display name

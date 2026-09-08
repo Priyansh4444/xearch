@@ -9,6 +9,7 @@ import { v } from "convex/values";
 import type { MutationCtx } from "./_generated/server";
 import { TOKENIZER_VERSION } from "./engine/tokenize";
 import aspectsFile from "../shared/lexicons/aspects.json";
+import { mediaTypeValidator } from "./contracts/media";
 
 const postingIn = v.object({
   term: v.string(),
@@ -32,12 +33,7 @@ const tweetIn = v.object({
   retweetOfTweetId: v.optional(v.string()),
   inReplyToTweetId: v.optional(v.string()),
   lang: v.optional(v.string()),
-  mediaType: v.union(
-    v.literal("none"),
-    v.literal("image"),
-    v.literal("video"),
-    v.literal("gif"),
-  ),
+  mediaType: mediaTypeValidator,
   mediaUrls: v.array(v.string()),
   hasLink: v.boolean(),
   tokenCount: v.number(),
