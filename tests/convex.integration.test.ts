@@ -178,7 +178,7 @@ describe("trusted feedback", () => {
     expect(totals.map((row) => row.total)).toEqual([-1]);
     expect(await t.run((ctx) => ctx.db.query("searchFeedback").collect())).toHaveLength(1);
     const rerun = await t.query(api.search.search, { raw: "apple", sort: "top" });
-    expect(rerun.results[0]!.parts.fb).toBeLessThan(0);
+    expect(rerun.results[0]!.parts["fb"]).toBeLessThan(0);
   });
 
   test("more than 500 voters are represented without truncation", async () => {
@@ -193,7 +193,7 @@ describe("trusted feedback", () => {
       await voter.mutation(api.feedback.vote, { ...args, vote });
     }
     const rerun = await t.query(api.search.search, { raw: "apple", sort: "top" });
-    expect(rerun.results[0]!.parts.fb).toBe(0.1);
+    expect(rerun.results[0]!.parts["fb"]).toBe(0.1);
   });
 
   test("legacy anonymous rows do not enter trusted totals; rate limits are enforced", async () => {
@@ -205,7 +205,7 @@ describe("trusted feedback", () => {
       ...args, sessionId: "legacy", vote: 1,
     }));
     const before = await t.query(api.search.search, { raw: "apple", sort: "top" });
-    expect(before.results[0]!.parts.fb).toBe(0);
+    expect(before.results[0]!.parts["fb"]).toBe(0);
     const voter = t.withIdentity({ subject: "one-voter" });
     for (let i = 0; i < 30; i++) {
       await voter.mutation(api.feedback.vote, { ...args, vote: i % 2 === 0 ? 1 : -1 });

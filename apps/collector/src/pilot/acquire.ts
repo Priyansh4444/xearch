@@ -48,7 +48,7 @@ export interface AcquireOptions {
   sleep?: (delayMs: number) => Promise<void>;
   log?: (line: string) => void;
   /** Stop after this many HTTP requests (tests simulate an interruption with it). */
-  maxRequests?: number;
+  maxRequests?: number | undefined;
 }
 
 export async function createRun(paths: RunPaths, config: PilotConfig, runId: string, now: number): Promise<Manifest> {

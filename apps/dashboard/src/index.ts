@@ -162,7 +162,9 @@ async function countBucket(bucket: R2Bucket): Promise<{ objects: number; bytes: 
   let bytes = 0;
   let cursor: string | undefined;
   do {
-    const page = await bucket.list({ cursor, limit: 1000 });
+    const page = await bucket.list(
+      cursor === undefined ? { limit: 1000 } : { cursor, limit: 1000 },
+    );
     for (const object of page.objects) {
       objects += 1;
       bytes += object.size;
@@ -176,7 +178,11 @@ async function listPrefixes(bucket: R2Bucket, prefix: string): Promise<string[]>
   const prefixes: string[] = [];
   let cursor: string | undefined;
   do {
-    const page = await bucket.list({ prefix, delimiter: "/", cursor, limit: 1000 });
+    const page = await bucket.list(
+      cursor === undefined
+        ? { prefix, delimiter: "/", limit: 1000 }
+        : { prefix, delimiter: "/", cursor, limit: 1000 },
+    );
     prefixes.push(...page.delimitedPrefixes);
     cursor = page.truncated ? page.cursor : undefined;
   } while (cursor !== undefined);

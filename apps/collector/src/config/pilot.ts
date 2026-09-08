@@ -63,7 +63,7 @@ export class PilotConfigError extends Error {
 
   constructor(
     readonly path: string,
-    readonly cause: unknown,
+    override readonly cause: unknown,
   ) {
     super(`failed to load pilot config ${path}`);
   }

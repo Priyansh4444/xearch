@@ -244,13 +244,13 @@ function mapProviderStatus(value: ProviderStatus, context: CandidateContext): Ma
 
   const quote = value.quote;
   const quotedTweetId = quote !== null && typeof quote === "object" && !Array.isArray(quote)
-    ? nonEmptyString(quote.id)
+    ? nonEmptyString(quote["id"])
     : null;
   const quoteTombstone =
     quote !== null &&
     typeof quote === "object" &&
     !Array.isArray(quote) &&
-    quote.type === "tombstone";
+    quote["type"] === "tombstone";
   const reposted = value.reposted_by !== undefined && value.reposted_by !== null;
 
   const tweet: IngressTweet = {
