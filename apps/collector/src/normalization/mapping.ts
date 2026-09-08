@@ -3,7 +3,75 @@
 // exactly this behaviour; the golden fixtures under apps/collector/tests/fixtures
 // are the executable contract.
 
+import { Option } from "effect";
+import * as Schema from "effect/Schema";
+
 export type CandidateOrigin = "timeline" | "embedded";
+
+const ProviderVerificationSchema = Schema.Struct({
+  verified: Schema.optional(Schema.Boolean),
+});
+
+const ProviderAuthorSchema = Schema.Struct({
+  id: Schema.optional(Schema.String),
+  screen_name: Schema.optional(Schema.String),
+  name: Schema.optional(Schema.String),
+  followers: Schema.optional(Schema.Number),
+  following: Schema.optional(Schema.Number),
+  joined: Schema.optional(Schema.Unknown),
+  verification: Schema.optional(Schema.NullOr(ProviderVerificationSchema)),
+  description: Schema.optional(Schema.String),
+  avatar_url: Schema.optional(Schema.String),
+});
+
+const ProviderMediaItemSchema = Schema.Struct({
+  type: Schema.optional(Schema.String),
+  url: Schema.optional(Schema.String),
+});
+
+const ProviderMediaSchema = Schema.Struct({
+  all: Schema.optional(Schema.NullOr(Schema.Array(ProviderMediaItemSchema))),
+});
+
+const ProviderFacetSchema = Schema.Struct({
+  type: Schema.optional(Schema.String),
+  original: Schema.optional(Schema.String),
+  replacement: Schema.optional(Schema.String),
+});
+
+const ProviderStatusSchema = Schema.Struct({
+  type: Schema.optional(Schema.String),
+  id: Schema.optional(Schema.String),
+  text: Schema.optional(Schema.String),
+  created_timestamp: Schema.optional(Schema.Unknown),
+  created_at: Schema.optional(Schema.String),
+  likes: Schema.optional(Schema.Number),
+  reposts: Schema.optional(Schema.Number),
+  quotes: Schema.optional(Schema.Number),
+  replies: Schema.optional(Schema.Number),
+  media: Schema.optional(Schema.NullOr(ProviderMediaSchema)),
+  author: Schema.optional(Schema.NullOr(ProviderAuthorSchema)),
+  quote: Schema.optional(Schema.NullOr(Schema.Record(Schema.String, Schema.Unknown))),
+  reposted_by: Schema.optional(Schema.NullOr(Schema.Record(Schema.String, Schema.Unknown))),
+  lang: Schema.optional(Schema.String),
+  raw_text: Schema.optional(
+    Schema.NullOr(Schema.Struct({ facets: Schema.optional(Schema.Array(ProviderFacetSchema)) })),
+  ),
+  replying_to: Schema.optional(
+    Schema.NullOr(Schema.Struct({ status: Schema.optional(Schema.String) })),
+  ),
+  replying_to_status: Schema.optional(
+    Schema.NullOr(
+      Schema.Union([
+        Schema.String,
+        Schema.Array(Schema.Union([Schema.String, Schema.Struct({ id: Schema.optional(Schema.String) })])),
+      ]),
+    ),
+  ),
+});
+
+type ProviderStatus = Schema.Schema.Type<typeof ProviderStatusSchema>;
+type ProviderAuthor = Schema.Schema.Type<typeof ProviderAuthorSchema>;
 
 export interface CandidateContext {
   /** Numeric id of the seed account whose timeline this page belongs to. */
@@ -122,10 +190,14 @@ export type MappedCandidate = MappedTweet | RejectedCandidate;
 
 /** Map one provider status (timeline row or embedded quote) and everything nested in it. */
 export function mapStatus(value: unknown, context: CandidateContext): MappedCandidate {
-  if (!isRecord(value) || value.type !== "status") {
+  const status = Schema.decodeUnknownOption(ProviderStatusSchema)(value);
+  if (Option.isNone(status) || status.value.type !== "status") {
     return reject(context, null, ["invalid_response_shape"], []);
   }
+  return mapProviderStatus(status.value, context);
+}
 
+function mapProviderStatus(value: ProviderStatus, context: CandidateContext): MappedCandidate {
   const id = nonEmptyString(value.id);
   const reasons: RejectionCode[] = [];
   if (id === null) reasons.push("missing_tweet_id");
@@ -151,10 +223,16 @@ export function mapStatus(value: unknown, context: CandidateContext): MappedCand
     return reject(context, id, dedupe(reasons), embedded);
   }
 
-  const quote = isRecord(value.quote) ? value.quote : null;
-  const quotedTweetId = quote === null ? null : nonEmptyString(quote.id);
-  const quoteTombstone = quote !== null && quote.type === "tombstone";
-  const reposted = isRecord(value.reposted_by);
+  const quote = value.quote;
+  const quotedTweetId = quote !== null && typeof quote === "object" && !Array.isArray(quote)
+    ? nonEmptyString(quote.id)
+    : null;
+  const quoteTombstone =
+    quote !== null &&
+    typeof quote === "object" &&
+    !Array.isArray(quote) &&
+    quote.type === "tombstone";
+  const reposted = value.reposted_by !== undefined && value.reposted_by !== null;
 
   const tweet: IngressTweet = {
     kind: "tweet",
@@ -190,27 +268,37 @@ export type MappedAuthor = { ok: true; author: IngressAuthor } | { ok: false; re
 
 /** Map an embedded provider author (status.author or profile user). */
 export function mapAuthor(value: unknown): MappedAuthor {
-  if (!isRecord(value)) return { ok: false, reasons: ["missing_author"] };
+  const authorValue = Schema.decodeUnknownOption(ProviderAuthorSchema)(value);
+  if (Option.isNone(authorValue)) return { ok: false, reasons: ["missing_author"] };
+  const authorData = authorValue.value;
   const reasons: RejectionCode[] = [];
 
-  const id = nonEmptyString(value.id);
+  const id = nonEmptyString(authorData.id);
   if (id === null) reasons.push("missing_author_id");
-  const screenName = nonEmptyString(value.screen_name);
+  const screenName = nonEmptyString(authorData.screen_name);
   if (screenName === null) reasons.push("missing_author_handle");
-  const displayName = nonEmptyString(value.name);
+  const displayName = nonEmptyString(authorData.name);
   if (displayName === null) reasons.push("missing_author_display_name");
-  if (!nonNegativeNumber(value.followers) || !nonNegativeNumber(value.following)) {
+  const followerCount = nonNegativeNumber(authorData.followers) ? authorData.followers : null;
+  const followingCount = nonNegativeNumber(authorData.following) ? authorData.following : null;
+  if (followerCount === null || followingCount === null) {
     reasons.push("missing_author_counts");
   }
-  const createdAt = dateMilliseconds(value.joined);
+  const createdAt = dateMilliseconds(authorData.joined);
   if (createdAt === null) reasons.push("missing_author_created_at");
-  const verified =
-    isRecord(value.verification) && typeof value.verification.verified === "boolean"
-      ? value.verification.verified
-      : null;
+  const verified = authorData.verification?.verified ?? null;
   if (verified === null) reasons.push("missing_author_verification");
 
-  if (reasons.length > 0 || id === null || screenName === null || displayName === null || createdAt === null || verified === null) {
+  if (
+    reasons.length > 0 ||
+    id === null ||
+    screenName === null ||
+    displayName === null ||
+    createdAt === null ||
+    verified === null ||
+    followerCount === null ||
+    followingCount === null
+  ) {
     return { ok: false, reasons };
   }
 
@@ -219,23 +307,24 @@ export function mapAuthor(value: unknown): MappedAuthor {
     id,
     handle: screenName.replace(/^@/, "").toLowerCase(),
     displayName,
-    followerCount: value.followers as number,
-    followingCount: value.following as number,
+    followerCount,
+    followingCount,
     verified,
     createdAt,
   };
-  const bio = nonEmptyString(value.description);
+  const bio = nonEmptyString(authorData.description);
   if (bio !== null) author.bio = bio;
-  const avatarUrl = nonEmptyString(value.avatar_url);
+  const avatarUrl = nonEmptyString(authorData.avatar_url);
   if (avatarUrl !== null) author.avatarUrl = avatarUrl;
   return { ok: true, author };
 }
 
-function mapEmbedded(status: Record<string, unknown>, context: CandidateContext, parentId: string | null): MappedCandidate[] {
+function mapEmbedded(status: ProviderStatus, context: CandidateContext, parentId: string | null): MappedCandidate[] {
   const quote = status.quote;
-  if (!isRecord(quote) || quote.type !== "status") return [];
+  const quotedStatus = Schema.decodeUnknownOption(ProviderStatusSchema)(quote);
+  if (Option.isNone(quotedStatus) || quotedStatus.value.type !== "status") return [];
   return [
-    mapStatus(quote, {
+    mapProviderStatus(quotedStatus.value, {
       ...context,
       origin: "embedded",
       parentId: parentId ?? `${context.rawFile}#${context.index}`,
@@ -243,7 +332,7 @@ function mapEmbedded(status: Record<string, unknown>, context: CandidateContext,
   ];
 }
 
-function mapMetrics(status: Record<string, unknown>): IngressMetrics | null {
+function mapMetrics(status: ProviderStatus): IngressMetrics | null {
   const likes = status.likes;
   const reposts = status.reposts;
   const quotes = status.quotes;
@@ -254,16 +343,12 @@ function mapMetrics(status: Record<string, unknown>): IngressMetrics | null {
   return { likes, retweets: reposts, quotes, replies };
 }
 
-function mapMedia(value: unknown): IngressMedia[] | null {
-  if (value === undefined || value === null) return [];
-  if (!isRecord(value)) return null;
-  if (value.all === undefined || value.all === null) return [];
-  if (!Array.isArray(value.all)) return null;
+function mapMedia(value: ProviderStatus["media"]): IngressMedia[] | null {
+  if (value === undefined || value === null || value.all === undefined || value.all === null) return [];
 
   const out: IngressMedia[] = [];
   const seen = new Set<string>();
   for (const item of value.all) {
-    if (!isRecord(item)) return null;
     const url = nonEmptyString(item.url);
     if (url === null) return null;
     let type: IngressMedia["type"];
@@ -288,26 +373,27 @@ function mapMedia(value: unknown): IngressMedia[] | null {
   return out;
 }
 
-function mapInReplyTo(status: Record<string, unknown>): string | null {
-  if (isRecord(status.replying_to)) {
+function mapInReplyTo(status: ProviderStatus): string | null {
+  if (status.replying_to !== undefined && status.replying_to !== null) {
     const parent = nonEmptyString(status.replying_to.status);
     if (parent !== null) return parent;
   }
   if (Array.isArray(status.replying_to_status)) {
     const first = status.replying_to_status[0];
-    if (isRecord(first)) return nonEmptyString(first.id);
+    if (typeof first === "object" && first !== null && !Array.isArray(first)) {
+      return nonEmptyString(first.id);
+    }
     return nonEmptyString(first);
   }
   return nonEmptyString(status.replying_to_status);
 }
 
-function mapEntities(rawText: unknown): IngressEntities | null {
-  if (!isRecord(rawText) || !Array.isArray(rawText.facets)) return null;
+function mapEntities(rawText: ProviderStatus["raw_text"]): IngressEntities | null {
+  if (rawText === undefined || rawText === null || rawText.facets === undefined) return null;
   const hashtags: string[] = [];
   const mentions: string[] = [];
   const urls: string[] = [];
   for (const facet of rawText.facets) {
-    if (!isRecord(facet)) continue;
     if (facet.type === "hashtag") pushUnique(hashtags, nonEmptyString(facet.original)?.replace(/^#/, ""));
     else if (facet.type === "mention") pushUnique(mentions, nonEmptyString(facet.original)?.replace(/^@/, ""));
     else if (facet.type === "url") pushUnique(urls, nonEmptyString(facet.replacement) ?? nonEmptyString(facet.original));
