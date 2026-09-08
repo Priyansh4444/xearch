@@ -140,7 +140,12 @@ export interface FxTwitterClientOptions {
   now?: () => number;
 }
 
-export type FxTwitterErrorKind = "transport" | "http" | "decode";
+export const FxTwitterErrorKind = {
+  Transport: "transport",
+  Http: "http",
+  Decode: "decode",
+} as const;
+export type FxTwitterErrorKind = (typeof FxTwitterErrorKind)[keyof typeof FxTwitterErrorKind];
 
 export class FxTwitterError extends Data.TaggedError("FxTwitterError")<{
   readonly message: string;
@@ -291,7 +296,7 @@ export class FxTwitterClient implements PilotClient {
             message: `FxTwitter returned HTTP ${response.status}`,
             status: response.status,
             responseBody: bodyText,
-            kind: "http",
+            kind: FxTwitterErrorKind.Http,
             retryDelay: retryDelayMs(response, attempt, this.retryBaseDelayMs),
           });
         }
@@ -307,14 +312,16 @@ export class FxTwitterClient implements PilotClient {
           message: `FxTwitter request failed on attempt ${attempt}: ${errorMessage(cause)}`,
           status: null,
           responseBody: null,
-          kind: "transport",
+          kind: FxTwitterErrorKind.Transport,
           retryDelay: exponentialDelayMs(attempt, this.retryBaseDelayMs),
         }),
       });
       return Effect.retry(once, {
         while: (error) => {
-          const retryable = error.kind === "transport"
-            || (error.kind === "http" && error.status !== null && isRetryableStatus(error.status));
+          const retryable = error.kind === FxTwitterErrorKind.Transport
+            || (error.kind === FxTwitterErrorKind.Http
+              && error.status !== null
+              && isRetryableStatus(error.status));
           if (!retryable || attempt > this.retries) return Effect.succeed(false);
           const sleep = this.sleep;
           if (sleep === undefined) return Effect.as(Effect.sleep(error.retryDelay), true);
@@ -324,7 +331,7 @@ export class FxTwitterClient implements PilotClient {
               message: `Retry wait failed: ${errorMessage(cause)}`,
               status: null,
               responseBody: null,
-              kind: "transport",
+              kind: FxTwitterErrorKind.Transport,
               retryDelay: 0,
             }),
           }), true);
@@ -367,7 +374,7 @@ function parseJson(body: string): FxTwitterJson {
       message: "FxTwitter returned invalid JSON",
       status: 200,
       responseBody: body,
-      kind: "decode",
+      kind: FxTwitterErrorKind.Decode,
       retryDelay: 0,
     });
   }
@@ -412,7 +419,7 @@ function decodeError(cause: unknown, resource = "response"): FxTwitterError {
       message: `FxTwitter ${resource} decode failed: ${errorMessage(cause)}`,
       status: 200,
       responseBody: null,
-      kind: "decode",
+      kind: FxTwitterErrorKind.Decode,
       retryDelay: 0,
     });
 }

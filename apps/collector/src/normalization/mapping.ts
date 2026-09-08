@@ -374,11 +374,11 @@ function mapMetrics(status: ProviderStatus): IngressMetrics | null {
 }
 
 function mapMedia(value: ProviderStatus["media"]): IngressMedia[] | null {
-  if (value === undefined || value === null || value.all === undefined || value.all === null) return [];
+  if (value === undefined || value === null) return [];
 
   const out: IngressMedia[] = [];
   const seen = new Set<string>();
-  for (const item of value.all) {
+  for (const item of value.all ?? []) {
     const url = parseNonEmptyString(item.url);
     if (url === null) return null;
     const providerType = parseProviderMediaType(item.type);
