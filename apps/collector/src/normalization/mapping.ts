@@ -12,6 +12,9 @@ import {
 
 export type CandidateOrigin = "timeline" | "embedded";
 
+const ProviderMediaTypeSchema = Schema.Literals(["photo", "mosaic_photo", "video", "gif"]);
+type ProviderMediaType = Schema.Schema.Type<typeof ProviderMediaTypeSchema>;
+
 const ProviderVerificationSchema = Schema.Struct({
   verified: Schema.optional(Schema.Boolean),
 });
@@ -377,26 +380,26 @@ function mapMedia(value: ProviderStatus["media"]): IngressMedia[] | null {
   for (const item of value.all) {
     const url = parseNonEmptyString(item.url);
     if (url === null) return null;
-    let type: IngressMedia["type"];
-    switch (item.type) {
-      case "photo":
-      case "mosaic_photo":
-        type = "image";
-        break;
-      case "video":
-        type = "video";
-        break;
-      case "gif":
-        type = "gif";
-        break;
-      default:
-        return null;
-    }
+    const providerType = Schema.decodeUnknownOption(ProviderMediaTypeSchema)(item.type);
+    if (Option.isNone(providerType)) return null;
+    const type = ingressMediaType(providerType.value);
     if (seen.has(url)) continue;
     seen.add(url);
     out.push({ type, url });
   }
   return out;
+}
+
+function ingressMediaType(type: ProviderMediaType): IngressMedia["type"] {
+  switch (type) {
+    case "photo":
+    case "mosaic_photo":
+      return "image";
+    case "video":
+      return "video";
+    case "gif":
+      return "gif";
+  }
 }
 
 function mapInReplyTo(status: ProviderStatus): string | null {

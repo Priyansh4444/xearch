@@ -8,7 +8,7 @@ import * as Schema from "effect/Schema";
 import {
   FxTwitterError,
   FxTwitterTimelineStatusSchema,
-  type FxTwitterTimelineResult,
+  type FxTwitterJson,
   type PilotClient,
   type TimelineResponse,
 } from "../acquisition/fxtwitter.ts";
@@ -297,7 +297,7 @@ async function fetchOnePage(
 
 /** Creation times of top-level rows authored by the seed and not reposted (Q20 stop rule). */
 export function authoredTimestamps(
-  results: ReadonlyArray<FxTwitterTimelineResult>,
+  results: ReadonlyArray<FxTwitterJson>,
   userId: string,
 ): number[] {
   const out: number[] = [];

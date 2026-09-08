@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactElement } from "react";
+import { startTransition, useEffect, useState, type ReactElement } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { ConvexError } from "convex/values";
 import type { FunctionReturnType } from "convex/server";
@@ -25,8 +25,6 @@ interface Shown {
 /** Known-dense corpus topics — each returns real posts from the archived run. */
 const DEMO_QUERIES = ["bun", "pricing", "rust", "react server components", "agents"];
 
-const DEBOUNCE_MS = 250;
-
 function useSearchPage() {
   const [initial] = useState(() => {
     const params = new URLSearchParams(window.location.search);
@@ -43,11 +41,6 @@ function useSearchPage() {
   const [lane, setLane] = useState<Lane>(initial.lane);
   const inputError = queryInputError(query);
   const canVote = useQuery(api.feedback.canVote);
-
-  useEffect(() => {
-    const handle = setTimeout(() => setQuery(input.trim()), DEBOUNCE_MS);
-    return () => clearTimeout(handle);
-  }, [input]);
 
   // Keep the query shareable: /?q=...&sort=...&lane=... mirrors the controls.
   useEffect(() => {
@@ -80,10 +73,14 @@ function useSearchPage() {
 
   const pickQuery = (next: string) => {
     setInput(next);
-    setQuery(next);
+    startTransition(() => setQuery(next.trim()));
   };
-  return { input, setInput, query, setSort, lane, setLane, shown, error, searching,
-    operatorSort, activeSort, canVote: canVote === true, pickQuery };
+  const changeInput = (next: string) => {
+    setInput(next);
+    startTransition(() => setQuery(next.trim()));
+  };
+  return { input, query, setSort, lane, setLane, shown, error, searching,
+    operatorSort, activeSort, canVote: canVote === true, pickQuery, changeInput };
 }
 
 function presentResults(
@@ -106,8 +103,8 @@ function presentResults(
 }
 
 export function App(): ReactElement {
-  const { input, setInput, query, setSort, lane, setLane, shown, error, searching,
-    operatorSort, activeSort, canVote, pickQuery } = useSearchPage();
+  const { input, query, setSort, lane, setLane, shown, error, searching,
+    operatorSort, activeSort, canVote, pickQuery, changeInput } = useSearchPage();
   return (
     <div className="page">
       <header className="masthead">
@@ -119,7 +116,7 @@ export function App(): ReactElement {
         <input
           type="search"
           value={input}
-          onChange={(e) => setInput(e.target.value)}
+          onChange={(e) => changeInput(e.target.value)}
           placeholder="search 164,959 posts"
           aria-label="Search posts"
         />

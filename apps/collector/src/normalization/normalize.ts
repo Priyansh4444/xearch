@@ -3,7 +3,7 @@
 // `*Run` helpers wrap it with filesystem access to the run layout.
 
 import { join } from "node:path";
-import type { FxTwitterTimelineResult } from "../acquisition/fxtwitter.ts";
+import type { FxTwitterJson } from "../acquisition/fxtwitter.ts";
 import { parseTimelinePage } from "../acquisition/fxtwitter.ts";
 import type { PilotConfig } from "../config/pilot.ts";
 import type { Manifest } from "../pilot/manifest.ts";
@@ -31,7 +31,7 @@ export interface RawPageInput {
   page: number;
   rawFile: string;
   receivedAt: number;
-  results: ReadonlyArray<FxTwitterTimelineResult>;
+  results: ReadonlyArray<FxTwitterJson>;
 }
 
 export interface NormalizeAccount {

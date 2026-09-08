@@ -5,6 +5,7 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as Data from "effect/Data";
+import * as Option from "effect/Option";
 
 const DEFAULT_BASE_URL = "https://api.fxtwitter.com";
 const USER_AGENT = "xearch-collection-pilot/0.2";
@@ -16,34 +17,70 @@ export interface FxTwitterCursor {
 
 export interface FxTwitterTimelinePage {
   code: number;
-  results: ReadonlyArray<FxTwitterTimelineResult>;
+  results: ReadonlyArray<FxTwitterJson>;
   cursor: FxTwitterCursor;
 }
 
 export type FxTwitterJson = Schema.Schema.Type<typeof Schema.Json>;
 
-const TimelineResultSchema = Schema.Json;
-type FxTwitterTimelineValue =
-  | string
-  | number
-  | boolean
-  | null
-  | FxTwitterTimelineResult
-  | ReadonlyArray<FxTwitterTimelineValue>;
-export type FxTwitterTimelineResult =
-  | string
-  | number
-  | boolean
-  | null
-  | { readonly [key: string]: FxTwitterTimelineValue | undefined }
-  | ReadonlyArray<FxTwitterTimelineValue>;
-
 export const FxTwitterTimelineStatusSchema = Schema.Struct({
-  author: Schema.optional(Schema.NullOr(Schema.Struct({ id: Schema.String }))),
+  type: Schema.optional(Schema.String),
+  id: Schema.optional(Schema.String),
+  text: Schema.optional(Schema.String),
+  author: Schema.optional(
+    Schema.NullOr(
+      Schema.Struct({
+        id: Schema.optional(Schema.String),
+        screen_name: Schema.optional(Schema.String),
+        name: Schema.optional(Schema.String),
+        followers: Schema.optional(Schema.Number),
+        following: Schema.optional(Schema.Number),
+        joined: Schema.optional(Schema.Json),
+        verification: Schema.optional(
+          Schema.NullOr(Schema.Struct({ verified: Schema.optional(Schema.Boolean) })),
+        ),
+      }),
+    ),
+  ),
   created_timestamp: Schema.optional(Schema.Json),
+  created_at: Schema.optional(Schema.String),
+  likes: Schema.optional(Schema.Number),
+  reposts: Schema.optional(Schema.Number),
+  quotes: Schema.optional(Schema.Number),
+  replies: Schema.optional(Schema.Number),
   reposted_by: Schema.optional(Schema.Json),
+  quote: Schema.optional(Schema.Json),
+  replying_to: Schema.optional(
+    Schema.NullOr(
+      Schema.Struct({
+        screen_name: Schema.optional(Schema.String),
+        status: Schema.optional(Schema.String),
+      }),
+    ),
+  ),
+  media: Schema.optional(
+    Schema.NullOr(
+      Schema.Struct({
+        all: Schema.optional(
+          Schema.NullOr(
+            Schema.Array(
+              Schema.Struct({
+                type: Schema.optional(Schema.String),
+                url: Schema.optional(Schema.String),
+              }),
+            ),
+          ),
+        ),
+      }),
+    ),
+  ),
 });
 export type FxTwitterTimelineStatus = Schema.Schema.Type<typeof FxTwitterTimelineStatusSchema>;
+
+export function parseTimelineStatus(value: unknown): FxTwitterTimelineStatus | null {
+  const parsed = Schema.decodeUnknownOption(FxTwitterTimelineStatusSchema)(value);
+  return Option.isSome(parsed) ? parsed.value : null;
+}
 
 /** Minimal profile fields acquisition needs for identity resolution. */
 export interface FxTwitterProfile {
@@ -69,7 +106,7 @@ export interface TimelineResponse {
   attempts: number;
   /** Wall-clock epoch ms when the final successful response arrived. */
   receivedAt: number;
-  raw: FxTwitterJson | FxTwitterTimelineResult | null;
+  raw: FxTwitterJson | null;
   page: FxTwitterTimelinePage | null;
 }
 
@@ -115,7 +152,7 @@ export class FxTwitterError extends Data.TaggedError("FxTwitterError")<{
 
 const TimelinePageSchema = Schema.Struct({
   code: Schema.Number,
-  results: Schema.Array(TimelineResultSchema),
+  results: Schema.Array(Schema.Json),
   cursor: Schema.Struct({
     top: Schema.NullOr(Schema.String),
     bottom: Schema.NullOr(Schema.String),

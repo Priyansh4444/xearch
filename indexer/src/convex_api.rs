@@ -14,7 +14,7 @@ const MAX_ATTEMPTS: u32 = 8;
 pub struct ConvexClient {
     pub deployment_url: String, // e.g. https://something.convex.cloud
     pub deploy_key: String,
-    agent: ureq::Agent,
+    client: reqwest::blocking::Client,
 }
 
 impl ConvexClient {
@@ -31,11 +31,11 @@ impl ConvexClient {
         Ok(Self {
             deployment_url: deployment_url.trim_end_matches('/').to_string(),
             deploy_key,
-            agent: ureq::AgentBuilder::new()
-                .timeout_connect(std::time::Duration::from_secs(10))
-                .timeout_read(std::time::Duration::from_secs(60))
-                .timeout_write(std::time::Duration::from_secs(60))
-                .build(),
+            client: reqwest::blocking::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(10))
+                .timeout(std::time::Duration::from_secs(60))
+                .build()
+                .context("build Convex HTTP client")?,
         })
     }
 
@@ -86,14 +86,29 @@ impl ConvexClient {
                 std::thread::sleep(std::time::Duration::from_millis(backoff_ms(attempt)));
             }
             let response = self
-                .agent
+                .client
                 .post(&url)
-                .set("Authorization", &format!("Convex {}", self.deploy_key))
-                .send_json(&body);
+                .header(
+                    reqwest::header::AUTHORIZATION,
+                    format!("Convex {}", self.deploy_key),
+                )
+                .json(&body)
+                .send();
             match response {
                 Ok(resp) => {
+                    let code = resp.status();
+                    if code.is_server_error() {
+                        last_error = format!("HTTP {code}: {}", resp.text().unwrap_or_default());
+                        continue;
+                    }
+                    if !code.is_success() {
+                        bail!(
+                            "convex mutation {path} rejected (HTTP {code}): {}",
+                            resp.text().unwrap_or_default()
+                        );
+                    }
                     let reply: serde_json::Value =
-                        resp.into_json().context("convex reply is not JSON")?;
+                        resp.json().context("convex reply is not JSON")?;
                     match reply.get("status").and_then(serde_json::Value::as_str) {
                         Some("success") => {
                             return reply
@@ -110,16 +125,6 @@ impl ConvexClient {
                             bail!("convex mutation {path} failed: {reply}");
                         }
                     }
-                }
-                // 5xx and OCC conflicts (Convex reports commit races as 503) retry.
-                Err(ureq::Error::Status(code, resp)) if code >= 500 => {
-                    last_error = format!("HTTP {code}: {}", resp.into_string().unwrap_or_default());
-                }
-                Err(ureq::Error::Status(code, resp)) => {
-                    bail!(
-                        "convex mutation {path} rejected (HTTP {code}): {}",
-                        resp.into_string().unwrap_or_default()
-                    );
                 }
                 Err(e) => last_error = format!("transport: {e}"), // connection refused etc.
             }

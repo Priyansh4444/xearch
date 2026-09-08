@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   FxTwitterError,
-  type FxTwitterTimelineResult,
+  type FxTwitterJson,
   type PilotClient,
   type ProfileResponse,
   type TimelineRequest,
@@ -357,7 +357,7 @@ function profile(id: string, screenName: string): ProfileResponse {
 }
 
 function page(
-  results: FxTwitterTimelineResult[],
+  results: FxTwitterJson[],
   bottom: string | null,
   receivedAt = NOW,
 ): TimelineResponse {
@@ -373,8 +373,8 @@ function row(
   id: string,
   authorId: string,
   createdAtMs: number,
-  options: { repostedBy?: string; quotes?: FxTwitterTimelineResult; likes?: number } = {},
-): FxTwitterTimelineResult {
+  options: { repostedBy?: string; quotes?: FxTwitterJson; likes?: number } = {},
+): FxTwitterJson {
   return {
     type: "status",
     id,
