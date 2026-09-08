@@ -140,7 +140,10 @@ The producer's complete capture envelope must stay below 200KB (it currently
 uses 190,000 bytes). The importer rejects reconstructed event envelopes at
 200,000 bytes, including oversized single records; it never truncates them.
 Oversize/depth failures require upstream repair or separate handling. Export
-metadata added by PostHog is not counted as part of the capture payload.
+metadata added by PostHog is not counted as part of the capture payload. Separately,
+raw export lines above 1,000,000 bytes are streamed into a diagnostic hash without
+being buffered or parsed. This bound includes metadata and JSON-string escaping;
+re-export oversized lines rather than trimming them. Following lines still run.
 
 ## Batch policy and checks
 

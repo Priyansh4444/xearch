@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { createHash } from 'node:crypto';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs/promises';
 import os from 'node:os';
@@ -141,3 +142,28 @@ for (const mixed of [false, true]) {
     assert.equal((await stage(f.input, f.state)).records, 1);
   });
 }
+
+test('raw export lines are bounded before parsing and oversized lines do not hide following records', async t => {
+  const f = await fixture(t);
+  const oversized = JSON.stringify({ ...event(), export_metadata: 'x'.repeat(1_000_000) });
+  const valid = JSON.stringify(event([{ ...post, text: 'multibyte 😀' }]));
+  const malformed = '😀'.repeat(300_000);
+  await fs.writeFile(f.input, oversized + '\n' + valid + '\r\n' + malformed);
+  const batch = await stage(f.input, f.state);
+  assert.equal(batch.records, 2);
+  assert.equal(batch.quarantineCount, 2);
+  const issues = (await fs.readFile(path.join(batch.directory, 'quarantine.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
+  assert.deepEqual(issues.map(x => x.line), [1, 3]);
+  for (const [i, raw] of [oversized, malformed].entries()) {
+    assert.match(issues[i].reason, /export line exceeds/);
+    assert.equal(issues[i].sha256, createHash('sha256').update(raw).digest('hex'));
+  }
+});
+test('raw line byte bound accepts the boundary and normal unterminated JSONL', async t => {
+  const f = await fixture(t);
+  const raw = JSON.stringify(event());
+  await fs.writeFile(f.input, raw + ' '.repeat(1_000_000 - Buffer.byteLength(raw)));
+  const batch = await stage(f.input, f.state);
+  assert.equal(batch.records, 2);
+  assert.equal(batch.quarantineCount, 0);
+});

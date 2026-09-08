@@ -4,10 +4,10 @@ import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import * as fs from 'node:fs/promises';
 import path from 'node:path';
-import { createInterface } from 'node:readline';
 import { pathToFileURL } from 'node:url';
 
 const MAX_EVENT_BYTES = 200_000;
+const MAX_EXPORT_LINE_BYTES = 1_000_000; // Includes PostHog metadata / JSON string escaping.
 const FLOOR = Date.UTC(2006, 0, 1);
 const hash = value => createHash('sha256').update(typeof value === 'string' ? value : JSON.stringify(value)).digest('hex');
 const object = x => x !== null && typeof x === 'object' && !Array.isArray(x);
@@ -117,6 +117,32 @@ async function ledgerAt(state) {
   return ledger;
 }
 
+/** Read LF/CRLF JSONL with bounded buffering; hash oversized lines without parsing them. */
+async function* exportLines(input) {
+  let parts = [], bytes = 0, digest = createHash('sha256');
+  const finish = () => {
+    const line = { oversized: bytes > MAX_EXPORT_LINE_BYTES, sha256: digest.digest('hex') };
+    if (!line.oversized) line.raw = Buffer.concat(parts, bytes).toString('utf8');
+    parts = []; bytes = 0; digest = createHash('sha256');
+    return line;
+  };
+  for await (const chunk of createReadStream(input, { highWaterMark: 64 * 1024 })) {
+    let start = 0;
+    while (start < chunk.length) {
+      const end = chunk.indexOf(10, start);
+      const part = chunk.subarray(start, end < 0 ? chunk.length : end);
+      bytes += part.length;
+      digest.update(part);
+      if (bytes <= MAX_EXPORT_LINE_BYTES) parts.push(part);
+      else parts = [];
+      if (end < 0) break;
+      yield finish();
+      start = end + 1;
+    }
+  }
+  if (bytes > 0) yield finish();
+}
+
 export async function stage(input, state) {
   state = path.resolve(state);
   return locked(state, async () => {
@@ -129,8 +155,13 @@ export async function stage(input, state) {
     const coverage = await readJson(path.join(state, 'chunks.json'), {});
     const selected = new Map(), issues = [], chunks = new Map(Object.entries(coverage).map(([key, group]) => [key, { count: group.count, seen: new Set(group.seen) }]));
     let lines = 0, ignored = 0, duplicates = 0;
-    for await (const raw of createInterface({ input: createReadStream(input), crlfDelay: Infinity })) {
+    for await (const line of exportLines(input)) {
       lines++;
+      if (line.oversized) {
+        issues.push({ line: lines, sha256: line.sha256, reason: 'export line exceeds 1,000,000 bytes; re-export upstream; no truncation' });
+        continue;
+      }
+      const raw = line.raw;
       if (!raw.trim()) continue;
       try {
         const result = normalizeEvent(JSON.parse(raw));
