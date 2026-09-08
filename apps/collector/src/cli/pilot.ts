@@ -21,6 +21,16 @@ import type { PilotReport } from "../pilot/report.ts";
 
 const DEFAULT_CONFIG = "config/collection/pilot.json";
 const DEFAULT_DATA_DIR = "data";
+const PilotCommand = {
+  acquire: "acquire",
+  normalize: "normalize",
+  verify: "verify",
+  abandonAccount: "abandon-account",
+  reopenAccount: "reopen-account",
+  abandon: "abandon",
+  status: "status",
+  discover: "discover",
+} as const;
 
 interface Flags {
   positional: string[];
@@ -33,21 +43,21 @@ async function main(): Promise<void> {
   const dataDir = resolve(flags.options.get("data-dir") ?? DEFAULT_DATA_DIR);
 
   switch (command) {
-    case "acquire":
+    case PilotCommand.acquire:
       return acquireCommand(flags, dataDir);
-    case "normalize":
+    case PilotCommand.normalize:
       return normalizeCommand(flags, dataDir);
-    case "verify":
+    case PilotCommand.verify:
       return verifyCommand(flags, dataDir);
-    case "abandon-account":
+    case PilotCommand.abandonAccount:
       return abandonAccountCommand(flags, dataDir);
-    case "reopen-account":
+    case PilotCommand.reopenAccount:
       return reopenAccountCommand(flags, dataDir);
-    case "abandon":
+    case PilotCommand.abandon:
       return abandonRunCommand(flags, dataDir);
-    case "status":
+    case PilotCommand.status:
       return statusCommand(flags, dataDir);
-    case "discover":
+    case PilotCommand.discover:
       return discoverCommand(flags, dataDir);
     default:
       usage(command === undefined ? "A command is required." : `Unknown command: ${command}`);

@@ -3,6 +3,8 @@
 // `*Run` helpers wrap it with filesystem access to the run layout.
 
 import { join } from "node:path";
+import type { FxTwitterJson } from "../acquisition/fxtwitter.ts";
+import { parseTimelinePage } from "../acquisition/fxtwitter.ts";
 import type { PilotConfig } from "../config/pilot.ts";
 import type { Manifest } from "../pilot/manifest.ts";
 import {
@@ -29,7 +31,7 @@ export interface RawPageInput {
   page: number;
   rawFile: string;
   receivedAt: number;
-  results: unknown[];
+  results: ReadonlyArray<FxTwitterJson>;
 }
 
 export interface NormalizeAccount {
@@ -317,14 +319,16 @@ export async function readRunPages(paths: RunPaths, manifest: Manifest): Promise
     if (account.userId === null) continue;
     const directory = accountRawDirectory(paths, account.userId);
     for (let page = 1; page <= account.pagesCompleted; page += 1) {
-      const body = await readJson<{ results?: unknown }>(join(directory, pageFileName(page)));
+      const body = parseTimelinePage(await readJson<unknown>(
+        join(directory, pageFileName(page)),
+      ));
       const meta = await readJson<PageMeta>(join(directory, pageMetaFileName(page)));
       pages.push({
         accountUserId: account.userId,
         page,
         rawFile: `raw/${account.userId}/${pageFileName(page)}`,
         receivedAt: meta.receivedAt,
-        results: Array.isArray(body?.results) ? body.results : [],
+        results: body.results,
       });
     }
   }

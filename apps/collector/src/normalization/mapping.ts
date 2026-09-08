@@ -3,7 +3,102 @@
 // exactly this behaviour; the golden fixtures under apps/collector/tests/fixtures
 // are the executable contract.
 
+import { Option } from "effect";
+import * as Schema from "effect/Schema";
+import {
+  parseNonEmptyString,
+  parseNonNegativeNumber,
+} from "../contracts/primitives.ts";
+import {
+  parseProviderMediaType,
+  toIngressMediaType,
+} from "../contracts/media.ts";
+
 export type CandidateOrigin = "timeline" | "embedded";
+
+const ProviderVerificationSchema = Schema.Struct({
+  verified: Schema.optional(Schema.Boolean),
+});
+
+const ProviderAuthorSchema = Schema.Struct({
+  id: Schema.optional(Schema.String),
+  screen_name: Schema.optional(Schema.String),
+  name: Schema.optional(Schema.String),
+  followers: Schema.optional(Schema.Number),
+  following: Schema.optional(Schema.Number),
+  statuses: Schema.optional(Schema.Number),
+  joined: Schema.optional(Schema.Unknown),
+  verification: Schema.optional(Schema.NullOr(ProviderVerificationSchema)),
+  description: Schema.optional(Schema.String),
+  avatar_url: Schema.optional(Schema.String),
+  protected: Schema.optional(Schema.Boolean),
+});
+
+const ProviderMediaItemSchema = Schema.Struct({
+  type: Schema.optional(Schema.String),
+  url: Schema.optional(Schema.String),
+});
+
+const ProviderMediaSchema = Schema.Struct({
+  all: Schema.optional(Schema.NullOr(Schema.Array(ProviderMediaItemSchema))),
+});
+
+const ProviderFacetSchema = Schema.Struct({
+  type: Schema.optional(Schema.String),
+  id: Schema.optional(Schema.String),
+  original: Schema.optional(Schema.String),
+  replacement: Schema.optional(Schema.String),
+});
+
+const ProviderStatusSchema = Schema.Struct({
+  type: Schema.optional(Schema.String),
+  id: Schema.optional(Schema.String),
+  text: Schema.optional(Schema.String),
+  created_timestamp: Schema.optional(Schema.Unknown),
+  created_at: Schema.optional(Schema.String),
+  likes: Schema.optional(Schema.Number),
+  reposts: Schema.optional(Schema.Number),
+  quotes: Schema.optional(Schema.Number),
+  replies: Schema.optional(Schema.Number),
+  media: Schema.optional(Schema.NullOr(ProviderMediaSchema)),
+  author: Schema.optional(Schema.NullOr(ProviderAuthorSchema)),
+  quote: Schema.optional(Schema.NullOr(Schema.Record(Schema.String, Schema.Unknown))),
+  reposted_by: Schema.optional(Schema.NullOr(Schema.Record(Schema.String, Schema.Unknown))),
+  lang: Schema.optional(Schema.String),
+  raw_text: Schema.optional(
+    Schema.NullOr(Schema.Struct({ facets: Schema.optional(Schema.Array(ProviderFacetSchema)) })),
+  ),
+  replying_to: Schema.optional(
+    Schema.NullOr(
+      Schema.Struct({
+        screen_name: Schema.optional(Schema.String),
+        status: Schema.optional(Schema.String),
+      }),
+    ),
+  ),
+  replying_to_status: Schema.optional(
+    Schema.NullOr(
+      Schema.Union([
+        Schema.String,
+        Schema.Array(Schema.Union([Schema.String, Schema.Struct({ id: Schema.optional(Schema.String) })])),
+      ]),
+    ),
+  ),
+});
+
+export type ProviderStatus = Schema.Schema.Type<typeof ProviderStatusSchema>;
+export type ProviderAuthor = Schema.Schema.Type<typeof ProviderAuthorSchema>;
+export type ProviderFacet = Schema.Schema.Type<typeof ProviderFacetSchema>;
+
+export function parseProviderStatus(value: unknown): ProviderStatus | null {
+  const status = Schema.decodeUnknownOption(ProviderStatusSchema)(value);
+  return Option.isSome(status) ? status.value : null;
+}
+
+export function parseProviderAuthor(value: unknown): ProviderAuthor | null {
+  const author = Schema.decodeUnknownOption(ProviderAuthorSchema)(value);
+  return Option.isSome(author) ? author.value : null;
+}
 
 export interface CandidateContext {
   /** Numeric id of the seed account whose timeline this page belongs to. */
@@ -122,11 +217,15 @@ export type MappedCandidate = MappedTweet | RejectedCandidate;
 
 /** Map one provider status (timeline row or embedded quote) and everything nested in it. */
 export function mapStatus(value: unknown, context: CandidateContext): MappedCandidate {
-  if (!isRecord(value) || value.type !== "status") {
+  const status = parseProviderStatus(value);
+  if (status === null || status.type !== "status") {
     return reject(context, null, ["invalid_response_shape"], []);
   }
+  return mapProviderStatus(status, context);
+}
 
-  const id = nonEmptyString(value.id);
+function mapProviderStatus(value: ProviderStatus, context: CandidateContext): MappedCandidate {
+  const id = parseNonEmptyString(value.id);
   const reasons: RejectionCode[] = [];
   if (id === null) reasons.push("missing_tweet_id");
 
@@ -151,10 +250,16 @@ export function mapStatus(value: unknown, context: CandidateContext): MappedCand
     return reject(context, id, dedupe(reasons), embedded);
   }
 
-  const quote = isRecord(value.quote) ? value.quote : null;
-  const quotedTweetId = quote === null ? null : nonEmptyString(quote.id);
-  const quoteTombstone = quote !== null && quote.type === "tombstone";
-  const reposted = isRecord(value.reposted_by);
+  const quote = value.quote;
+  const quotedTweetId = quote !== null && typeof quote === "object" && !Array.isArray(quote)
+    ? parseNonEmptyString(quote["id"])
+    : null;
+  const quoteTombstone =
+    quote !== null &&
+    typeof quote === "object" &&
+    !Array.isArray(quote) &&
+    quote["type"] === "tombstone";
+  const reposted = value.reposted_by !== undefined && value.reposted_by !== null;
 
   const tweet: IngressTweet = {
     kind: "tweet",
@@ -169,7 +274,7 @@ export function mapStatus(value: unknown, context: CandidateContext): MappedCand
     retweetOfTweetId: null,
     inReplyToTweetId: mapInReplyTo(value),
   };
-  const lang = nonEmptyString(value.lang);
+  const lang = parseNonEmptyString(value.lang);
   if (lang !== null) tweet.lang = lang;
   const entities = mapEntities(value.raw_text);
   if (entities !== null) tweet.entities = entities;
@@ -190,27 +295,36 @@ export type MappedAuthor = { ok: true; author: IngressAuthor } | { ok: false; re
 
 /** Map an embedded provider author (status.author or profile user). */
 export function mapAuthor(value: unknown): MappedAuthor {
-  if (!isRecord(value)) return { ok: false, reasons: ["missing_author"] };
+  const authorData = parseProviderAuthor(value);
+  if (authorData === null) return { ok: false, reasons: ["missing_author"] };
   const reasons: RejectionCode[] = [];
 
-  const id = nonEmptyString(value.id);
+  const id = parseNonEmptyString(authorData.id);
   if (id === null) reasons.push("missing_author_id");
-  const screenName = nonEmptyString(value.screen_name);
+  const screenName = parseNonEmptyString(authorData.screen_name);
   if (screenName === null) reasons.push("missing_author_handle");
-  const displayName = nonEmptyString(value.name);
+  const displayName = parseNonEmptyString(authorData.name);
   if (displayName === null) reasons.push("missing_author_display_name");
-  if (!nonNegativeNumber(value.followers) || !nonNegativeNumber(value.following)) {
+  const followerCount = parseNonNegativeNumber(authorData.followers);
+  const followingCount = parseNonNegativeNumber(authorData.following);
+  if (followerCount === null || followingCount === null) {
     reasons.push("missing_author_counts");
   }
-  const createdAt = dateMilliseconds(value.joined);
+  const createdAt = dateMilliseconds(authorData.joined);
   if (createdAt === null) reasons.push("missing_author_created_at");
-  const verified =
-    isRecord(value.verification) && typeof value.verification.verified === "boolean"
-      ? value.verification.verified
-      : null;
+  const verified = authorData.verification?.verified ?? null;
   if (verified === null) reasons.push("missing_author_verification");
 
-  if (reasons.length > 0 || id === null || screenName === null || displayName === null || createdAt === null || verified === null) {
+  if (
+    reasons.length > 0 ||
+    id === null ||
+    screenName === null ||
+    displayName === null ||
+    createdAt === null ||
+    verified === null ||
+    followerCount === null ||
+    followingCount === null
+  ) {
     return { ok: false, reasons };
   }
 
@@ -219,23 +333,24 @@ export function mapAuthor(value: unknown): MappedAuthor {
     id,
     handle: screenName.replace(/^@/, "").toLowerCase(),
     displayName,
-    followerCount: value.followers as number,
-    followingCount: value.following as number,
+    followerCount,
+    followingCount,
     verified,
     createdAt,
   };
-  const bio = nonEmptyString(value.description);
+  const bio = parseNonEmptyString(authorData.description);
   if (bio !== null) author.bio = bio;
-  const avatarUrl = nonEmptyString(value.avatar_url);
+  const avatarUrl = parseNonEmptyString(authorData.avatar_url);
   if (avatarUrl !== null) author.avatarUrl = avatarUrl;
   return { ok: true, author };
 }
 
-function mapEmbedded(status: Record<string, unknown>, context: CandidateContext, parentId: string | null): MappedCandidate[] {
+function mapEmbedded(status: ProviderStatus, context: CandidateContext, parentId: string | null): MappedCandidate[] {
   const quote = status.quote;
-  if (!isRecord(quote) || quote.type !== "status") return [];
+  const quotedStatus = parseProviderStatus(quote);
+  if (quotedStatus === null || quotedStatus.type !== "status") return [];
   return [
-    mapStatus(quote, {
+    mapProviderStatus(quotedStatus, {
       ...context,
       origin: "embedded",
       parentId: parentId ?? `${context.rawFile}#${context.index}`,
@@ -243,44 +358,32 @@ function mapEmbedded(status: Record<string, unknown>, context: CandidateContext,
   ];
 }
 
-function mapMetrics(status: Record<string, unknown>): IngressMetrics | null {
+function mapMetrics(status: ProviderStatus): IngressMetrics | null {
   const likes = status.likes;
   const reposts = status.reposts;
   const quotes = status.quotes;
   const replies = status.replies;
-  if (!nonNegativeNumber(likes) || !nonNegativeNumber(reposts) || !nonNegativeNumber(quotes) || !nonNegativeNumber(replies)) {
+  const likeCount = parseNonNegativeNumber(likes);
+  const repostCount = parseNonNegativeNumber(reposts);
+  const quoteCount = parseNonNegativeNumber(quotes);
+  const replyCount = parseNonNegativeNumber(replies);
+  if (likeCount === null || repostCount === null || quoteCount === null || replyCount === null) {
     return null;
   }
-  return { likes, retweets: reposts, quotes, replies };
+  return { likes: likeCount, retweets: repostCount, quotes: quoteCount, replies: replyCount };
 }
 
-function mapMedia(value: unknown): IngressMedia[] | null {
+function mapMedia(value: ProviderStatus["media"]): IngressMedia[] | null {
   if (value === undefined || value === null) return [];
-  if (!isRecord(value)) return null;
-  if (value.all === undefined || value.all === null) return [];
-  if (!Array.isArray(value.all)) return null;
 
   const out: IngressMedia[] = [];
   const seen = new Set<string>();
-  for (const item of value.all) {
-    if (!isRecord(item)) return null;
-    const url = nonEmptyString(item.url);
+  for (const item of value.all ?? []) {
+    const url = parseNonEmptyString(item.url);
     if (url === null) return null;
-    let type: IngressMedia["type"];
-    switch (item.type) {
-      case "photo":
-      case "mosaic_photo":
-        type = "image";
-        break;
-      case "video":
-        type = "video";
-        break;
-      case "gif":
-        type = "gif";
-        break;
-      default:
-        return null;
-    }
+    const providerType = parseProviderMediaType(item.type);
+    if (providerType === null) return null;
+    const type = toIngressMediaType(providerType);
     if (seen.has(url)) continue;
     seen.add(url);
     out.push({ type, url });
@@ -288,29 +391,30 @@ function mapMedia(value: unknown): IngressMedia[] | null {
   return out;
 }
 
-function mapInReplyTo(status: Record<string, unknown>): string | null {
-  if (isRecord(status.replying_to)) {
-    const parent = nonEmptyString(status.replying_to.status);
+function mapInReplyTo(status: ProviderStatus): string | null {
+  if (status.replying_to !== undefined && status.replying_to !== null) {
+    const parent = parseNonEmptyString(status.replying_to.status);
     if (parent !== null) return parent;
   }
   if (Array.isArray(status.replying_to_status)) {
     const first = status.replying_to_status[0];
-    if (isRecord(first)) return nonEmptyString(first.id);
-    return nonEmptyString(first);
+    if (typeof first === "object" && first !== null && !Array.isArray(first)) {
+      return parseNonEmptyString(first.id);
+    }
+    return parseNonEmptyString(first);
   }
-  return nonEmptyString(status.replying_to_status);
+  return parseNonEmptyString(status.replying_to_status);
 }
 
-function mapEntities(rawText: unknown): IngressEntities | null {
-  if (!isRecord(rawText) || !Array.isArray(rawText.facets)) return null;
+function mapEntities(rawText: ProviderStatus["raw_text"]): IngressEntities | null {
+  if (rawText === undefined || rawText === null || rawText.facets === undefined) return null;
   const hashtags: string[] = [];
   const mentions: string[] = [];
   const urls: string[] = [];
   for (const facet of rawText.facets) {
-    if (!isRecord(facet)) continue;
-    if (facet.type === "hashtag") pushUnique(hashtags, nonEmptyString(facet.original)?.replace(/^#/, ""));
-    else if (facet.type === "mention") pushUnique(mentions, nonEmptyString(facet.original)?.replace(/^@/, ""));
-    else if (facet.type === "url") pushUnique(urls, nonEmptyString(facet.replacement) ?? nonEmptyString(facet.original));
+    if (facet.type === "hashtag") pushUnique(hashtags, parseNonEmptyString(facet.original)?.replace(/^#/, ""));
+    else if (facet.type === "mention") pushUnique(mentions, parseNonEmptyString(facet.original)?.replace(/^@/, ""));
+    else if (facet.type === "url") pushUnique(urls, parseNonEmptyString(facet.replacement) ?? parseNonEmptyString(facet.original));
   }
   return { hashtags, mentions, urls };
 }
@@ -348,24 +452,14 @@ function dedupe<T>(values: T[]): T[] {
 }
 
 export function timestampMilliseconds(value: unknown): number | null {
-  if (!nonNegativeNumber(value) || value === 0) return null;
-  return value >= 1_000_000_000_000 ? Math.round(value) : Math.round(value * 1_000);
+  const timestamp = parseNonNegativeNumber(value);
+  if (timestamp === null || timestamp === 0) return null;
+  return timestamp >= 1_000_000_000_000 ? Math.round(timestamp) : Math.round(timestamp * 1_000);
 }
 
 export function dateMilliseconds(value: unknown): number | null {
-  if (typeof value !== "string") return null;
-  const parsed = Date.parse(value);
+  const date = parseNonEmptyString(value);
+  if (date === null) return null;
+  const parsed = Date.parse(date);
   return Number.isFinite(parsed) ? parsed : null;
-}
-
-function nonNegativeNumber(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0;
-}
-
-function nonEmptyString(value: unknown): string | null {
-  return typeof value === "string" && value.trim().length > 0 ? value : null;
-}
-
-export function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

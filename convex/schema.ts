@@ -3,13 +3,7 @@
 // do not add indexes speculatively — each one is a full copy of its table.
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
-
-export const mediaType = v.union(
-  v.literal("none"),
-  v.literal("image"),
-  v.literal("video"),
-  v.literal("gif"),
-);
+import { mediaTypeValidator } from "./contracts/media";
 
 export default defineSchema({
   tweets: defineTable({
@@ -28,7 +22,7 @@ export default defineSchema({
     retweetOfTweetId: v.optional(v.string()),
     inReplyToTweetId: v.optional(v.string()),
     lang: v.optional(v.string()),
-    mediaType,
+    mediaType: mediaTypeValidator,
     mediaUrls: v.array(v.string()),
     hasLink: v.boolean(),
     tokenCount: v.number(), // BM25 length (near-binary, but keep the data)
@@ -51,7 +45,7 @@ export default defineSchema({
     // denormalized for filter pushdown — postings answer queries alone (DESIGN §2)
     authorId: v.string(),
     createdAt: v.number(),
-    mediaType, // string enum, matches tweets.mediaType
+    mediaType: mediaTypeValidator, // matches tweets.mediaType
     scoreBucket: v.number(), // 0..255 quantized static score; NOT live engagement
   })
     .index("by_term_score", ["term", "scoreBucket"])
@@ -117,10 +111,26 @@ export default defineSchema({
     tweetId: v.id("tweets"),
     vote: v.union(v.literal(1), v.literal(-1)),
     sessionId: v.string(),
+    // Absent on legacy anonymous votes, which no longer affect ranking.
+    voterId: v.optional(v.string()),
   })
     .index("by_query_tweet", ["queryKey", "tweetId"])
     .index("by_query_session", ["queryKey", "sessionId"]) // dedupe: one vote/session
+    .index("by_query_voter_tweet", ["queryKey", "voterId", "tweetId"])
     .index("by_tweet", ["tweetId"]),
+
+  // Atomically maintained from trusted votes only; one point read per candidate.
+  searchFeedbackTotals: defineTable({
+    queryKey: v.string(),
+    tweetId: v.id("tweets"),
+    total: v.number(),
+  }).index("by_query_tweet", ["queryKey", "tweetId"]),
+
+  feedbackRateLimits: defineTable({
+    voterId: v.string(),
+    windowStart: v.number(),
+    writes: v.number(),
+  }).index("by_voter", ["voterId"]),
 
   // AI answer mode output (DESIGN §10). Single writer: the answers action.
   answers: defineTable({

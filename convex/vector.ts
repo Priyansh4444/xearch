@@ -4,12 +4,13 @@
 
 import { action } from "./_generated/server";
 import { v } from "convex/values";
+import { visualMediaTypeValidator } from "./contracts/media";
 
 export const semanticRescue = action({
   args: {
     queryKey: v.string(),
     queryText: v.string(), // original terms joined — or the HyDE doc when cached
-    media: v.optional(v.union(v.literal("image"), v.literal("video"), v.literal("gif"))),
+    media: v.optional(visualMediaTypeValidator),
   },
   handler: async (ctx, args) => {
     // TODO(implement):

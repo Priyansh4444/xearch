@@ -1,12 +1,20 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { Option } from "effect";
+import * as Schema from "effect/Schema";
 import type {
   FxTwitterTimelinePage,
   TimelineClient,
   TimelineRequest,
   TimelineResponse,
 } from "../acquisition/fxtwitter.ts";
+import {
+  parseNonEmptyString,
+  parseNonNegativeNumber,
+} from "../contracts/primitives.ts";
+import { parseProviderMediaType } from "../contracts/media.ts";
+import { parseProviderStatus, type ProviderStatus } from "../normalization/mapping.ts";
 
 const CHECKPOINT_VERSION = 1;
 
@@ -78,6 +86,73 @@ interface ProbeCheckpoint {
   completed: boolean;
   report: ProbeReport;
 }
+
+const StopReasonSchema = Schema.Union([
+  Schema.Literal("page-limit"),
+  Schema.Literal("no-content"),
+  Schema.Literal("no-results"),
+  Schema.Literal("no-next-cursor"),
+  Schema.Literal("repeated-cursor"),
+]);
+
+const ProbePageReportSchema = Schema.Struct({
+  page: Schema.Number,
+  httpStatus: Schema.Number,
+  apiCode: Schema.NullOr(Schema.Number),
+  attempts: Schema.Number,
+  latencyMs: Schema.Number,
+  resultCount: Schema.Number,
+  uniqueCount: Schema.Number,
+  duplicateCount: Schema.Number,
+  oldestCreatedAt: Schema.NullOr(Schema.Number),
+  newestCreatedAt: Schema.NullOr(Schema.Number),
+  inputCursor: Schema.NullOr(Schema.String),
+  outputCursor: Schema.NullOr(Schema.String),
+  missingRequiredFields: Schema.Record(Schema.String, Schema.Number),
+  kinds: Schema.Struct({
+    replies: Schema.Number,
+    quotes: Schema.Number,
+    reposts: Schema.Number,
+    images: Schema.Number,
+    videos: Schema.Number,
+    gifs: Schema.Number,
+  }),
+});
+
+const ProbeReportSchema = Schema.Struct({
+  version: Schema.Literal(1),
+  handle: Schema.String,
+  baseUrl: Schema.String,
+  count: Schema.Number,
+  withReplies: Schema.Boolean,
+  startedAt: Schema.String,
+  updatedAt: Schema.String,
+  pagesCompleted: Schema.Number,
+  totalResults: Schema.Number,
+  uniqueTweets: Schema.Number,
+  duplicateTweets: Schema.Number,
+  oldestCreatedAt: Schema.NullOr(Schema.Number),
+  newestCreatedAt: Schema.NullOr(Schema.Number),
+  missingRequiredFields: Schema.Record(Schema.String, Schema.Number),
+  stopReason: StopReasonSchema,
+  pages: Schema.Array(ProbePageReportSchema),
+});
+
+const ProbeCheckpointSchema = Schema.Struct({
+  version: Schema.Literal(1),
+  identity: Schema.Struct({
+    handle: Schema.String,
+    baseUrl: Schema.String,
+    count: Schema.Number,
+    withReplies: Schema.Boolean,
+  }),
+  nextPage: Schema.Number,
+  nextCursor: Schema.NullOr(Schema.String),
+  seenCursors: Schema.Array(Schema.String),
+  seenTweetIds: Schema.Array(Schema.String),
+  completed: Schema.Boolean,
+  report: ProbeReportSchema,
+});
 
 export async function runTimelineProbe(
   client: TimelineClient,
@@ -177,12 +252,13 @@ export function analyzeTimelinePage(
   let newestCreatedAt: number | null = null;
 
   for (const result of response.page.results) {
-    if (!isRecord(result)) {
+    const status = parseProviderStatus(result);
+    if (status === null) {
       increment(missingRequiredFields, "result");
       continue;
     }
 
-    const id = nonEmptyString(result.id);
+    const id = parseNonEmptyString(status.id);
     if (id === null) {
       increment(missingRequiredFields, "id");
     } else if (seenTweetIds.has(id)) {
@@ -192,24 +268,25 @@ export function analyzeTimelinePage(
       uniqueCount += 1;
     }
 
-    for (const field of missingIngressFields(result)) increment(missingRequiredFields, field);
+    for (const field of missingIngressFields(status)) increment(missingRequiredFields, field);
 
-    const createdAt = timestampMilliseconds(result.created_timestamp);
+    const createdAt = timestampMilliseconds(status.created_timestamp);
     if (createdAt !== null) {
       oldestCreatedAt = oldestCreatedAt === null ? createdAt : Math.min(oldestCreatedAt, createdAt);
       newestCreatedAt = newestCreatedAt === null ? createdAt : Math.max(newestCreatedAt, createdAt);
     }
 
-    if (isRecord(result.replying_to)) kinds.replies += 1;
-    if (isRecord(result.quote) && result.quote.type !== "tombstone") kinds.quotes += 1;
-    if (isRecord(result.reposted_by)) kinds.reposts += 1;
+    if (status.replying_to !== undefined && status.replying_to !== null) kinds.replies += 1;
+    const quote = parseProviderStatus(status.quote);
+    if (quote !== null && quote.type !== "tombstone") kinds.quotes += 1;
+    if (status.reposted_by !== undefined && status.reposted_by !== null) kinds.reposts += 1;
 
-    if (isRecord(result.media) && Array.isArray(result.media.all)) {
-      for (const media of result.media.all) {
-        if (!isRecord(media)) continue;
-        if (media.type === "photo" || media.type === "mosaic_photo") kinds.images += 1;
-        else if (media.type === "video") kinds.videos += 1;
-        else if (media.type === "gif") kinds.gifs += 1;
+    if (status.media?.all !== undefined && status.media.all !== null) {
+      for (const media of status.media.all) {
+        const mediaType = parseProviderMediaType(media.type);
+        if (mediaType === "photo" || mediaType === "mosaic_photo") kinds.images += 1;
+        else if (mediaType === "video") kinds.videos += 1;
+        else if (mediaType === "gif") kinds.gifs += 1;
       }
     }
   }
@@ -232,30 +309,31 @@ export function analyzeTimelinePage(
   };
 }
 
-function missingIngressFields(status: Record<string, unknown>): string[] {
+function missingIngressFields(status: ProviderStatus): string[] {
   const missing: string[] = [];
   requireValue(missing, "type", status.type === "status");
-  requireValue(missing, "text", nonEmptyString(status.text) !== null);
+  requireValue(missing, "text", parseNonEmptyString(status.text) !== null);
   requireValue(missing, "created_timestamp", timestampMilliseconds(status.created_timestamp) !== null);
-  for (const metric of ["likes", "reposts", "quotes", "replies"]) {
-    requireValue(missing, metric, nonNegativeNumber(status[metric]));
+  const metrics = [
+    ["likes", status.likes],
+    ["reposts", status.reposts],
+    ["quotes", status.quotes],
+    ["replies", status.replies],
+  ] as const;
+  for (const [metric, value] of metrics) {
+    requireValue(missing, metric, parseNonNegativeNumber(value) !== null);
   }
 
-  if (!isRecord(status.author)) {
+  if (status.author === undefined || status.author === null) {
     missing.push("author");
   } else {
-    requireValue(missing, "author.id", nonEmptyString(status.author.id) !== null);
-    requireValue(missing, "author.screen_name", nonEmptyString(status.author.screen_name) !== null);
-    requireValue(missing, "author.name", nonEmptyString(status.author.name) !== null);
-    requireValue(missing, "author.followers", nonNegativeNumber(status.author.followers));
-    requireValue(missing, "author.following", nonNegativeNumber(status.author.following));
+    requireValue(missing, "author.id", parseNonEmptyString(status.author.id) !== null);
+    requireValue(missing, "author.screen_name", parseNonEmptyString(status.author.screen_name) !== null);
+    requireValue(missing, "author.name", parseNonEmptyString(status.author.name) !== null);
+    requireValue(missing, "author.followers", parseNonNegativeNumber(status.author.followers) !== null);
+    requireValue(missing, "author.following", parseNonNegativeNumber(status.author.following) !== null);
     requireValue(missing, "author.joined", dateMilliseconds(status.author.joined) !== null);
-    requireValue(
-      missing,
-      "author.verification.verified",
-      isRecord(status.author.verification) &&
-        typeof status.author.verification.verified === "boolean",
-    );
+    requireValue(missing, "author.verification.verified", status.author.verification?.verified === true || status.author.verification?.verified === false);
   }
 
   return missing;
@@ -334,11 +412,25 @@ function newCheckpoint(options: ProbeOptions): ProbeCheckpoint {
 
 async function loadCheckpoint(path: string): Promise<ProbeCheckpoint | null> {
   try {
-    const parsed = JSON.parse(await readFile(path, "utf8")) as unknown;
-    if (!isRecord(parsed) || parsed.version !== CHECKPOINT_VERSION) {
+    const parsed: unknown = JSON.parse(await readFile(path, "utf8"));
+    const checkpoint = Schema.decodeUnknownOption(ProbeCheckpointSchema)(parsed);
+    if (Option.isNone(checkpoint)) {
       throw new Error(`Unsupported checkpoint at ${path}`);
     }
-    return parsed as unknown as ProbeCheckpoint;
+    return {
+      ...checkpoint.value,
+      seenCursors: [...checkpoint.value.seenCursors],
+      seenTweetIds: [...checkpoint.value.seenTweetIds],
+      report: {
+        ...checkpoint.value.report,
+        pages: checkpoint.value.report.pages.map((page) => ({
+          ...page,
+          missingRequiredFields: { ...page.missingRequiredFields },
+          kinds: { ...page.kinds },
+        })),
+        missingRequiredFields: { ...checkpoint.value.report.missingRequiredFields },
+      },
+    };
   } catch (error) {
     if (isNodeError(error) && error.code === "ENOENT") return null;
     throw error;
@@ -375,7 +467,7 @@ async function writeJson(path: string, value: unknown): Promise<void> {
 }
 
 function validateOptions(options: ProbeOptions): void {
-  if (nonEmptyString(options.handle) === null) throw new Error("handle is required");
+  if (parseNonEmptyString(options.handle) === null) throw new Error("handle is required");
   if (!Number.isInteger(options.pages) || options.pages < 1) {
     throw new Error("pages must be a positive integer");
   }
@@ -393,22 +485,16 @@ function cursorFingerprint(cursor: string | null): string | null {
 }
 
 function timestampMilliseconds(value: unknown): number | null {
-  if (!nonNegativeNumber(value)) return null;
-  return value >= 1_000_000_000_000 ? value : value * 1_000;
+  const timestamp = parseNonNegativeNumber(value);
+  if (timestamp === null) return null;
+  return timestamp >= 1_000_000_000_000 ? timestamp : timestamp * 1_000;
 }
 
 function dateMilliseconds(value: unknown): number | null {
-  if (typeof value !== "string") return null;
-  const parsed = Date.parse(value);
+  const date = parseNonEmptyString(value);
+  if (date === null) return null;
+  const parsed = Date.parse(date);
   return Number.isFinite(parsed) ? parsed : null;
-}
-
-function nonNegativeNumber(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0;
-}
-
-function nonEmptyString(value: unknown): string | null {
-  return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
 function requireValue(missing: string[], field: string, present: boolean): void {
@@ -417,10 +503,6 @@ function requireValue(missing: string[], field: string, present: boolean): void 
 
 function increment(counts: Record<string, number>, field: string): void {
   counts[field] = (counts[field] ?? 0) + 1;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {

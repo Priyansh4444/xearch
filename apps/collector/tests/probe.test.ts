@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   FxTwitterClient,
+  type FxTwitterJson,
   type TimelineClient,
   type TimelineRequest,
 } from "../src/acquisition/fxtwitter.ts";
@@ -142,7 +143,7 @@ function fixedClient(responses: ReturnType<typeof timelineResponse>[]): {
   };
 }
 
-function timelineResponse(results: unknown[], bottom: string | null) {
+function timelineResponse(results: FxTwitterJson[], bottom: string | null) {
   const raw = { code: 200, results, cursor: { top: null, bottom } };
   return {
     httpStatus: 200,
@@ -162,7 +163,7 @@ function status(
     reply?: boolean;
     mediaType?: "photo" | "video" | "gif";
   } = {},
-): Record<string, unknown> {
+): FxTwitterJson {
   return {
     type: "status",
     id,

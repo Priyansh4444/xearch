@@ -3,6 +3,16 @@ import { FxTwitterClient } from "../acquisition/fxtwitter.ts";
 import { runTimelineProbe, type ProbeOptions, type ProbeReport } from "../probe/run.ts";
 
 const DEFAULT_BASE_URL = "https://api.fxtwitter.com";
+const ProbeFlag = {
+  withoutReplies: "--without-replies",
+  pages: "--pages",
+  count: "--count",
+  output: "--out",
+  delay: "--delay-ms",
+  timeout: "--timeout-ms",
+  retries: "--retries",
+  baseUrl: "--base-url",
+} as const;
 
 async function main(): Promise<void> {
   const options = parseArguments(process.argv.slice(2));
@@ -21,8 +31,8 @@ interface CliOptions extends ProbeOptions {
 }
 
 function parseArguments(args: string[]): CliOptions {
-  const values = [...args];
-  const handle = values.shift();
+  let position = 0;
+  const handle = args[position++];
   if (handle === undefined || handle.startsWith("-")) usage("A profile handle is required.");
 
   const parsed: CliOptions = {
@@ -37,35 +47,35 @@ function parseArguments(args: string[]): CliOptions {
     retries: 3,
   };
 
-  while (values.length > 0) {
-    const flag = values.shift();
-    if (flag === "--without-replies") {
+  while (position < args.length) {
+    const flag = args[position++];
+    if (flag === ProbeFlag.withoutReplies) {
       parsed.withReplies = false;
       continue;
     }
-    const value = values.shift();
+    const value = args[position++];
     if (value === undefined) usage(`Missing value for ${flag ?? "option"}.`);
 
     switch (flag) {
-      case "--pages":
+      case ProbeFlag.pages:
         parsed.pages = integer(value, flag);
         break;
-      case "--count":
+      case ProbeFlag.count:
         parsed.count = integer(value, flag);
         break;
-      case "--out":
+      case ProbeFlag.output:
         parsed.outputDirectory = resolve(value);
         break;
-      case "--delay-ms":
+      case ProbeFlag.delay:
         parsed.delayMs = integer(value, flag);
         break;
-      case "--timeout-ms":
+      case ProbeFlag.timeout:
         parsed.timeoutMs = integer(value, flag);
         break;
-      case "--retries":
+      case ProbeFlag.retries:
         parsed.retries = integer(value, flag);
         break;
-      case "--base-url":
+      case ProbeFlag.baseUrl:
         parsed.baseUrl = value;
         break;
       default:

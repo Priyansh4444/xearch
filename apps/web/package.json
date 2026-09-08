@@ -1,0 +1,27 @@
+{
+  "name": "xearch-web",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "description": "Minimal literal-search SERP over convex search.searchBaseline",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -p . && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc -p ."
+  },
+  "dependencies": {
+    "convex": "^1.45.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.7",
+    "@vitejs/plugin-react": "^6.1.1",
+    "babel-plugin-react-compiler": "^1.0.0",
+    "oxc-transform-react": "^0.148.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.2"
+  }
+}

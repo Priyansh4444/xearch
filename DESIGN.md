@@ -475,22 +475,29 @@ filters `{authorId, media:"image"}`.
 1. Look up df for each `must` term (and aspect token) in `terms`.  (k point reads)
 2. Sort terms rarest-first.
 3. Read postings for the RAREST term via the matching compound index,
-   ordered by scoreBucket desc, capped at N=1000.
+   ordered by scoreBucket desc, capped at N=500.
 4. For each remaining term (rarer→commoner), read its postings capped at N
    and intersect tweetId sets in memory.
 5. Hand survivors (≤ ~200) to the reranker (§6).
 6. db.get() the top 20 tweets, return hydrated results.
 ```
 
-- Worst case reads ≈ `k_terms × 1000` postings + a few hundred tweets — comfortably
-  inside Convex query limits, independent of corpus size.
+- Requests are limited to 512 characters and 12 input tokens, with at most 12
+  indexed terms/aspects after parsing. L3 adds at most 5 PRF terms. Posting reads
+  are cached across all five executions: at most 8,500 posting rows, 1,000 candidate
+  hydrations, 20 PRF hydrations, and 200 each of author/feedback-total lookups.
+  Retrieval is approximate within these caps, not exhaustive corpus search.
 - The cap is principled, not a hack: postings are read in `scoreBucket` order, so this
   is **impact-ordered early termination** — the same family as MAXSCORE / WAND /
   Block-Max WAND that Lucene 8 and Weaviate ship (§8). Truncating a common term's list
-  at 1000 drops only its lowest-quality candidates.
-- Recency mode ("Latest" tab) = same plan over `by_term_time`.
-- Phrases: intersect terms first, verify adjacency with a `positions` array on
-  postings (post-v1).
+  at 500 omits lower static-score candidates that could still rerank well.
+- Recency mode ("Latest" tab) reads a time index, then sorts surviving candidates
+  by descending timestamp, with composite score and document ID breaking ties.
+  Explicit `sort:` operators take precedence over the tab argument.
+- Phrases: intersect indexed terms, then verify normalized token adjacency on
+  candidate text, preserving stopwords. Exclusions and all hard filters use the
+  same candidate predicate on every path, including author-only queries.
+  `since` is inclusive and `until` is exclusive.
 - **Reactivity for free:** implement this as a Convex query function and the results
   live-update as the 24/7 indexer inserts matching tweets. This is the demo moment —
   a search results page that grows in real time. Lean on it.
@@ -502,7 +509,7 @@ fewer than M (≈10) hits, relax stepwise — every level still bounded reads:
 
 ```
 L0 exact:    AND(must + aspects) + filters                     (§5.1)
-L1 relax:    drop the lowest-idf must term, retry              (≤ 2 drops)
+L1 relax:    drop lowest-idf must not protected by phrase/aspect (≤ 2 drops)
 L2 union:    per-term top-N lists for must ∪ should, RRF-fuse  (OR semantics)
 L3 PRF:      pseudo-relevance feedback, RM3-style, no LLM — mine the top ~20
              docs found so far for high-idf co-occurring terms, add as should,
@@ -590,14 +597,18 @@ Your "did this search help?" signal, wired end to end:
 - **Storage:** `searchFeedback` rows keyed by canonical **`queryKey`** — the Loose
   Parser pays off again: votes on `"elon mars stuff"` train `mars from:@elonmusk`
   too, because both phrasings share one key.
-- **Serving:** rerank does one index range read (`by_query_tweet` prefix on queryKey)
-  and applies `w_fb · clamp(Σvotes, −5, +5)` — a bounded nudge, never an override.
+- **Serving:** each candidate gets one `searchFeedbackTotals.by_query_tweet` point
+  lookup. Vote writes update the total atomically; serving never truncates a vote
+  scan. The reranker clamps the total to ±5 before weighting.
 - **Learning:** the feedback log doubles as (a) labeled data for future LTR and (b) a
   regression suite — replay logged queries after any parser/ranking change and check
   that thumbs-up results didn't sink.
-- **Abuse guards:** one vote per session per (queryKey, tweet), time decay, the clamp,
-  and feedback only ever touches *rerank* — never retrieval order, never the index —
-  so a brigade can bury one result in one query, not poison the engine.
+- **Abuse guards:** one vote per verified Convex identity per pair, with at most
+  30 changed votes per minute per identity. Anonymous calls are rejected; client
+  session IDs are not trusted. No auth provider is configured yet, so the demo
+  hides voting controls. Legacy anonymous votes remain stored but are excluded
+  from trusted totals. Provider enrollment controls are still needed against
+  multi-account abuse; the score clamp alone is not an abuse defense.
 - Lineage: Rocchio (1971) relevance feedback → modern click models; ours is the
   explicit-feedback variant with canonical-query aggregation.
 

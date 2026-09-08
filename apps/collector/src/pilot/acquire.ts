@@ -3,10 +3,16 @@
 // advances. Failures pause one account; they never masquerade as completion.
 
 import { join } from "node:path";
-import { FxTwitterError, type PilotClient, type TimelineResponse } from "../acquisition/fxtwitter.ts";
+import {
+  FxTwitterError,
+  parseTimelineStatus,
+  type FxTwitterJson,
+  type PilotClient,
+  type TimelineResponse,
+} from "../acquisition/fxtwitter.ts";
 import type { PilotConfig } from "../config/pilot.ts";
 import type { PageMeta } from "../normalization/normalize.ts";
-import { isRecord, timestampMilliseconds } from "../normalization/mapping.ts";
+import { timestampMilliseconds } from "../normalization/mapping.ts";
 import {
   accountRawDirectory,
   pageErrorFileName,
@@ -40,7 +46,7 @@ export interface AcquireOptions {
   sleep?: (delayMs: number) => Promise<void>;
   log?: (line: string) => void;
   /** Stop after this many HTTP requests (tests simulate an interruption with it). */
-  maxRequests?: number;
+  maxRequests?: number | undefined;
 }
 
 export async function createRun(paths: RunPaths, config: PilotConfig, runId: string, now: number): Promise<Manifest> {
@@ -288,12 +294,16 @@ async function fetchOnePage(
 }
 
 /** Creation times of top-level rows authored by the seed and not reposted (Q20 stop rule). */
-export function authoredTimestamps(results: unknown[], userId: string): number[] {
+export function authoredTimestamps(
+  results: ReadonlyArray<FxTwitterJson>,
+  userId: string,
+): number[] {
   const out: number[] = [];
   for (const result of results) {
-    if (!isRecord(result) || !isRecord(result.author)) continue;
-    if (result.author.id !== userId || isRecord(result.reposted_by)) continue;
-    const createdAt = timestampMilliseconds(result.created_timestamp);
+    const status = parseTimelineStatus(result);
+    if (status === null || status.author?.id !== userId) continue;
+    if (status.reposted_by !== undefined && status.reposted_by !== null) continue;
+    const createdAt = timestampMilliseconds(status.created_timestamp);
     if (createdAt !== null) out.push(createdAt);
   }
   return out;

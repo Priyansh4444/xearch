@@ -1,3 +1,5 @@
+**IMPORTANT** - prioritize minimizing Convex database I/O load when uploading data, even if it makes ingestion slower or more compute-intensive. reduce reads and writes as much as reasonably possible
+
 # rules
 
 1. this project does not use the x api and never will.

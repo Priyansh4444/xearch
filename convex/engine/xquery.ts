@@ -3,6 +3,8 @@
 // ever sees the raw query string. Mirrored by docs/PARSER.md §1 (JSON Schema) and
 // the Tier C output grammar. Bump `v` on any breaking change.
 
+import type { VisualMediaType } from "../contracts/media";
+
 export const XQUERY_VERSION = 1 as const;
 
 export type Intent =
@@ -14,7 +16,7 @@ export type Intent =
   | "compare"
   | "event";
 
-export type MediaFilter = "image" | "video" | "gif";
+export type MediaFilter = VisualMediaType;
 
 export interface XQueryFilters {
   authorId: string | null; // resolved id — NEVER a handle or display name
@@ -32,7 +34,7 @@ export interface XQuery {
   must: string[];
   /** Soft terms: rerank boosts + L2 union. Never gate. */
   should: string[];
-  /** Exact-adjacency groups (positions verify post-v1; until then treated as must). */
+  /** Exact token-adjacency groups, including stopwords; verified on candidate text. */
   phrases: string[][];
   exclude: string[];
   /** Canonical aspect tokens (~price, ...) — closed vocabulary from shared/lexicons. */

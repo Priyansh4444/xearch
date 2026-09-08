@@ -35,7 +35,7 @@ export interface Tokenized {
   hasLink: boolean;
 }
 
-export function tokenize(raw: string): Tokenized {
+export function tokenize(raw: string, keepStopwords = false): Tokenized {
   let hasLink = false;
   const text = raw
     .normalize("NFKC")
@@ -49,7 +49,7 @@ export function tokenize(raw: string): Tokenized {
   const chars = Array.from(text); // code points, not UTF-16 units
   let i = 0;
   const push = (t: string) => {
-    if (t.length > 0 && !STOP.has(t)) tokens.push(t);
+    if (t.length > 0 && (keepStopwords || !STOP.has(t))) tokens.push(t);
   };
 
   while (i < chars.length) {
