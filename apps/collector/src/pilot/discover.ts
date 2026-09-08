@@ -69,11 +69,10 @@ export function discoverFromPages(pages: RawPageInput[], options: DiscoveryOptio
   const byHandle = new Map<string, Bucket>();
   const seedIds = new Set(options.seeds.map((seed) => seed.userId));
 
-  const learn = (author: unknown): void => {
-    const parsed = parseProviderAuthor(author);
-    if (parsed === null) return;
-    const id = parsed.id ?? null;
-    const handle = normalizeHandle(parseNonEmptyString(parsed.screen_name ?? null));
+  const learn = (author: ProviderAuthor | null | undefined): void => {
+    if (author === null || author === undefined) return;
+    const id = author.id ?? null;
+    const handle = normalizeHandle(parseNonEmptyString(author.screen_name ?? null));
     if (id !== null && handle !== null) handleToId.set(handle, id);
   };
 
@@ -124,7 +123,7 @@ export function discoverFromPages(pages: RawPageInput[], options: DiscoveryOptio
       learn(status.author);
       const quote = parseProviderStatus(status.quote);
       learn(quote?.author);
-      learn(status.reposted_by);
+      learn(parseProviderAuthor(status.reposted_by));
       for (const facet of facets(status)) {
         if (facet.type === "mention") {
           const id = parseNonEmptyString(facet.id);
