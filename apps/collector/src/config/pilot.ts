@@ -3,7 +3,9 @@
 
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { Option } from "effect";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 
 export const PILOT_CONFIG_VERSION = 2;
 
@@ -35,6 +37,27 @@ export interface PilotConfig {
   accounts: PilotAccount[];
 }
 
+const PilotAccountSchema = Schema.Struct({
+  handle: Schema.String,
+  expectedUserId: Schema.Union([Schema.String, Schema.Number]),
+  cohort: Schema.String,
+});
+
+const PilotConfigSchema = Schema.Struct({
+  version: Schema.Literal(PILOT_CONFIG_VERSION),
+  source: Schema.Literal("fxtwitter"),
+  apiBaseUrl: Schema.String,
+  apiVersion: Schema.String,
+  specificationUrl: Schema.String,
+  historyDays: Schema.Number,
+  withReplies: Schema.Boolean,
+  requestedPageSize: Schema.Number,
+  delayMs: Schema.Number,
+  coverageFloor: Schema.Number,
+  selectedOn: Schema.String,
+  accounts: Schema.Array(PilotAccountSchema),
+});
+
 export class PilotConfigError extends Error {
   readonly _tag = "PilotConfigError";
 
@@ -47,42 +70,46 @@ export class PilotConfigError extends Error {
 }
 
 export function parsePilotConfig(value: unknown): PilotConfig {
-  if (!isRecord(value)) throw new Error("pilot config must be an object");
-  if (value.version !== PILOT_CONFIG_VERSION) {
-    throw new Error(`pilot config version must be ${PILOT_CONFIG_VERSION}`);
+  const parsed = Schema.decodeUnknownOption(PilotConfigSchema)(value);
+  if (Option.isNone(parsed)) throw new Error("pilot config has an invalid shape");
+  const config = parsed.value;
+  if (config.apiBaseUrl.trim().length === 0) throw new Error("pilot config apiBaseUrl must be a non-empty string");
+  if (config.apiVersion.trim().length === 0) throw new Error("pilot config apiVersion must be a non-empty string");
+  if (config.specificationUrl.trim().length === 0) throw new Error("pilot config specificationUrl must be a non-empty string");
+  if (config.selectedOn.trim().length === 0) throw new Error("pilot config selectedOn must be a non-empty string");
+  if (!Number.isInteger(config.historyDays) || config.historyDays < 1 || config.historyDays > 3_650) {
+    throw new Error("pilot config historyDays must be an integer from 1 to 3650");
   }
-  if (value.source !== "fxtwitter") throw new Error("pilot config source must be \"fxtwitter\"");
-  const apiBaseUrl = requireString(value, "apiBaseUrl").replace(/\/+$/, "");
-  const apiVersion = requireString(value, "apiVersion");
-  const specificationUrl = requireString(value, "specificationUrl");
-  const historyDays = requireInteger(value, "historyDays", 1, 3_650);
-  const requestedPageSize = requireInteger(value, "requestedPageSize", 1, 100);
-  const delayMs = requireInteger(value, "delayMs", 0, 60_000);
-  const coverageFloor = requireInteger(value, "coverageFloor", 0, 1_000_000);
-  const selectedOn = requireString(value, "selectedOn");
-  if (typeof value.withReplies !== "boolean") throw new Error("pilot config withReplies must be a boolean");
-  if (!Array.isArray(value.accounts) || value.accounts.length === 0) {
+  if (!Number.isInteger(config.requestedPageSize) || config.requestedPageSize < 1 || config.requestedPageSize > 100) {
+    throw new Error("pilot config requestedPageSize must be an integer from 1 to 100");
+  }
+  if (!Number.isInteger(config.delayMs) || config.delayMs < 0 || config.delayMs > 60_000) {
+    throw new Error("pilot config delayMs must be an integer from 0 to 60000");
+  }
+  if (!Number.isInteger(config.coverageFloor) || config.coverageFloor < 0 || config.coverageFloor > 1_000_000) {
+    throw new Error("pilot config coverageFloor must be an integer from 0 to 1000000");
+  }
+  if (config.accounts.length === 0) {
     throw new Error("pilot config accounts must be a non-empty array");
   }
 
   const accounts: PilotAccount[] = [];
   const seenHandles = new Set<string>();
   const seenIds = new Set<string>();
-  value.accounts.forEach((entry, index) => {
-    if (!isRecord(entry)) throw new Error(`accounts[${index}] must be an object`);
-    const handle = requireString(entry, "handle").replace(/^@/, "");
+  config.accounts.forEach((entry, index) => {
+    const handle = entry.handle.replace(/^@/, "");
     if (!/^[A-Za-z0-9_]{1,15}$/.test(handle)) {
       throw new Error(`accounts[${index}].handle is not a valid X handle: ${handle}`);
     }
-    if (typeof entry.expectedUserId !== "string" || !/^[0-9]+$/.test(entry.expectedUserId)) {
+    if (typeof entry.expectedUserId !== "string") {
       throw new Error(`accounts[${index}].expectedUserId must be a numeric string (ids exceed 2^53)`);
     }
     const expectedUserId = entry.expectedUserId;
     if (!/^[0-9]+$/.test(expectedUserId)) {
       throw new Error(`accounts[${index}].expectedUserId must be a numeric string (ids exceed 2^53)`);
     }
-    const cohort = entry.cohort;
-    if (!isCohort(cohort)) throw new Error(`accounts[${index}].cohort must be one of ${COHORTS.join(", ")}`);
+    const cohort = COHORTS.find((candidate) => candidate === entry.cohort);
+    if (cohort === undefined) throw new Error(`accounts[${index}].cohort must be one of ${COHORTS.join(", ")}`);
     const key = handle.toLowerCase();
     if (seenHandles.has(key)) throw new Error(`duplicate handle in pilot config: ${handle}`);
     if (seenIds.has(expectedUserId)) throw new Error(`duplicate expectedUserId in pilot config: ${expectedUserId}`);
@@ -92,17 +119,17 @@ export function parsePilotConfig(value: unknown): PilotConfig {
   });
 
   return {
-    version: PILOT_CONFIG_VERSION,
-    source: "fxtwitter",
-    apiBaseUrl,
-    apiVersion,
-    specificationUrl,
-    historyDays,
-    withReplies: value.withReplies,
-    requestedPageSize,
-    delayMs,
-    coverageFloor,
-    selectedOn,
+    version: config.version,
+    source: config.source,
+    apiBaseUrl: config.apiBaseUrl.replace(/\/+$/, ""),
+    apiVersion: config.apiVersion,
+    specificationUrl: config.specificationUrl,
+    historyDays: config.historyDays,
+    withReplies: config.withReplies,
+    requestedPageSize: config.requestedPageSize,
+    delayMs: config.delayMs,
+    coverageFloor: config.coverageFloor,
+    selectedOn: config.selectedOn,
     accounts,
   };
 }
@@ -152,34 +179,11 @@ export function configHash(config: PilotConfig): string {
 
 function sortKeys(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(sortKeys);
-  if (isRecord(value)) {
+  const record = Schema.decodeUnknownOption(Schema.Record(Schema.String, Schema.Unknown))(value);
+  if (Option.isSome(record)) {
     const out: Record<string, unknown> = {};
-    for (const key of Object.keys(value).sort()) out[key] = sortKeys(value[key]);
+    for (const key of Object.keys(record.value).sort()) out[key] = sortKeys(record.value[key]);
     return out;
   }
   return value;
-}
-
-function isCohort(value: unknown): value is Cohort {
-  return typeof value === "string" && (COHORTS as readonly string[]).includes(value);
-}
-
-function requireString(record: Record<string, unknown>, field: string): string {
-  const value = record[field];
-  if (typeof value !== "string" || value.trim().length === 0) {
-    throw new Error(`pilot config ${field} must be a non-empty string`);
-  }
-  return value;
-}
-
-function requireInteger(record: Record<string, unknown>, field: string, min: number, max: number): number {
-  const value = record[field];
-  if (!Number.isInteger(value) || (value as number) < min || (value as number) > max) {
-    throw new Error(`pilot config ${field} must be an integer from ${min} to ${max}`);
-  }
-  return value as number;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
