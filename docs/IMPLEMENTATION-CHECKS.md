@@ -57,7 +57,19 @@ tokenizer-version/reindex decision, not a silent performance refactor.
   existing tokenizer/backfill tests do not validate them.
 - React Doctor reports no issues after separating query orchestration into
   `useSearchPage` and pure result presentation into `presentResults`.
-- The Effect migration is incomplete beyond config loading and acquisition.
+- Collector I/O is Effect-first following Effect 4 docs (`Effect.fn("name")`,
+  yieldable TaggedErrors, thin `Effect.runPromise` wrappers at edges):
+  - acquisition: `makeFxTwitterClient`, `fetch*Effect`, retries
+  - fs/config: `contracts/fs.ts`, `parse/load/selectAccounts*Effect`
+  - pilot: `acquireEffect`, `saveStateEffect`, `loadCheckpointEffect`,
+    `buildReportEffect`, lifecycle Effects, `readRunPagesEffect`
+  - probe + both CLIs: Effect.fn command bodies / `runTimelineProbeEffect`
+  Pure normalize/mapping and `convex/engine` stay non-Effect. No full
+  Context.Service/Layer graph yet (optional later where DI helps tests).
+  `SearchErrorBoundary` keeps a thin React class shell; fallback UI is functional.
+- GitHub Actions CI runs JS typecheck/tests and Rust fmt/clippy/test on Node 24.
+  `vitest.config.ts` scopes discovery to real packages (excludes `.delta` and the
+  Node-test posthog CLI suite). Posthog ingress Rust tests accept Node >= 24.
 - Live Convex deployment, browser interactions, corpus ingestion, and upstream
   collection have not been exercised in this pass.
 
