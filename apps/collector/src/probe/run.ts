@@ -2,15 +2,18 @@ import { createHash } from "node:crypto";
 import { join } from "node:path";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import type {
   FxTwitterError,
   FxTwitterTimelinePage,
+  PilotClient,
   TimelineClient,
   TimelineRequest,
   TimelineResponse,
 } from "../acquisition/fxtwitter.ts";
+import { FxTwitter } from "../acquisition/fxtwitter.ts";
 import {
   readJsonIfExistsEffect,
   writeJsonAtomicEffect,
@@ -183,15 +186,18 @@ const ProbeCheckpointSchema = Schema.Struct({
 });
 
 export async function runTimelineProbe(
-  client: TimelineClient,
+  client: PilotClient,
   options: ProbeOptions,
 ): Promise<ProbeReport> {
-  return Effect.runPromise(runTimelineProbeEffect(client, options));
+  return Effect.runPromise(
+    Effect.provide(runTimelineProbeEffect(options), Layer.succeed(FxTwitter, client)),
+  );
 }
 
 export const runTimelineProbeEffect = Effect.fn("probe.runTimelineProbe")(
-  function* (client: TimelineClient, options: ProbeOptions) {
+  function* (options: ProbeOptions) {
     yield* validateOptions(options);
+    const client = yield* FxTwitter;
 
     const checkpointPath = join(options.outputDirectory, "checkpoint.json");
     const reportPath = join(options.outputDirectory, "report.json");
