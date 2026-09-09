@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   FxTwitterError,
+  FxTwitterErrorKind,
   pilotClientFromPromises,
   type FxTwitterJson,
   type PilotClient,
@@ -158,6 +159,24 @@ describe("pilot acquisition", () => {
     const recovered = await acquire({ paths, config, client: second, now: () => NOW, sleep: async () => undefined });
     expect(recovered.acquisition.status).toBe("completed");
     expect(recovered.acquisition.accounts[0]).toMatchObject({ state: "completed", pauseReason: null });
+  });
+
+  it("pauses an account with invalid_response when the timeline envelope does not decode", async () => {
+    const { paths, config } = await freshRun([account("seed", "100")]);
+    const client = fakeClient({
+      profiles: { seed: profile("100", "Seed") },
+      timelines: {
+        "100": [new FxTwitterError({
+          message: "FxTwitter timeline decode failed",
+          status: 200,
+          responseBody: "not json",
+          kind: FxTwitterErrorKind.Decode,
+          retryDelay: 0,
+        })],
+      },
+    });
+    const paused = await acquire({ paths, config, client, now: () => NOW, sleep: async () => undefined });
+    expect(paused.acquisition.accounts[0]).toMatchObject({ state: "paused", pauseReason: "invalid_response", pagesCompleted: 0 });
   });
 
   it("continues past a transient empty page and exhausts only after three empties in a row", async () => {

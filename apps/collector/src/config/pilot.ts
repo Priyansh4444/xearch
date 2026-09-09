@@ -6,6 +6,7 @@ import { readFile } from "node:fs/promises";
 import * as Data from "effect/Data";
 import { Option } from "effect";
 import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
 export const PILOT_CONFIG_VERSION = 2;
@@ -84,11 +85,13 @@ export const parsePilotConfigEffect = Effect.fn("parsePilotConfigEffect")(
     value: unknown,
     path = "<memory>",
   ): Effect.fn.Return<PilotConfig, PilotConfigError> {
-    const parsed = Schema.decodeUnknownOption(PilotConfigSchema)(value);
-    if (Option.isNone(parsed)) {
-      return yield* configFail(path, "pilot config has an invalid shape");
+    const parsed = Schema.decodeUnknownResult(PilotConfigSchema)(value);
+    if (Result.isFailure(parsed)) {
+      // SchemaError.message renders the issue tree with paths, so operators
+      // see WHICH field broke, not just that the shape is wrong.
+      return yield* configFail(path, `pilot config has an invalid shape: ${parsed.failure.message}`);
     }
-    const config = parsed.value;
+    const config = parsed.success;
     if (config.apiBaseUrl.trim().length === 0) {
       return yield* configFail(path, "pilot config apiBaseUrl must be a non-empty string");
     }
