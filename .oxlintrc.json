@@ -1,0 +1,25 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "unicorn", "oxc", "vitest", "react"],
+  "categories": {
+    "correctness": "error"
+  },
+  "rules": {
+    "vitest/no-conditional-expect": "off"
+  },
+  "overrides": [
+    {
+      "files": ["apps/collector/tests/effect.ts"],
+      "rules": {
+        "vitest/expect-expect": "off",
+        "vitest/valid-title": "off"
+      }
+    },
+    {
+      "files": ["apps/collector/tests/acquisition.test.ts"],
+      "rules": {
+        "vitest/no-standalone-expect": "off"
+      }
+    }
+  ]
+}

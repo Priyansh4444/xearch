@@ -9,20 +9,12 @@ import type {
   FxTwitterError,
   FxTwitterTimelinePage,
   PilotClient,
-  TimelineClient,
   TimelineRequest,
   TimelineResponse,
 } from "../acquisition/fxtwitter.ts";
 import { FxTwitter } from "../acquisition/fxtwitter.ts";
-import {
-  readJsonIfExistsEffect,
-  writeJsonAtomicEffect,
-  type FsError,
-} from "../contracts/fs.ts";
-import {
-  parseNonEmptyString,
-  parseNonNegativeNumber,
-} from "../contracts/primitives.ts";
+import { readJsonIfExistsEffect, writeJsonAtomicEffect, type FsError } from "../contracts/fs.ts";
+import { parseNonEmptyString, parseNonNegativeNumber } from "../contracts/primitives.ts";
 import {
   isImageProviderMedia,
   parseProviderMediaType,
@@ -112,11 +104,7 @@ export class ProbeCheckpointError extends Data.TaggedError("ProbeCheckpointError
   readonly cause: unknown;
 }> {}
 
-export type ProbeError =
-  | ProbeValidationError
-  | ProbeCheckpointError
-  | FsError
-  | FxTwitterError;
+export type ProbeError = ProbeValidationError | ProbeCheckpointError | FsError | FxTwitterError;
 
 const StopReasonSchema = Schema.Union([
   Schema.Literal("page-limit"),
@@ -194,84 +182,75 @@ export async function runTimelineProbe(
   );
 }
 
-export const runTimelineProbeEffect = Effect.fn("probe.runTimelineProbe")(
-  function* (options: ProbeOptions) {
-    yield* validateOptions(options);
-    const client = yield* FxTwitter;
+export const runTimelineProbeEffect = Effect.fn("probe.runTimelineProbe")(function* (
+  options: ProbeOptions,
+) {
+  yield* validateOptions(options);
+  const client = yield* FxTwitter;
 
-    const checkpointPath = join(options.outputDirectory, "checkpoint.json");
-    const reportPath = join(options.outputDirectory, "report.json");
-    const loaded = yield* loadCheckpoint(checkpointPath);
-    const checkpoint = loaded ?? newCheckpoint(options);
-    yield* assertCheckpointMatches(checkpoint, options);
+  const checkpointPath = join(options.outputDirectory, "checkpoint.json");
+  const reportPath = join(options.outputDirectory, "report.json");
+  const loaded = yield* loadCheckpoint(checkpointPath);
+  const checkpoint = loaded ?? newCheckpoint(options);
+  yield* assertCheckpointMatches(checkpoint, options);
 
-    if (checkpoint.completed) return checkpoint.report;
+  if (checkpoint.completed) return checkpoint.report;
 
-    const seenTweetIds = new Set(checkpoint.seenTweetIds);
-    const seenCursors = new Set(checkpoint.seenCursors ?? []);
+  const seenTweetIds = new Set(checkpoint.seenTweetIds);
+  const seenCursors = new Set(checkpoint.seenCursors ?? []);
 
-    for (let requestIndex = 0; requestIndex < options.pages; requestIndex += 1) {
-      const pageNumber = checkpoint.nextPage;
-      const inputCursor = checkpoint.nextCursor;
-      const request: TimelineRequest = {
-        handle: options.handle,
-        count: options.count,
-        cursor: inputCursor,
-        withReplies: options.withReplies,
-      };
-      const response = yield* client.fetchTimelinePageEffect(request);
+  for (let requestIndex = 0; requestIndex < options.pages; requestIndex += 1) {
+    const pageNumber = checkpoint.nextPage;
+    const inputCursor = checkpoint.nextCursor;
+    const request: TimelineRequest = {
+      handle: options.handle,
+      count: options.count,
+      cursor: inputCursor,
+      withReplies: options.withReplies,
+    };
+    const response = yield* client.fetchTimelinePageEffect(request);
 
-      yield* writeJsonAtomicEffect(
-        join(options.outputDirectory, "raw", `${String(pageNumber).padStart(6, "0")}.json`),
-        response.raw,
-      );
+    yield* writeJsonAtomicEffect(
+      join(options.outputDirectory, "raw", `${String(pageNumber).padStart(6, "0")}.json`),
+      response.raw,
+    );
 
-      if (response.page === null) {
-        checkpoint.report.stopReason = "no-content";
-        checkpoint.report.updatedAt = new Date().toISOString();
-        checkpoint.completed = true;
-        yield* persist(checkpointPath, reportPath, checkpoint);
-        break;
-      }
-
-      const pageReport = analyzeTimelinePage(
-        pageNumber,
-        inputCursor,
-        response,
-        seenTweetIds,
-      );
-      checkpoint.report.pages.push(pageReport);
-      mergePageReport(checkpoint.report, pageReport);
-      checkpoint.nextPage += 1;
-      checkpoint.nextCursor = response.page.cursor.bottom;
-      checkpoint.seenTweetIds = [...seenTweetIds];
-
-      const stopReason = terminalStopReason(
-        response.page,
-        inputCursor,
-        seenCursors,
-      );
-      if (response.page.cursor.bottom !== null) seenCursors.add(response.page.cursor.bottom);
-      checkpoint.seenCursors = [...seenCursors];
-
-      if (stopReason !== null) {
-        checkpoint.report.stopReason = stopReason;
-        checkpoint.completed = true;
-      } else {
-        checkpoint.report.stopReason = "page-limit";
-      }
+    if (response.page === null) {
+      checkpoint.report.stopReason = "no-content";
       checkpoint.report.updatedAt = new Date().toISOString();
+      checkpoint.completed = true;
       yield* persist(checkpointPath, reportPath, checkpoint);
-
-      if (checkpoint.completed) break;
-      if (requestIndex + 1 < options.pages && options.delayMs > 0) {
-        yield* Effect.sleep(options.delayMs);
-      }
+      break;
     }
 
-    return checkpoint.report;
-  },
-);
+    const pageReport = analyzeTimelinePage(pageNumber, inputCursor, response, seenTweetIds);
+    checkpoint.report.pages.push(pageReport);
+    mergePageReport(checkpoint.report, pageReport);
+    checkpoint.nextPage += 1;
+    checkpoint.nextCursor = response.page.cursor.bottom;
+    checkpoint.seenTweetIds = [...seenTweetIds];
+
+    const stopReason = terminalStopReason(response.page, inputCursor, seenCursors);
+    if (response.page.cursor.bottom !== null) seenCursors.add(response.page.cursor.bottom);
+    checkpoint.seenCursors = [...seenCursors];
+
+    if (stopReason !== null) {
+      checkpoint.report.stopReason = stopReason;
+      checkpoint.completed = true;
+    } else {
+      checkpoint.report.stopReason = "page-limit";
+    }
+    checkpoint.report.updatedAt = new Date().toISOString();
+    yield* persist(checkpointPath, reportPath, checkpoint);
+
+    if (checkpoint.completed) break;
+    if (requestIndex + 1 < options.pages && options.delayMs > 0) {
+      yield* Effect.sleep(options.delayMs);
+    }
+  }
+
+  return checkpoint.report;
+});
 
 export function analyzeTimelinePage(
   pageNumber: number,
@@ -353,7 +332,11 @@ function missingIngressFields(status: ProviderStatus): string[] {
   const missing: string[] = [];
   requireValue(missing, "type", isStatusRow(status.type));
   requireValue(missing, "text", parseNonEmptyString(status.text) !== null);
-  requireValue(missing, "created_timestamp", timestampMilliseconds(status.created_timestamp) !== null);
+  requireValue(
+    missing,
+    "created_timestamp",
+    timestampMilliseconds(status.created_timestamp) !== null,
+  );
   const metrics = [
     ["likes", status.likes],
     ["reposts", status.reposts],
@@ -368,12 +351,29 @@ function missingIngressFields(status: ProviderStatus): string[] {
     missing.push("author");
   } else {
     requireValue(missing, "author.id", parseNonEmptyString(status.author.id) !== null);
-    requireValue(missing, "author.screen_name", parseNonEmptyString(status.author.screen_name) !== null);
+    requireValue(
+      missing,
+      "author.screen_name",
+      parseNonEmptyString(status.author.screen_name) !== null,
+    );
     requireValue(missing, "author.name", parseNonEmptyString(status.author.name) !== null);
-    requireValue(missing, "author.followers", parseNonNegativeNumber(status.author.followers) !== null);
-    requireValue(missing, "author.following", parseNonNegativeNumber(status.author.following) !== null);
+    requireValue(
+      missing,
+      "author.followers",
+      parseNonNegativeNumber(status.author.followers) !== null,
+    );
+    requireValue(
+      missing,
+      "author.following",
+      parseNonNegativeNumber(status.author.following) !== null,
+    );
     requireValue(missing, "author.joined", dateMilliseconds(status.author.joined) !== null);
-    requireValue(missing, "author.verification.verified", status.author.verification?.verified === true || status.author.verification?.verified === false);
+    requireValue(
+      missing,
+      "author.verification.verified",
+      status.author.verification?.verified === true ||
+        status.author.verification?.verified === false,
+    );
   }
 
   return missing;
@@ -479,24 +479,24 @@ const loadCheckpoint = Effect.fn("probe.loadCheckpoint")(function* (path: string
   } satisfies ProbeCheckpoint;
 });
 
-const assertCheckpointMatches = Effect.fn("probe.assertCheckpointMatches")(
-  function* (checkpoint: ProbeCheckpoint, options: ProbeOptions) {
-    const expected = JSON.stringify({
-      handle: options.handle,
-      baseUrl: options.baseUrl,
-      count: options.count,
-      withReplies: options.withReplies,
+const assertCheckpointMatches = Effect.fn("probe.assertCheckpointMatches")(function* (
+  checkpoint: ProbeCheckpoint,
+  options: ProbeOptions,
+) {
+  const expected = JSON.stringify({
+    handle: options.handle,
+    baseUrl: options.baseUrl,
+    count: options.count,
+    withReplies: options.withReplies,
+  });
+  if (JSON.stringify(checkpoint.identity) !== expected) {
+    return yield* new ProbeCheckpointError({
+      message: "Existing checkpoint options do not match this run. Choose another --out directory.",
+      path: options.outputDirectory,
+      cause: null,
     });
-    if (JSON.stringify(checkpoint.identity) !== expected) {
-      return yield* new ProbeCheckpointError({
-        message:
-          "Existing checkpoint options do not match this run. Choose another --out directory.",
-        path: options.outputDirectory,
-        cause: null,
-      });
-    }
-  },
-);
+  }
+});
 
 const persist = Effect.fn("probe.persist")(function* (
   checkpointPath: string,

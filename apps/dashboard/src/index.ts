@@ -22,7 +22,12 @@ interface R2Objects {
 }
 interface R2Bucket {
   get(key: string): Promise<R2ObjectBody | null>;
-  list(options?: { prefix?: string; delimiter?: string; cursor?: string; limit?: number }): Promise<R2Objects>;
+  list(options?: {
+    prefix?: string;
+    delimiter?: string;
+    cursor?: string;
+    limit?: number;
+  }): Promise<R2Objects>;
 }
 interface Env {
   xearch_runs: R2Bucket;
@@ -66,7 +71,12 @@ export interface Manifest {
   updatedAt: number;
   historyDays: number;
   cutoffAt: number;
-  acquisition: { status: string; startedAt: number | null; completedAt: number | null; accounts: ManifestAccount[] };
+  acquisition: {
+    status: string;
+    startedAt: number | null;
+    completedAt: number | null;
+    accounts: ManifestAccount[];
+  };
   normalization: {
     normalizedAt: number;
     counts: {
@@ -97,7 +107,14 @@ export interface RunSummary {
   error: string | null;
   manifestUpdatedAt: number | null; // R2 object upload time is not exposed by list(); use manifest.updatedAt.
   status: string | null;
-  accounts: { total: number; completed: number; paused: number; active: number; pending: number; abandoned: number } | null;
+  accounts: {
+    total: number;
+    completed: number;
+    paused: number;
+    active: number;
+    pending: number;
+    abandoned: number;
+  } | null;
   requests: number | null;
   retries: number | null;
   rowsReturned: number | null;
@@ -134,13 +151,19 @@ export default {
       if (url.pathname === "/api/runs") {
         const snapshot = await buildSnapshot(env.xearch_runs);
         return new Response(JSON.stringify(snapshot, null, 2), {
-          headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
+          headers: {
+            "content-type": "application/json; charset=utf-8",
+            "cache-control": "no-store",
+          },
         });
       }
       if (url.pathname === "/api/summary") {
         const snapshot = await buildSnapshot(env.xearch_runs);
         return new Response(JSON.stringify(buildSummary(snapshot)), {
-          headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
+          headers: {
+            "content-type": "application/json; charset=utf-8",
+            "cache-control": "no-store",
+          },
         });
       }
       if (url.pathname === "/") {
@@ -158,7 +181,10 @@ export default {
       return new Response("not found", { status: 404 });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      return new Response(`dashboard error: ${message}`, { status: 500, headers: { "content-type": "text/plain" } });
+      return new Response(`dashboard error: ${message}`, {
+        status: 500,
+        headers: { "content-type": "text/plain" },
+      });
     }
   },
 };
@@ -205,7 +231,9 @@ async function listPrefixes(bucket: R2Bucket, prefix: string): Promise<string[]>
   return prefixes;
 }
 
-async function discoverRuns(bucket: R2Bucket): Promise<{ runId: string; kind: "live" | "archived" }[]> {
+async function discoverRuns(
+  bucket: R2Bucket,
+): Promise<{ runId: string; kind: "live" | "archived" }[]> {
   const [top, live] = await Promise.all([listPrefixes(bucket, ""), listPrefixes(bucket, "_live/")]);
   const runs: { runId: string; kind: "live" | "archived" }[] = [];
   for (const prefix of live) {
@@ -219,18 +247,28 @@ async function discoverRuns(bucket: R2Bucket): Promise<{ runId: string; kind: "l
   return runs;
 }
 
-async function readJson<T>(bucket: R2Bucket, key: string): Promise<{ value: T | null; error: string | null }> {
+async function readJson<T>(
+  bucket: R2Bucket,
+  key: string,
+): Promise<{ value: T | null; error: string | null }> {
   const object = await bucket.get(key);
   if (object === null) return { value: null, error: null };
   const text = await object.text();
   try {
     return { value: JSON.parse(text) as T, error: null };
   } catch (error) {
-    return { value: null, error: `${key}: ${error instanceof Error ? error.message : "invalid JSON"}` };
+    return {
+      value: null,
+      error: `${key}: ${error instanceof Error ? error.message : "invalid JSON"}`,
+    };
   }
 }
 
-async function loadRun(bucket: R2Bucket, runId: string, kind: "live" | "archived"): Promise<RunSummary> {
+async function loadRun(
+  bucket: R2Bucket,
+  runId: string,
+  kind: "live" | "archived",
+): Promise<RunSummary> {
   const base = kind === "live" ? `_live/${runId}/` : `${runId}/`;
   const empty: RunSummary = {
     runId,
@@ -269,10 +307,13 @@ async function loadRun(bucket: R2Bucket, runId: string, kind: "live" | "archived
     return { ...empty, error: `${base}manifest.json has an unexpected shape` };
   }
   const accounts = manifest.acquisition.accounts;
-  const count = (state: AccountState) => accounts.filter((account) => account.state === state).length;
-  const sum = (pick: (account: ManifestAccount) => number) => accounts.reduce((total, account) => total + (pick(account) || 0), 0);
+  const count = (state: AccountState) =>
+    accounts.filter((account) => account.state === state).length;
+  const sum = (pick: (account: ManifestAccount) => number) =>
+    accounts.reduce((total, account) => total + (pick(account) || 0), 0);
   const report = reportResult.value;
-  const reportValid = report !== null && typeof report === "object" && Array.isArray(report.thresholds?.checks);
+  const reportValid =
+    report !== null && typeof report === "object" && Array.isArray(report.thresholds?.checks);
   return {
     ...empty,
     manifestUpdatedAt: manifest.updatedAt ?? null,
@@ -297,11 +338,15 @@ async function loadRun(bucket: R2Bucket, runId: string, kind: "live" | "archived
     acquisitionCompletedAt: manifest.acquisition.completedAt ?? null,
     acceptance: manifest.acceptance ?? null,
     normalization: manifest.normalization ?? null,
-    archiveBytes: manifest.archive ? manifest.archive.files.reduce((total, file) => total + (file.bytes || 0), 0) : null,
+    archiveBytes: manifest.archive
+      ? manifest.archive.files.reduce((total, file) => total + (file.bytes || 0), 0)
+      : null,
     archiveFiles: manifest.archive ? manifest.archive.files.length : null,
     archivedAt: manifest.archive?.archivedAt ?? null,
     report: reportValid ? { generatedAt: report.generatedAt, thresholds: report.thresholds } : null,
-    reportError: reportResult.error ?? (report !== null && !reportValid ? `${base}report.json has an unexpected shape` : null),
+    reportError:
+      reportResult.error ??
+      (report !== null && !reportValid ? `${base}report.json has an unexpected shape` : null),
     accountRows: accounts,
   };
 }
@@ -311,11 +356,16 @@ async function loadRun(bucket: R2Bucket, runId: string, kind: "live" | "archived
 function esc(value: unknown): string {
   return String(value ?? "").replace(/[&<>"']/g, (char) => {
     switch (char) {
-      case "&": return "&amp;";
-      case "<": return "&lt;";
-      case ">": return "&gt;";
-      case '"': return "&quot;";
-      default: return "&#39;";
+      case "&":
+        return "&amp;";
+      case "<":
+        return "&lt;";
+      case ">":
+        return "&gt;";
+      case '"':
+        return "&quot;";
+      default:
+        return "&#39;";
     }
   });
 }
@@ -338,7 +388,10 @@ function fmtInt(value: number | null | undefined): string {
 
 function fmtDate(ms: number | null | undefined): string {
   if (ms === null || ms === undefined) return "–";
-  return new Date(ms).toISOString().replace("T", " ").replace(/\.\d{3}Z$/, "Z");
+  return new Date(ms)
+    .toISOString()
+    .replace("T", " ")
+    .replace(/\.\d{3}Z$/, "Z");
 }
 
 function ago(ms: number | null | undefined, now: number): string {
@@ -348,8 +401,8 @@ function ago(ms: number | null | undefined, now: number): string {
   const suffix = seconds < 0 ? "from now" : "ago";
   if (abs < 45) return `${abs}s ${suffix}`;
   if (abs < 3600) return `${Math.round(abs / 60)} min ${suffix}`;
-  if (abs < 86400) return `${Math.round(abs / 3600 * 10) / 10} h ${suffix}`;
-  return `${Math.round(abs / 86400 * 10) / 10} d ${suffix}`;
+  if (abs < 86400) return `${Math.round((abs / 3600) * 10) / 10} h ${suffix}`;
+  return `${Math.round((abs / 86400) * 10) / 10} d ${suffix}`;
 }
 
 function fmtDuration(ms: number): string {
@@ -374,12 +427,17 @@ function timeCell(ms: number | null, now: number): string {
 
 function statusClass(status: string | null): string {
   switch (status) {
-    case AcquisitionStatus.Completed: return "ok";
-    case AcquisitionStatus.InProgress: return "live";
-    case AcquisitionStatus.Partial: return "warn";
+    case AcquisitionStatus.Completed:
+      return "ok";
+    case AcquisitionStatus.InProgress:
+      return "live";
+    case AcquisitionStatus.Partial:
+      return "warn";
     case AcquisitionStatus.Abandoned:
-    case AcquisitionStatus.Failed: return "bad";
-    default: return "";
+    case AcquisitionStatus.Failed:
+      return "bad";
+    default:
+      return "";
   }
 }
 
@@ -409,7 +467,9 @@ function renderRun(run: RunSummary, now: number): string {
 
   let elapsed = "–";
   if (run.acquisitionStartedAt !== null) {
-    const end = run.acquisitionCompletedAt ?? (run.status === AcquisitionStatus.InProgress ? now : run.updatedAt ?? now);
+    const end =
+      run.acquisitionCompletedAt ??
+      (run.status === AcquisitionStatus.InProgress ? now : (run.updatedAt ?? now));
     elapsed = fmtDuration(end - run.acquisitionStartedAt);
   }
 
@@ -456,14 +516,26 @@ function renderRun(run: RunSummary, now: number): string {
 
   const accountsTable = `<details><summary>Accounts (${a.total})</summary>
   <div class="scroll"><table class="accounts"><thead><tr><th>Handle</th><th>Cohort</th><th>State</th><th>Pages</th><th>Rows</th><th>Reason</th></tr></thead><tbody>
-  ${run.accountRows.map((account) => {
-    const reason = account.abandonReason ?? account.pauseReason ?? account.stopReason ?? "";
-    const handle = account.resolvedHandle && account.resolvedHandle !== account.requestedHandle
-      ? `${esc(account.requestedHandle)} <small class="dim">→ ${esc(account.resolvedHandle)}</small>`
-      : esc(account.requestedHandle);
-    const stateClass = account.state === AccountState.Completed ? "ok-text" : account.state === AccountState.Abandoned ? "bad-text" : account.state === AccountState.Paused ? "warn-text" : account.state === AccountState.Active ? "live-text" : "dim";
-    return `<tr><td>${handle}</td><td>${esc(account.cohort)}</td><td class="${stateClass}">${esc(account.state)}</td><td>${fmtInt(account.pagesCompleted)}</td><td>${fmtInt(account.rowsReturned)}</td><td class="small">${esc(reason)}${account.lastError ? ` <span class="dim" title="${esc(account.lastError)}">(error)</span>` : ""}</td></tr>`;
-  }).join("")}
+  ${run.accountRows
+    .map((account) => {
+      const reason = account.abandonReason ?? account.pauseReason ?? account.stopReason ?? "";
+      const handle =
+        account.resolvedHandle && account.resolvedHandle !== account.requestedHandle
+          ? `${esc(account.requestedHandle)} <small class="dim">→ ${esc(account.resolvedHandle)}</small>`
+          : esc(account.requestedHandle);
+      const stateClass =
+        account.state === AccountState.Completed
+          ? "ok-text"
+          : account.state === AccountState.Abandoned
+            ? "bad-text"
+            : account.state === AccountState.Paused
+              ? "warn-text"
+              : account.state === AccountState.Active
+                ? "live-text"
+                : "dim";
+      return `<tr><td>${handle}</td><td>${esc(account.cohort)}</td><td class="${stateClass}">${esc(account.state)}</td><td>${fmtInt(account.pagesCompleted)}</td><td>${fmtInt(account.rowsReturned)}</td><td class="small">${esc(reason)}${account.lastError ? ` <span class="dim" title="${esc(account.lastError)}">(error)</span>` : ""}</td></tr>`;
+    })
+    .join("")}
   </tbody></table></div></details>`;
 
   return `<section class="run">${head}${progress}${stats}${acceptance}${normalization}${thresholds}${accountsTable}</section>`;
@@ -473,9 +545,10 @@ function renderNerdsHtml(snapshot: Snapshot): string {
   const now = snapshot.generatedAt;
   const live = snapshot.runs.filter((run) => run.kind === "live");
   const archived = snapshot.runs.filter((run) => run.kind === "archived");
-  const body = snapshot.runs.length === 0
-    ? `<p class="dim">The bucket has no runs yet. Archived runs appear after <code>pnpm collect:sync</code>; live runs after <code>pnpm collect:push-status</code>.</p>`
-    : `${live.length ? `<h1 class="group">Live</h1>${live.map((run) => renderRun(run, now)).join("")}` : `<p class="dim">No live runs pushed.</p>`}
+  const body =
+    snapshot.runs.length === 0
+      ? `<p class="dim">The bucket has no runs yet. Archived runs appear after <code>pnpm collect:sync</code>; live runs after <code>pnpm collect:push-status</code>.</p>`
+      : `${live.length ? `<h1 class="group">Live</h1>${live.map((run) => renderRun(run, now)).join("")}` : `<p class="dim">No live runs pushed.</p>`}
        ${archived.length ? `<h1 class="group">Archived</h1>${archived.map((run) => renderRun(run, now)).join("")}` : `<p class="dim">No archived runs.</p>`}`;
   return `<!doctype html>
 <html lang="en">

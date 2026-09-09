@@ -2,7 +2,12 @@ import { describe, expect, it } from "vitest";
 import fixture from "./fixtures/fxtwitter/pages.json" with { type: "json" };
 import { pilotClientFromPromises, type ProfileResponse } from "../src/acquisition/fxtwitter.ts";
 import type { PilotConfig } from "../src/config/pilot.ts";
-import { discoverFromPages, proposeConfig, renderMarkdown, resolveCandidates } from "../src/pilot/discover.ts";
+import {
+  discoverFromPages,
+  proposeConfig,
+  renderMarkdown,
+  resolveCandidates,
+} from "../src/pilot/discover.ts";
 import type { RawPageInput } from "../src/normalization/normalize.ts";
 import type { AuthorId } from "../src/contracts/ids.ts";
 
@@ -21,23 +26,60 @@ describe("gate-2 discovery", () => {
       configuredHandles: new Set(seeds.map((seed) => seed.handle)),
       minSeeds: 1,
     });
-    const byHandle = Object.fromEntries(candidates.map((candidate) => [candidate.handle, candidate]));
+    const byHandle = Object.fromEntries(
+      candidates.map((candidate) => [candidate.handle, candidate]),
+    );
 
     // @quoted (id 300) was quoted by seed 100 once.
-    expect(byHandle.quoted).toMatchObject({ userId: "300", seeds: ["100"], interactions: { quote: 1, reply: 0, repost: 0, mention: 0 }, followers: 1000 });
+    expect(byHandle.quoted).toMatchObject({
+      userId: "300",
+      seeds: ["100"],
+      interactions: { quote: 1, reply: 0, repost: 0, mention: 0 },
+      followers: 1000,
+    });
     // @original (id 400) was reposted by seed 100.
     expect(byHandle.original).toMatchObject({ userId: "400", interactions: { repost: 1 } });
     // @friend was replied to and mentioned by seed 100; no id anywhere, so unresolved.
-    expect(byHandle.friend).toMatchObject({ userId: null, resolution: "unresolved", seeds: ["100"], interactions: { reply: 1, mention: 0 } });
+    expect(byHandle.friend).toMatchObject({
+      userId: null,
+      resolution: "unresolved",
+      seeds: ["100"],
+      interactions: { reply: 1, mention: 0 },
+    });
     // Seed 200 reposting seed 100's posts must not turn seed 100 into a candidate.
     expect(byHandle.seed).toBeUndefined();
   });
 
+  it("higher seed thresholds monotonically shrink the candidate set", () => {
+    const sizes = [1, 2, 3].map(
+      (minSeeds) =>
+        discoverFromPages(pages, {
+          seeds,
+          configuredIds: new Set(),
+          configuredHandles: new Set(),
+          minSeeds,
+        }).length,
+    );
+    expect(sizes[1]).toBeLessThanOrEqual(sizes[0]!);
+    expect(sizes[2]).toBeLessThanOrEqual(sizes[1]!);
+    expect(sizes[0]).toBeGreaterThan(0);
+  });
+
   it("applies the seed threshold and never proposes configured, unresolved, or protected accounts", () => {
-    const twoSeeds = discoverFromPages(pages, { seeds, configuredIds: new Set(), configuredHandles: new Set(), minSeeds: 2 });
+    const twoSeeds = discoverFromPages(pages, {
+      seeds,
+      configuredIds: new Set(),
+      configuredHandles: new Set(),
+      minSeeds: 2,
+    });
     expect(twoSeeds).toEqual([]);
 
-    const all = discoverFromPages(pages, { seeds, configuredIds: new Set(["300"]), configuredHandles: new Set(), minSeeds: 1 });
+    const all = discoverFromPages(pages, {
+      seeds,
+      configuredIds: new Set(["300"]),
+      configuredHandles: new Set(),
+      minSeeds: 1,
+    });
     const base = { version: 2, source: "fxtwitter", accounts: [] } as unknown as PilotConfig;
     const proposed = proposeConfig(base, all);
     const handles = proposed.accounts.map((account) => account.handle);
@@ -47,14 +89,47 @@ describe("gate-2 discovery", () => {
     expect(proposed.accounts.every((account) => account.cohort === "guest")).toBe(true);
   });
 
+  it.each([
+    { configuredIds: ["300"], configuredHandles: [], excluded: "quoted", kept: "original" },
+    { configuredIds: ["400"], configuredHandles: [], excluded: "original", kept: "quoted" },
+    { configuredIds: [], configuredHandles: ["quoted"], excluded: "quoted", kept: "original" },
+  ])(
+    "configured exclusion $excluded (ids=$configuredIds handles=$configuredHandles)",
+    ({ configuredIds, configuredHandles, excluded, kept }) => {
+      const all = discoverFromPages(pages, {
+        seeds,
+        configuredIds: new Set(configuredIds),
+        configuredHandles: new Set(configuredHandles),
+        minSeeds: 1,
+      });
+      const base = { version: 2, source: "fxtwitter", accounts: [] } as unknown as PilotConfig;
+      const handles = proposeConfig(base, all).accounts.map((account) => account.handle);
+      expect(handles).not.toContain(excluded);
+      expect(handles).toContain(kept);
+      expect(handles).not.toContain("friend"); // unresolved, always excluded
+    },
+  );
+
   it("resolves handle-only candidates through the profile endpoint and reports not-found ones", async () => {
-    const candidates = discoverFromPages(pages, { seeds, configuredIds: new Set(), configuredHandles: new Set(), minSeeds: 1 });
+    const candidates = discoverFromPages(pages, {
+      seeds,
+      configuredIds: new Set(),
+      configuredHandles: new Set(),
+      minSeeds: 1,
+    });
     const requested: string[] = [];
     const client = pilotClientFromPromises({
       async fetchProfile(handle) {
         requested.push(handle);
         if (handle === "friend") return profile("777", "Friend", 42, 900);
-        return { httpStatus: 404, latencyMs: 1, attempts: 1, receivedAt: 0, raw: null, profile: null };
+        return {
+          httpStatus: 404,
+          latencyMs: 1,
+          attempts: 1,
+          receivedAt: 0,
+          raw: null,
+          profile: null,
+        };
       },
       async fetchTimelinePage() {
         throw new Error("not used");
@@ -63,7 +138,12 @@ describe("gate-2 discovery", () => {
     await resolveCandidates(candidates, client, async () => undefined);
     expect(requested).toEqual(["friend"]);
     const friend = candidates.find((candidate) => candidate.handle === "friend");
-    expect(friend).toMatchObject({ userId: "777", resolution: "resolved", followers: 42, statuses: 900 });
+    expect(friend).toMatchObject({
+      userId: "777",
+      resolution: "resolved",
+      followers: 42,
+      statuses: 900,
+    });
     const markdown = renderMarkdown(candidates, 1, ["test"]);
     expect(markdown).toContain("| `friend` | `777` |");
     expect(candidates.some((candidate) => candidate.resolution === "not_found")).toBe(false);
@@ -72,13 +152,28 @@ describe("gate-2 discovery", () => {
   });
 });
 
-function profile(id: string, screenName: string, followers: number, statuses: number): ProfileResponse {
+function profile(
+  id: string,
+  screenName: string,
+  followers: number,
+  statuses: number,
+): ProfileResponse {
   return {
     httpStatus: 200,
     latencyMs: 1,
     attempts: 1,
     receivedAt: 0,
-    raw: { code: 200, user: { id, screen_name: screenName, name: screenName, followers, statuses, protected: false } },
+    raw: {
+      code: 200,
+      user: {
+        id,
+        screen_name: screenName,
+        name: screenName,
+        followers,
+        statuses,
+        protected: false,
+      },
+    },
     profile: { id, screenName, name: screenName, protected: false },
   };
 }

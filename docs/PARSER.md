@@ -30,7 +30,7 @@ Source of truth for types: `convex/engine/xquery.ts`.
 
 Rules that make the IR canonical (→ stable `queryKey = fnv1a64(canonicalJson)`):
 keys in fixed order, arrays sorted (must/should/exclude/aspects lexicographic;
-phrases by first token), all times absolute epoch ms, absent = null (never missing
+phrases element-wise lexicographic, then by length), all times absolute epoch ms, absent = null (never missing
 key), terms already tokenizer-normalized. Two phrasings that mean the same thing
 MUST hash identically — that's what makes queryCache, answers cache, and feedback
 aggregation work.

@@ -25,8 +25,6 @@ function convexUrl(): string {
 }
 
 export default defineConfig({
-  plugins: [
-    react({ compiler: true }),
-  ],
+  plugins: [react({ compiler: true })],
   define: { __CONVEX_URL__: JSON.stringify(convexUrl()) },
 });

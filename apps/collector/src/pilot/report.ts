@@ -48,14 +48,24 @@ export interface PilotReport {
       total: number;
       retries: number;
       retryRate: number | null;
-      latencyMs: { mean: number | null; p50: number | null; p95: number | null; max: number | null };
+      latencyMs: {
+        mean: number | null;
+        p50: number | null;
+        p95: number | null;
+        max: number | null;
+      };
       rowsPerPage: { pages: number; mean: number | null; min: number | null; max: number | null };
       repeatedTimelineRows: { rows: number; rate: number | null };
     };
   };
   normalization: NormalizationCounts | null;
   coverage: { floor: number; accountsReached: number; accountsTotal: number };
-  authorShare: { topAuthorId: string | null; topHandle: string | null; topShare: number | null; topTen: NormalizationCounts["perAuthor"] };
+  authorShare: {
+    topAuthorId: string | null;
+    topHandle: string | null;
+    topShare: number | null;
+    topTen: NormalizationCounts["perAuthor"];
+  };
   rejectionRates: { timeline: number | null; embedded: number | null };
   thresholds: { passed: boolean; checks: ThresholdCheck[] };
 }
@@ -85,32 +95,77 @@ export const buildReportEffect = Effect.fn("buildReportEffect")(function* (
     }
   }
 
-  const totalRequests = manifest.acquisition.accounts.reduce((sum, account) => sum + account.requests, 0);
-  const totalRetries = manifest.acquisition.accounts.reduce((sum, account) => sum + account.retries, 0);
+  const totalRequests = manifest.acquisition.accounts.reduce(
+    (sum, account) => sum + account.requests,
+    0,
+  );
+  const totalRetries = manifest.acquisition.accounts.reduce(
+    (sum, account) => sum + account.retries,
+    0,
+  );
   const sortedLatencies = [...latencies].sort((a, b) => a - b);
   const timelineCandidates = counts?.candidates.timeline ?? 0;
   const embeddedCandidates = counts?.candidates.embedded ?? 0;
-  const timelineRejectionRate = counts === null || timelineCandidates === 0 ? null : counts.rejected.timeline / timelineCandidates;
-  const embeddedRejectionRate = counts === null || embeddedCandidates === 0 ? null : counts.rejected.embedded / embeddedCandidates;
+  const timelineRejectionRate =
+    counts === null || timelineCandidates === 0
+      ? null
+      : counts.rejected.timeline / timelineCandidates;
+  const embeddedRejectionRate =
+    counts === null || embeddedCandidates === 0
+      ? null
+      : counts.rejected.embedded / embeddedCandidates;
   const repeatedRows = counts?.timelineRowsRepeatedWithinAccount ?? 0;
-  const repeatedRate = counts === null || timelineCandidates === 0 ? null : repeatedRows / timelineCandidates;
+  const repeatedRate =
+    counts === null || timelineCandidates === 0 ? null : repeatedRows / timelineCandidates;
   const retryRate = totalRequests === 0 ? null : totalRetries / totalRequests;
   const meanLatency = mean(latencies);
   const p95Latency = percentile(sortedLatencies, 0.95);
   const meanRows = mean(rowsPerPage);
-  const pausedAccounts = manifest.acquisition.accounts.filter((account) => account.state === AccountState.Paused);
+  const pausedAccounts = manifest.acquisition.accounts.filter(
+    (account) => account.state === AccountState.Paused,
+  );
 
   const checks: ThresholdCheck[] = [
-    check("timeline rejection rate", timelineRejectionRate, "<= 1%", timelineRejectionRate === null ? null : timelineRejectionRate <= 0.01),
-    check("embedded rejection rate (reported, not thresholded)", embeddedRejectionRate, "n/a", null),
+    check(
+      "timeline rejection rate",
+      timelineRejectionRate,
+      "<= 1%",
+      timelineRejectionRate === null ? null : timelineRejectionRate <= 0.01,
+    ),
+    check(
+      "embedded rejection rate (reported, not thresholded)",
+      embeddedRejectionRate,
+      "n/a",
+      null,
+    ),
     // Bound raised from 10% to 15% after the full run measured 13.16% (docs/collection/01-pilot.md
     // "Full run"): the with-replies timeline re-serves an account's own posts as conversation
     // context, identically and at scattered positions, so repeats above 10% are provider
     // behaviour rather than a paging fault. Global deduplication removes them from ingress.
-    check("repeated timeline rows within account", repeatedRate, "<= 15%", repeatedRate === null ? null : repeatedRate <= 0.15),
-    check("mean rows per non-terminal page", meanRows, "10..40", meanRows === null ? null : meanRows >= 10 && meanRows <= 40),
-    check("mean latency ms", meanLatency, "500..3000", meanLatency === null ? null : meanLatency >= 500 && meanLatency <= 3_000),
-    check("p95 latency ms", p95Latency, "<= 5000", p95Latency === null ? null : p95Latency <= 5_000),
+    check(
+      "repeated timeline rows within account",
+      repeatedRate,
+      "<= 15%",
+      repeatedRate === null ? null : repeatedRate <= 0.15,
+    ),
+    check(
+      "mean rows per non-terminal page",
+      meanRows,
+      "10..40",
+      meanRows === null ? null : meanRows >= 10 && meanRows <= 40,
+    ),
+    check(
+      "mean latency ms",
+      meanLatency,
+      "500..3000",
+      meanLatency === null ? null : meanLatency >= 500 && meanLatency <= 3_000,
+    ),
+    check(
+      "p95 latency ms",
+      p95Latency,
+      "<= 5000",
+      p95Latency === null ? null : p95Latency <= 5_000,
+    ),
     check("retry rate", retryRate, "< 5%", retryRate === null ? null : retryRate < 0.05),
     check("paused accounts", pausedAccounts.length, "0", pausedAccounts.length === 0),
     check(
@@ -155,7 +210,10 @@ export const buildReportEffect = Effect.fn("buildReportEffect")(function* (
           mean: meanLatency,
           p50: percentile(sortedLatencies, 0.5),
           p95: p95Latency,
-          max: sortedLatencies.length === 0 ? null : (sortedLatencies[sortedLatencies.length - 1] ?? null),
+          max:
+            sortedLatencies.length === 0
+              ? null
+              : (sortedLatencies[sortedLatencies.length - 1] ?? null),
         },
         rowsPerPage: {
           pages: rowsPerPage.length,
@@ -169,7 +227,8 @@ export const buildReportEffect = Effect.fn("buildReportEffect")(function* (
     normalization: counts,
     coverage: {
       floor: manifest.coverageFloor,
-      accountsReached: counts?.perAccount.filter((account) => account.coverageFloorReached).length ?? 0,
+      accountsReached:
+        counts?.perAccount.filter((account) => account.coverageFloorReached).length ?? 0,
       accountsTotal: manifest.acquisition.accounts.length,
     },
     authorShare: {
@@ -191,6 +250,16 @@ export async function buildReport(
   return Effect.runPromise(buildReportEffect(paths, manifest, counts));
 }
 
-function check(name: string, value: number | string | null, bound: string, passed: boolean | null): ThresholdCheck {
-  return { name, value: typeof value === "number" ? Math.round(value * 10_000) / 10_000 : value, bound, passed };
+function check(
+  name: string,
+  value: number | string | null,
+  bound: string,
+  passed: boolean | null,
+): ThresholdCheck {
+  return {
+    name,
+    value: typeof value === "number" ? Math.round(value * 10_000) / 10_000 : value,
+    bound,
+    passed,
+  };
 }

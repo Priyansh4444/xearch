@@ -82,9 +82,19 @@ export const emptyXQuery = (): XQuery => ({
  */
 export function canonicalJson(xq: XQuery): string {
   const sorted = (xs: Term[]) => [...xs].sort();
+  // Full element-wise comparison: first-token-only ordering lets shared-prefix
+  // phrase lists (e.g. [["a","x"],["a","y"]] vs reversed) hash differently and
+  // split queryCache answers and feedback totals.
   const phrases = xq.phrases
     .map((p) => [...p])
-    .sort((a, b) => (a[0] ?? "").localeCompare(b[0] ?? ""));
+    .sort((a, b) => {
+      const shared = Math.min(a.length, b.length);
+      for (let i = 0; i < shared; i++) {
+        const d = (a[i] ?? "").localeCompare(b[i] ?? "");
+        if (d !== 0) return d;
+      }
+      return a.length - b.length;
+    });
   return JSON.stringify({
     v: xq.v,
     intent: xq.intent,
@@ -122,7 +132,7 @@ export function queryKey(xq: XQuery): QueryKey {
 }
 
 /** Parse + validate an untrusted JSON string (Tier C output, cache rows). */
-export function parseXQueryJson(json: string): XQuery | null {
+export function parseXQueryJson(_json: string): XQuery | null {
   // TODO: field-by-field validation against the closed enums (PARSER §1).
   // Constrained decoding makes malformed Tier C output unrepresentable, but cache
   // rows written by older versions still cross this boundary — validate anyway.
@@ -133,7 +143,7 @@ export function parseXQueryJson(json: string): XQuery | null {
  * Merge a Tier C refinement into an A+B parse. Tier C may FILL empty slots and
  * ADD should/aspects; it may never contradict operator-set slots (PARSER §2).
  */
-export function mergeRefinement(base: XQuery, refined: XQuery): XQuery {
+export function mergeRefinement(_base: XQuery, _refined: XQuery): XQuery {
   // TODO: slot-wise merge honoring the may-not-override rule; count overridden
   // attempts into the trace for the eval harness.
   throw new Error("not implemented: mergeRefinement");

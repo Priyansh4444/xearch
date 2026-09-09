@@ -107,9 +107,7 @@ export function parseDiscoveryResolution(value: unknown): DiscoveryResolution | 
 
 export function isOpenAccountState(state: AccountState): boolean {
   return (
-    state === AccountState.Pending
-    || state === AccountState.Active
-    || state === AccountState.Paused
+    state === AccountState.Pending || state === AccountState.Active || state === AccountState.Paused
   );
 }
 
@@ -119,9 +117,9 @@ export function isFinishedAccountState(state: AccountState): boolean {
 
 export function needsIdentityResolution(pauseReason: PauseReason | null): boolean {
   return (
-    pauseReason === PauseReason.IdentityMismatch
-    || pauseReason === PauseReason.ProfileNotFound
-    || pauseReason === PauseReason.ProfileProtected
+    pauseReason === PauseReason.IdentityMismatch ||
+    pauseReason === PauseReason.ProfileNotFound ||
+    pauseReason === PauseReason.ProfileProtected
   );
 }
 

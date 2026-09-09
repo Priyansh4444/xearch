@@ -14,18 +14,32 @@ const modules = import.meta.glob("../convex/**/*.*s");
 
 function tweet(tweetId: string, text = "apple", terms = ["apple"]) {
   return {
-    tweetId, authorId: "a", authorHandle: "theo", text,
-    createdAt: Date.UTC(2026, 8, 2), metricsAt: Date.UTC(2026, 8, 3),
+    tweetId,
+    authorId: "a",
+    authorHandle: "theo",
+    text,
+    createdAt: Date.UTC(2026, 8, 2),
+    metricsAt: Date.UTC(2026, 8, 3),
     metrics: { likes: 0, retweets: 0, replies: 0, quotes: 0 },
-    mediaType: "none" as const, mediaUrls: [], hasLink: false,
-    tokenCount: terms.length, staticScore: 1, scoreBucket: 1,
+    mediaType: "none" as const,
+    mediaUrls: [],
+    hasLink: false,
+    tokenCount: terms.length,
+    staticScore: 1,
+    scoreBucket: 1,
     postings: terms.map((term) => ({ term, tf: 1 })),
   };
 }
 
 const author = {
-  authorId: "a", handle: "theo", displayName: "Theo", nameTokens: ["theo"],
-  followerCount: 10, followingCount: 1, verified: false, isStub: false,
+  authorId: "a",
+  handle: "theo",
+  displayName: "Theo",
+  nameTokens: ["theo"],
+  followerCount: 10,
+  followingCount: 1,
+  verified: false,
+  isStub: false,
 };
 
 function batch(
@@ -33,7 +47,9 @@ function batch(
   configHash = "test-config",
 ) {
   return {
-    tweets, authors: [author], configHash,
+    tweets,
+    authors: [author],
+    configHash,
     dfDeltas: [{ term: "apple", delta: 999 }],
   };
 }
@@ -57,8 +73,9 @@ describe("ingestion transactions", () => {
   test("a different config fails before changing data", async () => {
     const t = convexTest(schema, modules);
     await t.mutation(internal.ingest.ingestBatch, batch());
-    await expect(t.mutation(internal.ingest.ingestBatch, batch([tweet("2")], "other")))
-      .rejects.toThrow("configuration mismatch");
+    await expect(
+      t.mutation(internal.ingest.ingestBatch, batch([tweet("2")], "other")),
+    ).rejects.toThrow("configuration mismatch");
     expect(await t.run((ctx) => ctx.db.query("tweets").collect())).toHaveLength(1);
   });
 
@@ -81,23 +98,30 @@ describe("search serving flow", () => {
     const image = { ...tweet("image"), mediaType: "image" as const };
     await t.mutation(internal.ingest.ingestBatch, batch([old, image, tweet("text")]));
     const result = await t.query(api.search.search, {
-      raw: "from:theo since:2026-09-01 has:image", sort: "latest",
+      raw: "from:theo since:2026-09-01 has:image",
+      sort: "latest",
     });
     expect(result.results.map((row) => row.tweetId)).toEqual(["image"]);
     const excluded = await t.query(api.search.search, { raw: "from:theo -apple", sort: "top" });
     expect(excluded.results).toEqual([]);
-    const until = await t.query(api.search.search, { raw: "from:theo until:2026-09-02", sort: "top" });
+    const until = await t.query(api.search.search, {
+      raw: "from:theo until:2026-09-02",
+      sort: "top",
+    });
     expect(until.results.map((row) => row.tweetId)).toEqual(["old"]);
   });
 
   test("negation checks candidate text and phrases verify stopword-preserving adjacency", async () => {
     const t = convexTest(schema, modules);
-    await t.mutation(internal.ingest.ingestBatch, batch([
-      tweet("bad", "apple iphone", ["apple"]),
-      tweet("apart", "apple grows on tree", ["apple", "tree"]),
-      tweet("exact", "apple tree", ["apple", "tree"]),
-      tweet("stopword", "apple on tree", ["apple", "tree"]),
-    ]));
+    await t.mutation(
+      internal.ingest.ingestBatch,
+      batch([
+        tweet("bad", "apple iphone", ["apple"]),
+        tweet("apart", "apple grows on tree", ["apple", "tree"]),
+        tweet("exact", "apple tree", ["apple", "tree"]),
+        tweet("stopword", "apple on tree", ["apple", "tree"]),
+      ]),
+    );
     const excluded = await t.query(api.search.search, { raw: "apple -iphone", sort: "top" });
     expect(excluded.results.map((row) => row.tweetId)).not.toContain("bad");
     const phrase = await t.query(api.search.search, { raw: '"apple tree"', sort: "top" });
@@ -106,18 +130,13 @@ describe("search serving flow", () => {
     expect(stopword.results.map((row) => row.tweetId)).toEqual(["stopword"]);
   });
 
-  test("unknown handles and oversized requests return actionable errors", async () => {
-    const t = convexTest(schema, modules);
-    for (const raw of ["from:missing apple", "x".repeat(513), "apple ".repeat(13)]) {
-      const result = await t.query(api.search.search, { raw, sort: "top" });
-      expect(result.error).toBeTruthy();
-      expect(result.results).toEqual([]);
-    }
-  });
-
   test("explicit Latest overrides the request default and sorts by time", async () => {
     const t = convexTest(schema, modules);
-    const old = { ...tweet("old"), createdAt: 1, metrics: { likes: 1e6, replies: 0, retweets: 0, quotes: 0 } };
+    const old = {
+      ...tweet("old"),
+      createdAt: 1,
+      metrics: { likes: 1e6, replies: 0, retweets: 0, quotes: 0 },
+    };
     await t.mutation(internal.ingest.ingestBatch, batch([old, tweet("new")]));
     const result = await t.query(api.search.search, { raw: "apple SORT:latest", sort: "top" });
     expect(result.appliedQuery.sort).toBe("latest");
@@ -126,10 +145,13 @@ describe("search serving flow", () => {
 
   test("RRF gives later union terms a place in the rerank window", async () => {
     const t = convexTest(schema, modules);
-    await t.mutation(internal.ingest.ingestBatch, batch([
-      ...Array.from({ length: 250 }, (_, i) => tweet(`apple-${i}`, "apple", ["apple"])),
-      tweet("tree-only", "tree", ["tree"]),
-    ]));
+    await t.mutation(
+      internal.ingest.ingestBatch,
+      batch([
+        ...Array.from({ length: 250 }, (_, i) => tweet(`apple-${i}`, "apple", ["apple"])),
+        tweet("tree-only", "tree", ["tree"]),
+      ]),
+    );
     // Force apple first in the planner, independent of actual fixture frequency.
     await t.run(async (ctx) => {
       for (const row of await ctx.db.query("terms").collect()) {
@@ -144,19 +166,109 @@ describe("search serving flow", () => {
         });
       }
     });
-    const widened = await t.query(api.search.search, { raw: "apple tree min_likes:1", sort: "top" });
+    const widened = await t.query(api.search.search, {
+      raw: "apple tree min_likes:1",
+      sort: "top",
+    });
     expect(widened.results.map((row) => row.tweetId)).toContain("tree-only");
   });
 
   test("exact hits keep their provenance after expansion", async () => {
     const t = convexTest(schema, modules);
-    await t.mutation(internal.ingest.ingestBatch, batch([
-      tweet("exact", "apple tree", ["apple", "tree"]),
-      tweet("related", "apple", ["apple"]),
-    ]));
+    await t.mutation(
+      internal.ingest.ingestBatch,
+      batch([
+        tweet("exact", "apple tree", ["apple", "tree"]),
+        tweet("related", "apple", ["apple"]),
+      ]),
+    );
     const result = await t.query(api.search.search, { raw: "apple tree", sort: "top" });
     expect(result.results.find((row) => row.tweetId === "exact")?.matchedVia).toBe("L0");
     expect(result.results.find((row) => row.tweetId === "related")?.matchedVia).not.toBe("L0");
+  });
+
+  test("ingestion order never changes search sets (all batch orders)", async () => {
+    const corpus = [
+      tweet("t1", "apple iphone", ["apple", "iphone"]),
+      tweet("t2", "apple tree", ["apple", "tree"]),
+      tweet("t3", "tree", ["tree"]),
+    ];
+    const orders = [
+      [corpus[0]!, corpus[1]!, corpus[2]!],
+      [corpus[2]!, corpus[1]!, corpus[0]!],
+      [corpus[1]!, corpus[2]!, corpus[0]!],
+    ];
+    const snapshots: string[][] = [];
+    for (const order of orders) {
+      const t = convexTest(schema, modules);
+      await t.mutation(internal.ingest.ingestBatch, batch(order));
+      const seen: string[] = [];
+      const failures: string[] = [];
+      for (const raw of ["apple", "tree", "apple tree", "apple -iphone"]) {
+        const result = await t.query(api.search.search, { raw, sort: "top" });
+        if (result.error !== null) failures.push(`${raw}: ${result.error}`);
+        seen.push(
+          result.results
+            .map((row) => row.tweetId)
+            .sort()
+            .join(","),
+        );
+      }
+      expect(failures).toEqual([]);
+      snapshots.push(seen);
+    }
+    expect(snapshots[1]).toEqual(snapshots[0]);
+    expect(snapshots[2]).toEqual(snapshots[0]);
+    // Spot-check the shared snapshot: single-term gates stay exact, the
+    // two-term query expands (ladder union) but keeps the L0 hit.
+    expect(snapshots[0]![0]).toBe("t1,t2");
+    expect(snapshots[0]![1]).toBe("t2,t3");
+    expect(snapshots[0]![3]).toBe("t2");
+    expect(snapshots[0]![2]).toContain("t2");
+  });
+
+  test("one ingestion serves a permutation of query shapes and sorts", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(
+      internal.ingest.ingestBatch,
+      batch([
+        tweet("t1", "apple iphone", ["apple", "iphone"]),
+        tweet("t2", "apple tree", ["apple", "tree"]),
+        tweet("t3", "tree", ["tree"]),
+      ]),
+    );
+    const ids = (rows: Array<{ tweetId: string }>) => rows.map((row) => row.tweetId).sort();
+    // Term permutations: same corpus, different gates — read-only, no extra writes.
+    const cases: Array<{ raw: string; expect: string[]; absent?: string[] }> = [
+      { raw: "apple", expect: ["t1", "t2"], absent: ["t3"] },
+      { raw: "tree", expect: ["t2", "t3"], absent: ["t1"] },
+      { raw: "apple tree", expect: ["t2"] },
+      { raw: "apple -iphone", expect: ["t2"], absent: ["t1"] },
+      { raw: '"apple tree"', expect: ["t2"], absent: ["t1", "t3"] },
+      { raw: "from:theo apple", expect: ["t1", "t2"], absent: ["t3"] },
+      { raw: "APPLE", expect: ["t1", "t2"], absent: ["t3"] },
+    ];
+    const failures: string[] = [];
+    for (const sort of ["top", "latest"] as const) {
+      for (const { raw, expect: want, absent } of cases) {
+        const result = await t.query(api.search.search, { raw, sort });
+        const found = ids(result.results);
+        failures.push(
+          ...(result.error !== null ? [`${raw} @${sort}: unexpected error ${result.error}`] : []),
+          ...want.filter((id) => !found.includes(id)).map((id) => `${raw} @${sort}: missing ${id}`),
+          ...(absent ?? [])
+            .filter((id) => found.includes(id))
+            .map((id) => `${raw} @${sort}: unexpectedly present ${id}`),
+        );
+      }
+    }
+    expect(failures).toEqual([]);
+    // Error shapes stay actionable across the same corpus.
+    for (const raw of ["from:missing apple", "x".repeat(513), "apple ".repeat(13)]) {
+      const result = await t.query(api.search.search, { raw, sort: "top" });
+      expect(result.error).toBeTruthy();
+      expect(result.results).toEqual([]);
+    }
   });
 });
 
@@ -166,8 +278,9 @@ describe("trusted feedback", () => {
     await t.mutation(internal.ingest.ingestBatch, batch());
     const result = await t.query(api.search.search, { raw: "apple", sort: "top" });
     const args = { queryKey: result.queryKey, tweetId: result.results[0]!._id, vote: 1 as const };
-    await expect(t.mutation(api.feedback.vote, { ...args, sessionId: "invented" }))
-      .rejects.toThrow("Sign in");
+    await expect(t.mutation(api.feedback.vote, { ...args, sessionId: "invented" })).rejects.toThrow(
+      "Sign in",
+    );
     expect(await t.query(api.feedback.canVote)).toBe(false);
     const signedIn = t.withIdentity({ subject: "voter-1" });
     expect(await signedIn.query(api.feedback.canVote)).toBe(true);
@@ -201,17 +314,20 @@ describe("trusted feedback", () => {
     await t.mutation(internal.ingest.ingestBatch, batch());
     const result = await t.query(api.search.search, { raw: "apple", sort: "top" });
     const args = { queryKey: result.queryKey, tweetId: result.results[0]!._id };
-    await t.run((ctx) => ctx.db.insert("searchFeedback", {
-      ...args, sessionId: "legacy", vote: 1,
-    }));
+    await t.run((ctx) =>
+      ctx.db.insert("searchFeedback", {
+        ...args,
+        sessionId: "legacy",
+        vote: 1,
+      }),
+    );
     const before = await t.query(api.search.search, { raw: "apple", sort: "top" });
     expect(before.results[0]!.parts["fb"]).toBe(0);
     const voter = t.withIdentity({ subject: "one-voter" });
     for (let i = 0; i < 30; i++) {
       await voter.mutation(api.feedback.vote, { ...args, vote: i % 2 === 0 ? 1 : -1 });
     }
-    await expect(voter.mutation(api.feedback.vote, { ...args, vote: 1 }))
-      .rejects.toThrow("limit");
+    await expect(voter.mutation(api.feedback.vote, { ...args, vote: 1 })).rejects.toThrow("limit");
     // Idempotent retry is allowed even after reaching the limit.
     await voter.mutation(api.feedback.vote, { ...args, vote: -1 });
   });

@@ -1,9 +1,9 @@
 {
   "name": "xearch-web",
-  "private": true,
-  "type": "module",
   "version": "0.1.0",
+  "private": true,
   "description": "Minimal literal-search SERP over convex search.searchBaseline",
+  "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -p . && vite build",

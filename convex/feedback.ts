@@ -23,7 +23,7 @@ export const vote = mutation({
     const identity = await ctx.auth.getUserIdentity();
     if (identity === null) throw new ConvexError("Sign in to vote.");
     if (!/^[0-9a-f]{16}$/.test(args.queryKey)) throw new ConvexError("Invalid query key.");
-    if (await ctx.db.get(args.tweetId) === null) throw new ConvexError("Post not found.");
+    if ((await ctx.db.get(args.tweetId)) === null) throw new ConvexError("Post not found.");
     const voterId = identity.tokenIdentifier;
 
     // One vote per trusted identity per pair. Legacy session IDs cannot identify
@@ -74,7 +74,9 @@ export const vote = mutation({
     const delta = args.vote - (existing?.vote ?? 0);
     if (total === null) {
       await ctx.db.insert("searchFeedbackTotals", {
-        queryKey: args.queryKey, tweetId: args.tweetId, total: delta,
+        queryKey: args.queryKey,
+        tweetId: args.tweetId,
+        total: delta,
       });
     } else {
       await ctx.db.patch(total._id, { total: total.total + delta });

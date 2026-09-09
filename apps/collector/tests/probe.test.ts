@@ -4,12 +4,10 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import * as Effect from "effect/Effect";
 import {
-  makeFxTwitterClient,
   FxTwitterError,
   FxTwitterErrorKind,
   type FxTwitterJson,
   type PilotClient,
-  type TimelineClient,
   type TimelineRequest,
   type TimelineResponse,
 } from "../src/acquisition/fxtwitter.ts";
@@ -23,86 +21,61 @@ afterEach(async () => {
   );
 });
 
-describe("FxTwitter client", () => {
-  it("retries transient responses and parses the documented timeline envelope", async () => {
-    let calls = 0;
-    const fetchImpl = async (): Promise<Response> => {
-      calls += 1;
-      if (calls === 1) return new Response("upstream failed", { status: 500 });
-      return Response.json({ code: 200, results: [], cursor: { top: null, bottom: null } });
-    };
-    const client = makeFxTwitterClient({
-      fetchImpl: fetchImpl as typeof fetch,
-      retries: 1,
-      retryBaseDelayMs: 0,
-      sleep: async () => undefined,
-    });
-
-    const response = await client.fetchTimelinePage({
-      handle: "NASA",
-      count: 20,
-      cursor: null,
-      withReplies: true,
-    });
-
-    expect(calls).toBe(2);
-    expect(response.attempts).toBe(2);
-    expect(response.page?.results).toEqual([]);
-  });
-});
-
 describe("timeline probe", () => {
-  it("measures duplicates, field gaps, content kinds, and cursor progress", async () => {
-    const outputDirectory = await temporaryDirectory();
-    const pages = [
-      timelineResponse(
-        [status("1", 1_700_000_000), status("2", 1_699_000_000, { quote: true })],
-        "next",
-      ),
-      timelineResponse(
-        [
-          status("2", 1_699_000_000, { quote: true }),
-          status("3", 1_698_000_000, { reply: true, mediaType: "photo" }),
-        ],
-        null,
-      ),
-    ];
-    const requests: TimelineRequest[] = [];
-    const client = timelineClientFromPromises(async (request) => {
-      requests.push(request);
-      const response = pages.shift();
-      if (response === undefined) throw new Error("unexpected request");
-      return response;
-    });
+  it.each([true, false])(
+    "measures duplicates, gaps, kinds, cursor progress (withReplies=%j)",
+    async (withReplies) => {
+      const outputDirectory = await temporaryDirectory();
+      const pages = [
+        timelineResponse(
+          [status("1", 1_700_000_000), status("2", 1_699_000_000, { quote: true })],
+          "next",
+        ),
+        timelineResponse(
+          [
+            status("2", 1_699_000_000, { quote: true }),
+            status("3", 1_698_000_000, { reply: true, mediaType: "photo" }),
+          ],
+          null,
+        ),
+      ];
+      const requests: TimelineRequest[] = [];
+      const client = timelineClientFromPromises(async (request) => {
+        requests.push(request);
+        const response = pages.shift();
+        if (response === undefined) throw new Error("unexpected request");
+        return response;
+      });
 
-    const report = await runTimelineProbe(client, {
-      handle: "NASA",
-      pages: 10,
-      count: 100,
-      withReplies: true,
-      outputDirectory,
-      delayMs: 0,
-      baseUrl: "https://api.fxtwitter.com",
-    });
+      const report = await runTimelineProbe(client, {
+        handle: "NASA",
+        pages: 10,
+        count: 100,
+        withReplies,
+        outputDirectory,
+        delayMs: 0,
+        baseUrl: "https://api.fxtwitter.com",
+      });
 
-    expect(requests.map((request) => request.cursor)).toEqual([null, "next"]);
-    expect(report.pagesCompleted).toBe(2);
-    expect(report.totalResults).toBe(4);
-    expect(report.uniqueTweets).toBe(3);
-    expect(report.duplicateTweets).toBe(1);
-    expect(report.stopReason).toBe("no-next-cursor");
-    expect(report.missingRequiredFields).toEqual({});
-    expect(report.pages[1]?.kinds).toMatchObject({ replies: 1, images: 1 });
-    expect(JSON.parse(await readFile(join(outputDirectory, "raw/000001.json"), "utf8"))).toHaveProperty(
-      "results",
-    );
-  });
+      expect(requests.every((request) => request.withReplies === withReplies)).toBe(true);
+
+      expect(requests.map((request) => request.cursor)).toEqual([null, "next"]);
+      expect(report.pagesCompleted).toBe(2);
+      expect(report.totalResults).toBe(4);
+      expect(report.uniqueTweets).toBe(3);
+      expect(report.duplicateTweets).toBe(1);
+      expect(report.stopReason).toBe("no-next-cursor");
+      expect(report.missingRequiredFields).toEqual({});
+      expect(report.pages[1]?.kinds).toMatchObject({ replies: 1, images: 1 });
+      expect(
+        JSON.parse(await readFile(join(outputDirectory, "raw/000001.json"), "utf8")),
+      ).toHaveProperty("results");
+    },
+  );
 
   it("resumes from the checkpoint cursor without repeating the first page", async () => {
     const outputDirectory = await temporaryDirectory();
-    const firstClient = fixedClient([
-      timelineResponse([status("1", 1_700_000_000)], "next"),
-    ]);
+    const firstClient = fixedClient([timelineResponse([status("1", 1_700_000_000)], "next")]);
     const options = {
       handle: "NASA",
       pages: 1,
@@ -116,9 +89,7 @@ describe("timeline probe", () => {
     const firstReport = await runTimelineProbe(firstClient.client, options);
     expect(firstReport.stopReason).toBe("page-limit");
 
-    const secondClient = fixedClient([
-      timelineResponse([status("2", 1_699_000_000)], null),
-    ]);
+    const secondClient = fixedClient([timelineResponse([status("2", 1_699_000_000)], null)]);
     const resumedReport = await runTimelineProbe(secondClient.client, options);
 
     expect(secondClient.requests).toHaveLength(1);
@@ -165,12 +136,12 @@ function timelineClientFromPromises(
           cause instanceof FxTwitterError
             ? cause
             : new FxTwitterError({
-              message: cause instanceof Error ? cause.message : String(cause),
-              status: null,
-              responseBody: null,
-              kind: FxTwitterErrorKind.Transport,
-              retryDelay: 0,
-            }),
+                message: cause instanceof Error ? cause.message : String(cause),
+                status: null,
+                responseBody: null,
+                kind: FxTwitterErrorKind.Transport,
+                retryDelay: 0,
+              }),
       }),
     // Probe never resolves profiles; loud stubs keep the fake honest.
     profileUrl: (handle) => `${baseUrl}/2/profile/${encodeURIComponent(handle)}`,
@@ -215,9 +186,7 @@ function status(
     replying_to: options.reply ? { status: "parent" } : null,
     reposted_by: null,
     media: {
-      all: options.mediaType
-        ? [{ type: options.mediaType, url: "https://example.com/media" }]
-        : [],
+      all: options.mediaType ? [{ type: options.mediaType, url: "https://example.com/media" }] : [],
     },
     author: {
       id: "author-1",

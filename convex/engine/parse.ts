@@ -5,13 +5,7 @@
 
 import { tokenize } from "./tokenize";
 import type { AuthorId, Term } from "../contracts/ids";
-import {
-  emptyXQuery,
-  Intent,
-  SortOrder,
-  type MediaFilter,
-  type XQuery,
-} from "./xquery";
+import { emptyXQuery, Intent, SortOrder, type MediaFilter, type XQuery } from "./xquery";
 import { VISUAL_MEDIA_TYPES } from "../contracts/media";
 import aspectsFile from "../../shared/lexicons/aspects.json";
 
@@ -77,10 +71,8 @@ export function tierA(raw: string): { xq: XQuery; trace: ParseTrace } {
       xq.filters.media = media;
       return true;
     },
-    min_likes: (val) =>
-      /^\d+$/.test(val) ? ((xq.filters.minLikes = Number(val)), true) : false,
-    lang: (val) =>
-      /^[a-z]{2}$/.test(val) ? ((xq.filters.lang = val), true) : false,
+    min_likes: (val) => (/^\d+$/.test(val) ? ((xq.filters.minLikes = Number(val)), true) : false),
+    lang: (val) => (/^[a-z]{2}$/.test(val) ? ((xq.filters.lang = val), true) : false),
     sort: (val) =>
       val === SortOrder.Latest || val === SortOrder.Top ? ((xq.sort = val), true) : false,
   };
@@ -98,17 +90,14 @@ export function tierA(raw: string): { xq: XQuery; trace: ParseTrace } {
     return true;
   };
 
-  rest = rest.replace(
-    /(^|\s)([a-z_]+):(\S+)/gi,
-    (m, pre: string, op: string, val: string) => {
-      const handler = OPS[op.toLowerCase()];
-      if (handler && handler(val)) {
-        trace.consumed[`${op}:${val}`] = op.toLowerCase();
-        return pre;
-      }
-      return m; // unknown operator stays literal text (correctness invariant)
-    },
-  );
+  rest = rest.replace(/(^|\s)([a-z_]+):(\S+)/gi, (m, pre: string, op: string, val: string) => {
+    const handler = OPS[op.toLowerCase()];
+    if (handler && handler(val)) {
+      trace.consumed[`${op}:${val}`] = op.toLowerCase();
+      return pre;
+    }
+    return m; // unknown operator stays literal text (correctness invariant)
+  });
 
   // -negations
   rest = rest.replace(/(^|\s)-(\p{L}[\p{L}\p{N}_]*)/gu, (_m, pre: string, w: string) => {
@@ -208,10 +197,30 @@ export async function tierB(
   // 2d. Glue is removed before media detection so "show photos" recognizes
   // "photos" as the first meaningful token.
   const GLUE = new Set([
-    "tweets", "tweet", "posts", "post", "thread", "threads",
-    "show", "me", "find", "search", "about",
-    "say", "says", "said", "vs", "versus",
-    "what", "who", "why", "how", "when", "where", "which", "someone",
+    "tweets",
+    "tweet",
+    "posts",
+    "post",
+    "thread",
+    "threads",
+    "show",
+    "me",
+    "find",
+    "search",
+    "about",
+    "say",
+    "says",
+    "said",
+    "vs",
+    "versus",
+    "what",
+    "who",
+    "why",
+    "how",
+    "when",
+    "where",
+    "which",
+    "someone",
   ]);
   const tokensWithoutGlue = xq.must.filter((token) => !GLUE.has(token));
   // Aspect detection intentionally sees glue words such as "vs" before
@@ -220,10 +229,20 @@ export async function tierB(
 
   // 2e. Media lexicon: a leading media noun is a filter, not a term.
   const MEDIA_NOUNS: Record<string, MediaFilter> = {
-    pic: "image", pics: "image", photo: "image", photos: "image",
-    screenshot: "image", screenshots: "image", image: "image", images: "image",
-    video: "video", videos: "video", clip: "video", clips: "video",
-    gif: "gif", gifs: "gif",
+    pic: "image",
+    pics: "image",
+    photo: "image",
+    photos: "image",
+    screenshot: "image",
+    screenshots: "image",
+    image: "image",
+    images: "image",
+    video: "video",
+    videos: "video",
+    clip: "video",
+    clips: "video",
+    gif: "gif",
+    gifs: "gif",
   };
   const leading = tokensWithoutGlue[0];
   if (leading !== undefined && MEDIA_NOUNS[leading] !== undefined) {
@@ -335,8 +354,18 @@ function resolveDateValue(val: string, now: number): number | null {
 }
 
 const MONTHS = [
-  "january", "february", "march", "april", "may", "june",
-  "july", "august", "september", "october", "november", "december",
+  "january",
+  "february",
+  "march",
+  "april",
+  "may",
+  "june",
+  "july",
+  "august",
+  "september",
+  "october",
+  "november",
+  "december",
 ];
 
 const SEASONS: Record<string, [number, number]> = {
@@ -434,10 +463,7 @@ export function mapAspects(tokens: Term[], rawText: string): Term[] {
       found.add(aspect);
       continue;
     }
-    if (
-      hasPaddedHit(joined, patterns.weak)
-      && hasContentToken(tokens, patterns.weak)
-    ) {
+    if (hasPaddedHit(joined, patterns.weak) && hasContentToken(tokens, patterns.weak)) {
       found.add(aspect);
     }
   }
@@ -448,9 +474,9 @@ export function mapAspects(tokens: Term[], rawText: string): Term[] {
 /** Lexicon rows parsed once at module load, not on every query. Patterns stay
  * raw strings; only the aspect keys enter the Term space. */
 const ASPECT_PRICE = "~price" as Term;
-const ASPECT_ENTRIES: Array<[Term, { strong: string[]; weak: string[] }]> =
-  (Object.entries(aspectsFile.aspects) as Array<[string, { strong: string[]; weak: string[] }]>)
-    .map(([aspect, patterns]) => [aspect as Term, patterns]);
+const ASPECT_ENTRIES: Array<[Term, { strong: string[]; weak: string[] }]> = (
+  Object.entries(aspectsFile.aspects) as Array<[string, { strong: string[]; weak: string[] }]>
+).map(([aspect, patterns]) => [aspect as Term, patterns]);
 
 /** Weak trigger words for one aspect (Tier B moves them to `should`). */
 function weakWordsFor(aspect: Term): string[] {

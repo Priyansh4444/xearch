@@ -31,39 +31,59 @@ function pages(): RawPageInput[] {
 }
 
 function run(): NormalizationResult {
-  return normalizePages(
-    pages(),
-    { cutoffAt: fixture.cutoffAt, coverageFloor: fixture.coverageFloor, accounts: accounts() },
-  );
+  return normalizePages(pages(), {
+    cutoffAt: fixture.cutoffAt,
+    coverageFloor: fixture.coverageFloor,
+    accounts: accounts(),
+  });
 }
 
 describe("normalization golden fixture", () => {
-  it("matches the committed ingress, rejection, duplicate, and skip output byte for byte", async () => {
-    const result = run();
-    for (const [name, actual] of [
-      ["ingress.jsonl", result.ingress],
-      ["rejections.jsonl", result.rejections],
-      ["duplicates.jsonl", result.duplicates],
-      ["skips.jsonl", result.skips],
-    ] as const) {
-      const expected = await readFile(join(EXPECTED_DIR, name), "utf8");
-      expect(actual, name).toBe(expected);
-    }
+  const result = run();
+
+  it.each([
+    { name: "ingress.jsonl", actual: result.ingress },
+    { name: "rejections.jsonl", actual: result.rejections },
+    { name: "duplicates.jsonl", actual: result.duplicates },
+    { name: "skips.jsonl", actual: result.skips },
+  ])("matches committed $name byte for byte", async ({ name, actual }) => {
+    const expected = await readFile(join(EXPECTED_DIR, name), "utf8");
+    expect(actual).toBe(expected);
+  });
+
+  it("matches committed counts", async () => {
     const counts = JSON.parse(await readFile(join(EXPECTED_DIR, "counts.json"), "utf8")) as unknown;
     expect(result.counts).toEqual(counts);
   });
 
-  it("is deterministic regardless of page input order", () => {
+  // The fixture has 3 pages, so all 6 input orders are enumerable: this is
+  // exhaustive, not sampled — every order must yield byte-identical output.
+  it.each([
+    { order: [0, 1, 2] },
+    { order: [0, 2, 1] },
+    { order: [1, 0, 2] },
+    { order: [1, 2, 0] },
+    { order: [2, 0, 1] },
+    { order: [2, 1, 0] },
+  ])("is byte-identical under page order $order (exhaustive: 3 pages)", ({ order }) => {
+    const input = pages();
     const shuffled = normalizePages(
-      [...pages()].reverse(),
+      order.map((i) => input[i]!),
       { cutoffAt: fixture.cutoffAt, coverageFloor: fixture.coverageFloor, accounts: accounts() },
     );
-    expect(shuffled.ingress).toBe(run().ingress);
-    expect(shuffled.rejections).toBe(run().rejections);
+    const expected = run();
+    expect(shuffled.ingress).toBe(expected.ingress);
+    expect(shuffled.rejections).toBe(expected.rejections);
+    expect(shuffled.duplicates).toBe(expected.duplicates);
+    expect(shuffled.skips).toBe(expected.skips);
+    expect(shuffled.counts).toEqual(expected.counts);
   });
 
   it("emits every author before the first tweet that references it and never repeats an author", () => {
-    const lines = run().ingress.trim().split("\n").map((line) => JSON.parse(line) as { kind: string; id: string; authorId?: string });
+    const lines = run()
+      .ingress.trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { kind: string; id: string; authorId?: string });
     const seenAuthors = new Set<string>();
     for (const line of lines) {
       if (line.kind === "author") {
@@ -99,19 +119,30 @@ describe("provider mapping", () => {
 
     const thin = mapStatus(fixture.pages[0]?.results[7], context);
     expect(thin.ok).toBe(false);
-    if (!thin.ok) expect(thin.rejection.reasons).toEqual(["missing_author_counts", "missing_author_verification"]);
+    if (!thin.ok)
+      expect(thin.rejection.reasons).toEqual([
+        "missing_author_counts",
+        "missing_author_verification",
+      ]);
   });
 
-  it("sets metricsAt from the page sidecar and leaves retweetOfTweetId null", () => {
-    const mapped = mapStatus(fixture.pages[0]?.results[0], context);
-    expect(mapped.ok).toBe(true);
-    if (mapped.ok) {
-      expect(mapped.tweet.metricsAt).toBe(context.receivedAt);
-      expect(mapped.tweet.retweetOfTweetId).toBeNull();
-      expect(mapped.tweet.createdAt).toBe(1_700_090_000_000);
-      expect(mapped.tweet.entities).toEqual({ hashtags: ["tag"], mentions: [], urls: ["https://example.com/page"] });
-    }
-  });
+  it.each([1_700_000_000_000, 1_700_000_000_001, 0])(
+    "sets metricsAt from the page sidecar (%i) and leaves retweetOfTweetId null",
+    (receivedAt) => {
+      const mapped = mapStatus(fixture.pages[0]?.results[0], { ...context, receivedAt });
+      expect(mapped.ok).toBe(true);
+      if (mapped.ok) {
+        expect(mapped.tweet.metricsAt).toBe(receivedAt);
+        expect(mapped.tweet.retweetOfTweetId).toBeNull();
+        expect(mapped.tweet.createdAt).toBe(1_700_090_000_000);
+        expect(mapped.tweet.entities).toEqual({
+          hashtags: ["tag"],
+          mentions: [],
+          urls: ["https://example.com/page"],
+        });
+      }
+    },
+  );
 
   it("keeps a tombstone quote id as a dangling edge without creating a candidate", () => {
     const mapped = mapStatus(fixture.pages[0]?.results[3], context);
@@ -124,7 +155,10 @@ describe("provider mapping", () => {
   });
 
   it("maps a repost row to its original author and flags it as reposted", () => {
-    const mapped = mapStatus(fixture.pages[0]?.results[4], { ...context, accountUserId: "100" as AuthorId });
+    const mapped = mapStatus(fixture.pages[0]?.results[4], {
+      ...context,
+      accountUserId: "100" as AuthorId,
+    });
     expect(mapped.ok).toBe(true);
     if (mapped.ok) {
       expect(mapped.reposted).toBe(true);

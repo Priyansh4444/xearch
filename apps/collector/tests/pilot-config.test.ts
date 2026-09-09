@@ -2,7 +2,13 @@ import { describe, expect, it } from "vitest";
 import pilotJson from "../../../config/collection/pilot.json" with { type: "json" };
 import { COHORTS, configHash, parsePilotConfig, selectAccounts } from "../src/config/pilot.ts";
 
-const COHORT_SIZES: Partial<Record<(typeof COHORTS)[number], number>> = { origin: 2, core: 14, crew: 20, bigger: 24, org: 2 };
+const COHORT_SIZES: Partial<Record<(typeof COHORTS)[number], number>> = {
+  origin: 2,
+  core: 14,
+  crew: 20,
+  bigger: 24,
+  org: 2,
+};
 
 describe("collection pilot configuration", () => {
   const pilot = parsePilotConfig(pilotJson);
@@ -20,7 +26,8 @@ describe("collection pilot configuration", () => {
     expect(pilot.accounts).toHaveLength(62);
 
     const counts: Record<string, number> = {};
-    for (const account of pilot.accounts) counts[account.cohort] = (counts[account.cohort] ?? 0) + 1;
+    for (const account of pilot.accounts)
+      counts[account.cohort] = (counts[account.cohort] ?? 0) + 1;
     expect(counts).toEqual(COHORT_SIZES);
   });
 
@@ -42,31 +49,71 @@ describe("collection pilot configuration", () => {
     const handles = pilot.accounts.map((account) => account.handle.toLowerCase());
     expect(handles).toContain("theo");
     expect(handles).not.toContain("t3dotgg");
-    expect(pilot.accounts.filter((account) => account.cohort === "origin").map((account) => account.handle)).toEqual([
-      "notpronsh",
-      "pcstyle53",
-    ]);
-    expect(pilot.accounts.find((account) => account.handle === "theo")?.expectedUserId).toBe("786375418685165568");
+    expect(
+      pilot.accounts
+        .filter((account) => account.cohort === "origin")
+        .map((account) => account.handle),
+    ).toEqual(["notpronsh", "pcstyle53"]);
+    expect(pilot.accounts.find((account) => account.handle === "theo")?.expectedUserId).toBe(
+      "786375418685165568",
+    );
   });
 
-  it("rejects numeric ids, unknown cohorts, and duplicates", () => {
-    const base = { ...pilotJson, accounts: [{ handle: "theo", expectedUserId: "1", cohort: "core" }] };
-    expect(() => parsePilotConfig({ ...base, accounts: [{ handle: "theo", expectedUserId: 1, cohort: "core" }] })).toThrow(/numeric string/);
-    expect(() => parsePilotConfig({ ...base, accounts: [{ handle: "theo", expectedUserId: "1", cohort: "hub" }] })).toThrow(/cohort/);
-    expect(() =>
-      parsePilotConfig({
-        ...base,
-        accounts: [
-          { handle: "theo", expectedUserId: "1", cohort: "core" },
-          { handle: "Theo", expectedUserId: "2", cohort: "core" },
-        ],
-      }),
-    ).toThrow(/duplicate handle/);
+  it.each([
+    {
+      name: "numeric id",
+      accounts: [{ handle: "theo", expectedUserId: 1, cohort: "core" }],
+      error: /numeric string/,
+    },
+    {
+      name: "unknown cohort",
+      accounts: [{ handle: "theo", expectedUserId: "1", cohort: "hub" }],
+      error: /cohort/,
+    },
+    {
+      name: "duplicate handle",
+      accounts: [
+        { handle: "theo", expectedUserId: "1", cohort: "core" },
+        { handle: "theo", expectedUserId: "2", cohort: "core" },
+      ],
+      error: /duplicate handle/,
+    },
+    {
+      name: "duplicate handle case-insensitive",
+      accounts: [
+        { handle: "theo", expectedUserId: "1", cohort: "core" },
+        { handle: "Theo", expectedUserId: "2", cohort: "core" },
+      ],
+      error: /duplicate handle/,
+    },
+    {
+      name: "duplicate id",
+      accounts: [
+        { handle: "theo", expectedUserId: "1", cohort: "core" },
+        { handle: "other", expectedUserId: "1", cohort: "core" },
+      ],
+      error: /duplicate/,
+    },
+  ])("rejects $name", ({ accounts, error }) => {
+    const base = {
+      ...pilotJson,
+      accounts: [{ handle: "theo", expectedUserId: "1", cohort: "core" }],
+    };
+    expect(() => parsePilotConfig({ ...base, accounts })).toThrow(error);
   });
 
-  it("selects accounts case-insensitively in config order and hashes canonically", () => {
+  it.each([
+    { input: ["AMPCODE", "theo"], expected: ["theo", "ampcode"] },
+    { input: ["theo", "AMPCODE"], expected: ["theo", "ampcode"] },
+    { input: ["Theo"], expected: ["theo"] },
+  ])("selects accounts case-insensitively in config order ($input)", ({ input, expected }) => {
+    expect(selectAccounts(pilot, input).accounts.map((account) => account.handle)).toEqual(
+      expected,
+    );
+  });
+
+  it("hashes selections canonically and rejects unknown handles", () => {
     const selected = selectAccounts(pilot, ["AMPCODE", "theo"]);
-    expect(selected.accounts.map((account) => account.handle)).toEqual(["theo", "ampcode"]);
     expect(() => selectAccounts(pilot, ["nobody_here"])).toThrow(/not in pilot config/);
     expect(configHash(selected)).toHaveLength(64);
     expect(configHash(selected)).not.toBe(configHash(pilot));

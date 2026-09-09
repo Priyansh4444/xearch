@@ -20,7 +20,12 @@ import {
 import { AccountState, DiscoveryResolution } from "../contracts/run-state.ts";
 import { readRunPagesEffect, type RawPageInput } from "../normalization/normalize.ts";
 import { acquireEffect, createRunEffect } from "../pilot/acquire.ts";
-import { discoverFromPages, proposeConfig, renderMarkdown, resolveCandidatesEffect } from "../pilot/discover.ts";
+import {
+  discoverFromPages,
+  proposeConfig,
+  renderMarkdown,
+  resolveCandidatesEffect,
+} from "../pilot/discover.ts";
 import { createRunId, isValidRunId, runPaths, type RunPaths } from "../pilot/layout.ts";
 import {
   abandonAccount,
@@ -92,7 +97,9 @@ const main = Effect.fn("pilot.main")(function* (): Effect.fn.Return<void, CliErr
     case PilotCommand.discover:
       return yield* discoverCommand(flags, dataDir);
     default:
-      return yield* usageFail(command === undefined ? "A command is required." : `Unknown command: ${command}`);
+      return yield* usageFail(
+        command === undefined ? "A command is required." : `Unknown command: ${command}`,
+      );
   }
 });
 
@@ -104,9 +111,14 @@ const acquireCommand = Effect.fn("pilot.acquire")(function* (
   let paths: RunPaths;
   let config: PilotConfig;
 
-  if (requestedRunId !== null && (yield* fileExistsEffect(runPaths(dataDir, "runs", requestedRunId).manifest))) {
+  if (
+    requestedRunId !== null &&
+    (yield* fileExistsEffect(runPaths(dataDir, "runs", requestedRunId).manifest))
+  ) {
     if (flags.options.has("accounts") || flags.options.has("config")) {
-      return yield* usageFail("--accounts and --config cannot change an existing run; start a new run instead.");
+      return yield* usageFail(
+        "--accounts and --config cannot change an existing run; start a new run instead.",
+      );
     }
     paths = runPaths(dataDir, "runs", requestedRunId);
     const snapshot = yield* tryPromise(loadRunConfig(paths));
@@ -125,8 +137,15 @@ const acquireCommand = Effect.fn("pilot.acquire")(function* (
         return yield* cliFail(`run ${requestedRunId} is archived and cannot be resumed`);
       }
     }
-    const loaded = yield* loadPilotConfigEffect(resolve(flags.options.get("config") ?? DEFAULT_CONFIG));
-    const accounts = flags.options.get("accounts")?.split(",").map((handle) => handle.trim()).filter(Boolean) ?? null;
+    const loaded = yield* loadPilotConfigEffect(
+      resolve(flags.options.get("config") ?? DEFAULT_CONFIG),
+    );
+    const accounts =
+      flags.options
+        .get("accounts")
+        ?.split(",")
+        .map((handle) => handle.trim())
+        .filter(Boolean) ?? null;
     config = yield* selectAccountsEffect(loaded, accounts);
     const runId = requestedRunId ?? createRunId(new Date(), flags.options.get("label") ?? "pilot");
     paths = runPaths(dataDir, "runs", runId);
@@ -164,12 +183,19 @@ const normalizeCommand = Effect.fn("pilot.normalize")(function* (
   if (config === null) return yield* cliFail(`run ${runId} has no config snapshot`);
 
   const result = yield* tryPromise(
-    normalizeAndArchive({ dataDir, paths: located.paths, config, log: (line) => console.log(line) }),
+    normalizeAndArchive({
+      dataDir,
+      paths: located.paths,
+      config,
+      log: (line) => console.log(line),
+    }),
   );
   const report = (yield* readJsonEffect(result.archivedPaths.report)) as PilotReport;
   printReport(report);
   console.log(`manifest: ${result.archivedPaths.manifest}`);
-  console.log(`acceptance: ${result.manifest.acceptance.passed ? "passed" : `not passed (${result.manifest.acceptance.reasons.join("; ")})`}`);
+  console.log(
+    `acceptance: ${result.manifest.acceptance.passed ? "passed" : `not passed (${result.manifest.acceptance.reasons.join("; ")})`}`,
+  );
 });
 
 const verifyCommand = Effect.fn("pilot.verify")(function* (
@@ -179,18 +205,21 @@ const verifyCommand = Effect.fn("pilot.verify")(function* (
   const runId = yield* requireRunId(flags);
   const located = yield* tryPromise(locateRun(dataDir, runId));
   if (located === null) return yield* cliFail(`run ${runId} not found under ${dataDir}`);
-  if (!located.archived) return yield* cliFail(`run ${runId} is not archived yet; normalize it first`);
+  if (!located.archived)
+    return yield* cliFail(`run ${runId} is not archived yet; normalize it first`);
   const config = yield* tryPromise(loadRunConfig(located.paths));
   if (config === null) return yield* cliFail(`run ${runId} has no config snapshot`);
 
   const scratch = yield* tryPromise(mkdtemp(join(tmpdir(), "xearch-verify-")));
   const result = yield* tryPromise(verifyArchive(located.paths, scratch, config)).pipe(
-    Effect.ensuring(
-      tryPromise(rm(scratch, { recursive: true, force: true })).pipe(Effect.orDie),
-    ),
+    Effect.ensuring(tryPromise(rm(scratch, { recursive: true, force: true })).pipe(Effect.orDie)),
   );
-  console.log(`verify ${runId}: ${result.hashesChecked} file hash(es) checked, ${result.hashMismatches.length} mismatch(es)`);
-  console.log(`verify ${runId}: ${result.outputsCompared.length} output file(s) re-normalized, ${result.outputsDiffering.length} differ`);
+  console.log(
+    `verify ${runId}: ${result.hashesChecked} file hash(es) checked, ${result.hashMismatches.length} mismatch(es)`,
+  );
+  console.log(
+    `verify ${runId}: ${result.outputsCompared.length} output file(s) re-normalized, ${result.outputsDiffering.length} differ`,
+  );
   for (const path of result.hashMismatches) console.log(`  hash mismatch: ${path}`);
   for (const path of result.outputsDiffering) console.log(`  bytes differ: ${path}`);
   console.log(`verify ${runId}: ${result.passed ? "PASSED" : "FAILED"}`);
@@ -205,10 +234,13 @@ const abandonAccountCommand = Effect.fn("pilot.abandonAccount")(function* (
   const handle = flags.positional[1];
   const reason = flags.options.get("reason");
   if (handle === undefined) return yield* usageFail("A handle is required.");
-  if (reason === undefined || reason.trim().length === 0) return yield* usageFail("--reason is required.");
+  if (reason === undefined || reason.trim().length === 0)
+    return yield* usageFail("--reason is required.");
   const { paths, config } = yield* activeRun(dataDir, runId);
   const manifest = yield* tryPromise(abandonAccount({ dataDir, paths, config }, handle, reason));
-  console.log(`abandoned @${handle} in run ${runId}; acquisition is now ${manifest.acquisition.status}`);
+  console.log(
+    `abandoned @${handle} in run ${runId}; acquisition is now ${manifest.acquisition.status}`,
+  );
 });
 
 const reopenAccountCommand = Effect.fn("pilot.reopenAccount")(function* (
@@ -219,10 +251,13 @@ const reopenAccountCommand = Effect.fn("pilot.reopenAccount")(function* (
   const handle = flags.positional[1];
   const reason = flags.options.get("reason");
   if (handle === undefined) return yield* usageFail("A handle is required.");
-  if (reason === undefined || reason.trim().length === 0) return yield* usageFail("--reason is required.");
+  if (reason === undefined || reason.trim().length === 0)
+    return yield* usageFail("--reason is required.");
   const { paths, config } = yield* activeRun(dataDir, runId);
   const manifest = yield* tryPromise(reopenAccount({ dataDir, paths, config }, handle, reason));
-  console.log(`reopened @${handle} in run ${runId}; acquisition is now ${manifest.acquisition.status}`);
+  console.log(
+    `reopened @${handle} in run ${runId}; acquisition is now ${manifest.acquisition.status}`,
+  );
 });
 
 const abandonRunCommand = Effect.fn("pilot.abandon")(function* (
@@ -231,7 +266,8 @@ const abandonRunCommand = Effect.fn("pilot.abandon")(function* (
 ): Effect.fn.Return<void, CliError> {
   const runId = yield* requireRunId(flags);
   const reason = flags.options.get("reason");
-  if (reason === undefined || reason.trim().length === 0) return yield* usageFail("--reason is required.");
+  if (reason === undefined || reason.trim().length === 0)
+    return yield* usageFail("--reason is required.");
   const { paths, config } = yield* activeRun(dataDir, runId);
   const archived = yield* tryPromise(abandonRun({ dataDir, paths, config }, reason));
   console.log(`run ${runId} abandoned and archived at ${archived.root}`);
@@ -278,7 +314,9 @@ const discoverCommand = Effect.fn("pilot.discover")(function* (
     pages.push(...(yield* readRunPagesEffect(located.paths, manifest)));
     console.log(`${runId}: ${pages.length} page(s) loaded so far`);
   }
-  const configured = yield* loadPilotConfigEffect(resolve(flags.options.get("config") ?? DEFAULT_CONFIG));
+  const configured = yield* loadPilotConfigEffect(
+    resolve(flags.options.get("config") ?? DEFAULT_CONFIG),
+  );
   const candidates = discoverFromPages(pages, {
     seeds: [...seeds.values()],
     configuredIds: new Set(configured.accounts.map((account) => account.expectedUserId)),
@@ -294,8 +332,12 @@ const discoverCommand = Effect.fn("pilot.discover")(function* (
       if (!first) yield* Effect.sleep(configured.delayMs);
       first = false;
     });
-    const unresolved = candidates.filter((candidate) => candidate.resolution === DiscoveryResolution.Unresolved).length;
-    console.log(`resolving ${unresolved} handle-only candidate(s) at ${configured.delayMs} ms pacing`);
+    const unresolved = candidates.filter(
+      (candidate) => candidate.resolution === DiscoveryResolution.Unresolved,
+    ).length;
+    console.log(
+      `resolving ${unresolved} handle-only candidate(s) at ${configured.delayMs} ms pacing`,
+    );
     // resolveCandidatesEffect still takes a Promise pace; adapt.
     yield* resolveCandidatesEffect(
       candidates,
@@ -305,7 +347,9 @@ const discoverCommand = Effect.fn("pilot.discover")(function* (
     );
   }
 
-  const outDir = resolve(flags.options.get("out") ?? join(dataDir, "discovery", flags.positional.join("+")));
+  const outDir = resolve(
+    flags.options.get("out") ?? join(dataDir, "discovery", flags.positional.join("+")),
+  );
   yield* writeJsonAtomicEffect(join(outDir, "report.json"), {
     generatedAt: Date.now(),
     sourceRuns: flags.positional,
@@ -313,12 +357,22 @@ const discoverCommand = Effect.fn("pilot.discover")(function* (
     seeds: [...seeds.values()],
     candidates,
   });
-  yield* writeTextAtomicEffect(join(outDir, "report.md"), renderMarkdown(candidates, minSeeds, flags.positional));
-  const proposed = proposeConfig({ ...(baseConfig as PilotConfig), selectedOn: new Date().toISOString().slice(0, 10) }, candidates);
+  yield* writeTextAtomicEffect(
+    join(outDir, "report.md"),
+    renderMarkdown(candidates, minSeeds, flags.positional),
+  );
+  const proposed = proposeConfig(
+    { ...(baseConfig as PilotConfig), selectedOn: new Date().toISOString().slice(0, 10) },
+    candidates,
+  );
   yield* writeJsonAtomicEffect(join(outDir, "proposed-config.json"), proposed);
   console.log(`report: ${join(outDir, "report.md")}`);
-  console.log(`proposed gate-2 config with ${proposed.accounts.length} guest account(s): ${join(outDir, "proposed-config.json")}`);
-  console.log(`unresolved (need --resolve): ${candidates.filter((candidate) => candidate.resolution === DiscoveryResolution.Unresolved).length}`);
+  console.log(
+    `proposed gate-2 config with ${proposed.accounts.length} guest account(s): ${join(outDir, "proposed-config.json")}`,
+  );
+  console.log(
+    `unresolved (need --resolve): ${candidates.filter((candidate) => candidate.resolution === DiscoveryResolution.Unresolved).length}`,
+  );
 });
 
 const activeRun = Effect.fn("pilot.activeRun")(function* (
@@ -334,7 +388,9 @@ const activeRun = Effect.fn("pilot.activeRun")(function* (
 });
 
 function printAcquisition(manifest: Manifest, paths: RunPaths): void {
-  console.log(`run ${manifest.runId}: acquisition ${manifest.acquisition.status}${manifest.archive ? " (archived)" : ""}`);
+  console.log(
+    `run ${manifest.runId}: acquisition ${manifest.acquisition.status}${manifest.archive ? " (archived)" : ""}`,
+  );
   for (const account of manifest.acquisition.accounts) {
     const detail =
       account.state === AccountState.Completed
@@ -348,9 +404,13 @@ function printAcquisition(manifest: Manifest, paths: RunPaths): void {
       `  @${account.requestedHandle.padEnd(16)} ${account.state.padEnd(9)} pages=${String(account.pagesCompleted).padStart(4)} rows=${String(account.rowsReturned).padStart(6)} ${detail ?? ""}`,
     );
   }
-  const paused = manifest.acquisition.accounts.filter((account) => account.state === AccountState.Paused);
+  const paused = manifest.acquisition.accounts.filter(
+    (account) => account.state === AccountState.Paused,
+  );
   if (paused.length > 0) {
-    console.log(`${paused.length} account(s) paused; re-run acquire to retry or abandon-account to give up`);
+    console.log(
+      `${paused.length} account(s) paused; re-run acquire to retry or abandon-account to give up`,
+    );
   }
   console.log(`checkpoint: ${paths.checkpoint}`);
 }
@@ -362,9 +422,13 @@ function printReport(report: PilotReport): void {
       `normalization: ${counts.accepted.total} accepted (${counts.accepted.timeline} timeline, ${counts.accepted.embedded} embedded), ${counts.rejected.total} rejected, ${counts.duplicates} duplicates, ${counts.skippedOutsideWindow} outside window, ${counts.authors} authors`,
     );
     console.log(`rejections by reason: ${JSON.stringify(counts.rejected.byReason)}`);
-    console.log(`coverage floor ${report.coverage.floor}: ${report.coverage.accountsReached}/${report.coverage.accountsTotal} account(s)`);
+    console.log(
+      `coverage floor ${report.coverage.floor}: ${report.coverage.accountsReached}/${report.coverage.accountsTotal} account(s)`,
+    );
     if (report.authorShare.topHandle !== null) {
-      console.log(`top author share: @${report.authorShare.topHandle} ${(100 * (report.authorShare.topShare ?? 0)).toFixed(1)}%`);
+      console.log(
+        `top author share: @${report.authorShare.topHandle} ${(100 * (report.authorShare.topShare ?? 0)).toFixed(1)}%`,
+      );
     }
   }
   const requests = report.acquisition.requests;
@@ -374,7 +438,9 @@ function printReport(report: PilotReport): void {
   console.log(`thresholds: ${report.thresholds.passed ? "passed" : "NOT passed"}`);
   for (const check of report.thresholds.checks) {
     const mark = check.passed === null ? "-" : check.passed ? "ok" : "FAIL";
-    console.log(`  [${mark.padEnd(4)}] ${check.name}: ${check.value === null ? "n/a" : String(check.value)} (bound ${check.bound})`);
+    console.log(
+      `  [${mark.padEnd(4)}] ${check.name}: ${check.value === null ? "n/a" : String(check.value)} (bound ${check.bound})`,
+    );
   }
 }
 
@@ -448,7 +514,10 @@ Effect.runPromise(main()).catch((error: unknown) => {
     process.exitCode = error.exitCode;
     return;
   }
-  if (error instanceof PilotConfigError || (error instanceof Error && "_tag" in error && (error as { _tag: string })._tag === "FsError")) {
+  if (
+    error instanceof PilotConfigError ||
+    (error instanceof Error && "_tag" in error && (error as { _tag: string })._tag === "FsError")
+  ) {
     console.error(error instanceof Error ? error.message : error);
     process.exitCode = 1;
     return;

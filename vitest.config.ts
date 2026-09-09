@@ -8,10 +8,6 @@ export default defineConfig({
       "apps/web/src/**/*.test.ts",
       "apps/web/src/**/*.test.tsx",
     ],
-    exclude: [
-      "**/node_modules/**",
-      "**/.delta/**",
-      "apps/posthog-export/**",
-    ],
+    exclude: ["**/node_modules/**", "**/.delta/**", "apps/posthog-export/**"],
   },
 });
