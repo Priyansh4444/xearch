@@ -37,22 +37,17 @@ export interface Tokenized {
 }
 
 export function tokenize(raw: string, keepStopwords = false): Tokenized {
-  let hasLink = false;
-  const text = raw
-    .normalize("NFKC")
-    .toLowerCase()
-    .replace(URL_RE, () => {
-      hasLink = true;
-      return " ";
-    });
+  const lowered = raw.normalize("NFKC").toLowerCase();
+  // String replacement, not a replacer closure: one fewer function object per
+  // call, and no captured `hasLink` cell. Every URL match is ≥4 chars
+  // (`www.` is the shortest prefix) collapsing to one space, so a shorter
+  // result means exactly "at least one link was stripped" — no second scan.
+  const text = lowered.replace(URL_RE, " ");
+  const hasLink = text.length !== lowered.length;
 
   const tokens: Term[] = [];
   const chars = Array.from(text); // code points, not UTF-16 units
   let i = 0;
-  const push = (t: string) => {
-    // The tokenizer is THE producer of the Term space: this cast seals it.
-    if (t.length > 0 && (keepStopwords || !STOP.has(t))) tokens.push(t as Term);
-  };
 
   while (i < chars.length) {
     const c = chars[i]!;
@@ -64,23 +59,23 @@ export function tokenize(raw: string, keepStopwords = false): Tokenized {
       }
       const isNumeric = /^\p{N}+$/u.test(run);
       if (c === "$" && isNumeric) {
-        push(run); // "$99" -> "99"; aspect emitter sees the "$"+digits pattern itself
+        pushToken(tokens, keepStopwords, run); // "$99" -> "99"; aspect emitter sees the "$"+digits pattern itself
       } else {
-        push(c + run);
-        push(run);
+        pushToken(tokens, keepStopwords, c + run);
+        pushToken(tokens, keepStopwords, run);
       }
       i = next;
     } else if (CJK_RE.test(c)) {
-      const [run, next] = takeRun(chars, i, (ch) => CJK_RE.test(ch));
-      for (const bg of cjkBigrams(run)) push(bg);
+      const [run, next] = takeRun(chars, i, isCjkChar);
+      for (const bg of cjkBigrams(run)) pushToken(tokens, keepStopwords, bg);
       i = next;
     } else if (EMOJI_RE.test(c)) {
-      const [run, next] = takeRun(chars, i, (ch) => EMOJI_RE.test(ch));
-      for (const e of dedupePreservingOrder(Array.from(run))) push(e);
+      const [run, next] = takeRun(chars, i, isEmojiChar);
+      for (const e of dedupePreservingOrder(Array.from(run))) pushToken(tokens, keepStopwords, e);
       i = next;
     } else if (WORD_RE.test(c)) {
       const [run, next] = takeWordRun(chars, i);
-      push(run);
+      pushToken(tokens, keepStopwords, run);
       i = next;
     } else {
       i += 1;
@@ -90,6 +85,22 @@ export function tokenize(raw: string, keepStopwords = false): Tokenized {
   const counts = new Map<Term, number>();
   for (const t of tokens) counts.set(t, (counts.get(t) ?? 0) + 1);
   return { tokens, counts, hasLink };
+}
+
+/** Module-level emitter: the per-call `push` closure it replaces allocated a
+ * function object plus context on every tokenize() call (~220/query through
+ * constraint checks and PRF mining). Plain calls monomorphize and inline. */
+function pushToken(tokens: Term[], keepStopwords: boolean, t: string): void {
+  // The tokenizer is THE producer of the Term space: this cast seals it.
+  if (t.length > 0 && (keepStopwords || !STOP.has(t))) tokens.push(t as Term);
+}
+
+function isCjkChar(c: string): boolean {
+  return CJK_RE.test(c);
+}
+
+function isEmojiChar(c: string): boolean {
+  return EMOJI_RE.test(c);
 }
 
 /** Word run: letters/digits/underscore plus apostrophe when flanked by word chars. */

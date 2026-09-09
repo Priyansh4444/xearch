@@ -283,12 +283,8 @@ export async function tierB(
   if (aspects.length > 0) {
     xq.aspects = aspects;
     const weakWords = new Set<string>();
-    const entries = Object.entries(aspectsFile.aspects) as Array<
-      [string, { strong: string[]; weak: string[] }]
-    >;
-    for (const [aspect, { weak }] of entries) {
-      if (!aspects.includes(aspect as Term)) continue;
-      for (const w of weak) weakWords.add(w);
+    for (const aspect of aspects) {
+      for (const w of weakWordsFor(aspect)) weakWords.add(w);
     }
     const stay: Term[] = [];
     for (const t of xq.must) {
@@ -433,22 +429,54 @@ function stripTokens(xq: XQuery, fragment: string) {
 export function mapAspects(tokens: Term[], rawText: string): Term[] {
   const found = new Set<Term>();
   const joined = " " + tokens.join(" ") + " ";
-  const entries = Object.entries(aspectsFile.aspects) as Array<
-    [string, { strong: string[]; weak: string[] }]
-  >;
-  const contentTokens = tokens.filter((t) => !t.startsWith("~"));
-  for (const [aspect, { strong, weak }] of entries) {
-    if (strong.some((p) => joined.includes(" " + p + " "))) {
-      found.add(aspect as Term);
+  for (const [aspect, patterns] of ASPECT_ENTRIES) {
+    if (hasPaddedHit(joined, patterns.strong)) {
+      found.add(aspect);
       continue;
     }
-    const weakHits = weak.filter((w) => joined.includes(" " + w + " "));
-    if (weakHits.length > 0 && contentTokens.some((token) => !weak.includes(token))) {
-      found.add(aspect as Term);
+    if (
+      hasPaddedHit(joined, patterns.weak)
+      && hasContentToken(tokens, patterns.weak)
+    ) {
+      found.add(aspect);
     }
   }
-  if (/\$\d/.test(rawText)) found.add("~price" as Term);
+  if (DOLLAR_DIGIT_RE.test(rawText)) found.add(ASPECT_PRICE);
   return [...found].sort();
+}
+
+/** Lexicon rows parsed once at module load, not on every query. Patterns stay
+ * raw strings; only the aspect keys enter the Term space. */
+const ASPECT_PRICE = "~price" as Term;
+const ASPECT_ENTRIES: Array<[Term, { strong: string[]; weak: string[] }]> =
+  (Object.entries(aspectsFile.aspects) as Array<[string, { strong: string[]; weak: string[] }]>)
+    .map(([aspect, patterns]) => [aspect as Term, patterns]);
+
+/** Weak trigger words for one aspect (Tier B moves them to `should`). */
+function weakWordsFor(aspect: Term): string[] {
+  for (const [name, patterns] of ASPECT_ENTRIES) {
+    if (name === aspect) return patterns.weak;
+  }
+  return [];
+}
+
+const DOLLAR_DIGIT_RE = /\$\d/;
+
+/** Any pattern present as a whitespace-delimited phrase. Plain loops: the
+ * `.some`/`.filter` closures this replaces were built per aspect, per query. */
+function hasPaddedHit(joined: string, patterns: string[]): boolean {
+  for (const p of patterns) {
+    if (joined.includes(" " + p + " ")) return true;
+  }
+  return false;
+}
+
+/** A non-aspect content token co-occurs (G5 guard against bare triggers). */
+function hasContentToken(tokens: Term[], weak: string[]): boolean {
+  for (const t of tokens) {
+    if (!t.startsWith("~") && !weak.includes(t)) return true;
+  }
+  return false;
 }
 
 /** Interrogative-shape detector (question intent, PARSER golden rows). */

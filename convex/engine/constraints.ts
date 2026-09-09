@@ -1,4 +1,5 @@
 import { tokenize } from "./tokenize";
+import type { Term } from "../contracts/ids";
 import type { XQuery } from "./xquery";
 
 export const MAX_QUERY_LENGTH = 512;
@@ -31,8 +32,28 @@ export function matchesConstraints(tweet: FilterableTweet, xq: XQuery): boolean 
   if (f.minLikes !== null && tweet.likeCount < f.minLikes) return false;
   if (f.lang !== null && tweet.lang !== f.lang) return false;
   const tokens = tokenize(tweet.text, true).tokens;
-  if (xq.exclude.some((term) => tokens.includes(term))) return false;
-  return xq.phrases.every((phrase) =>
-    tokens.some((_, start) => phrase.every((term, offset) => tokens[start + offset] === term)),
-  );
+  // Loops, not `.some`/nested `.every` closures: this runs per candidate
+  // (≤200/query), so the callbacks were the hottest closures in the path.
+  for (const term of xq.exclude) {
+    if (tokens.includes(term)) return false;
+  }
+  for (const phrase of xq.phrases) {
+    if (!coversPhrase(tokens, phrase)) return false;
+  }
+  return true;
+}
+
+/** One phrase matched with token adjacency. */
+function coversPhrase(tokens: Term[], phrase: Term[]): boolean {
+  for (let start = 0; start + phrase.length <= tokens.length; start++) {
+    let hit = true;
+    for (let offset = 0; offset < phrase.length; offset++) {
+      if (tokens[start + offset] !== phrase[offset]) {
+        hit = false;
+        break;
+      }
+    }
+    if (hit) return true;
+  }
+  return false;
 }

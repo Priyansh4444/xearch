@@ -81,7 +81,18 @@ export function rerank(
 
   // Raw per-signal values first; eng/auth/rel normalize over the candidate set
   // (max-normalization: cheap, stable, and immune to degenerate variance).
-  const raw = candidates.map((c) => {
+  // One fused pass: values AND their maxima, with no intermediate array of
+  // signal objects and no per-signal closures. The previous shape —
+  // `candidates.map(...)` plus 3× `Math.max(...rows.map(pick))` — allocated an
+  // object per candidate and four throwaway arrays per rerank (see bytecode).
+  const rels: number[] = new Array(candidates.length);
+  const engs: number[] = new Array(candidates.length);
+  const auths: number[] = new Array(candidates.length);
+  let zRel = 1e-9;
+  let zEng = 1e-9;
+  let zAuth = 1e-9;
+  for (let i = 0; i < candidates.length; i++) {
+    const c = candidates[i]!;
     let rel = 0;
     for (const [term, tf] of c.tf) {
       rel += bm25(
@@ -99,18 +110,22 @@ export function rerank(
         WEIGHTS.w_quote * c.quoteCount +
         Math.max(0, c.propagatedBoost),
     );
-    return { rel, eng, auth: Math.max(0, c.authorAuthority) };
-  });
-  const z = {
-    rel: maxSignal(raw, (r) => r.rel),
-    eng: maxSignal(raw, (r) => r.eng),
-    auth: maxSignal(raw, (r) => r.auth),
-  };
+    const auth = Math.max(0, c.authorAuthority);
+    rels[i] = rel;
+    engs[i] = eng;
+    auths[i] = auth;
+    if (rel > zRel) zRel = rel;
+    if (eng > zEng) zEng = eng;
+    if (auth > zAuth) zAuth = auth;
+  }
+  const z = { rel: zRel, eng: zEng, auth: zAuth };
 
-  const scored: Scored[] = candidates.map((c, i) => {
-    const rel = raw[i]!.rel / z.rel;
-    const eng = raw[i]!.eng / z.eng;
-    const auth = raw[i]!.auth / z.auth;
+  const scored: Scored[] = [];
+  for (let i = 0; i < candidates.length; i++) {
+    const c = candidates[i]!;
+    const rel = rels[i]! / z.rel;
+    const eng = engs[i]! / z.eng;
+    const auth = auths[i]! / z.auth;
     const rec = Math.exp(-Math.max(0, now - c.createdAt) / tau);
     const fb =
       Math.max(-WEIGHTS.fbClamp, Math.min(WEIGHTS.fbClamp, c.feedbackVotes)) /
@@ -124,16 +139,17 @@ export function rerank(
       fb: WEIGHTS.fb * fb,
       fit: WEIGHTS.fit * fit,
     };
-    return {
+    scored.push({
       tweetId: c.tweetId,
       score: parts.rel + parts.eng + parts.auth + parts.rec + parts.fb + parts.fit,
       matchedVia: c.matchedVia,
       parts,
-    };
-  });
+    });
+  }
 
   // Dedup quote/RT chains to the best representative (K5: one hop, no traversal).
-  const byId = new Map(candidates.map((c) => [c.tweetId, c]));
+  const byId = new Map<string, Candidate>();
+  for (const c of candidates) byId.set(c.tweetId, c);
   function compare(a: Scored, b: Scored): number {
     if (xq.sort === SortOrder.Latest) {
       const time = byId.get(b.tweetId)!.createdAt - byId.get(a.tweetId)!.createdAt;
@@ -152,18 +168,6 @@ export function rerank(
   return [...best.values()].sort(compare);
 }
 
-/** Max of one signal over the candidate set, floored. A loop, not
- * `Math.max(...rows.map(pick))` — the spread form allocates a throwaway array
- * per signal on every rerank. */
-function maxSignal<T>(rows: T[], pick: (row: T) => number): number {
-  let best = 1e-9;
-  for (const row of rows) {
-    const value = pick(row);
-    if (value > best) best = value;
-  }
-  return best;
-}
-
 /** Intent bonuses (§4.6): media match, phrase coverage, should-polarity hits. */
 function fitBonus(xq: XQuery, c: Candidate): number {
   let fit = 0;
@@ -173,16 +177,32 @@ function fitBonus(xq: XQuery, c: Candidate): number {
   ) {
     fit += 0.5;
   }
-  if (
-    xq.phrases.length > 0 &&
-    xq.phrases.every((p) => p.every((t) => c.tf.has(t)))
-  ) {
+  if (xq.phrases.length > 0 && coversAllPhrases(xq.phrases, c.tf)) {
     fit += 0.3; // serving verifies adjacency before reranking
   }
-  if (xq.should.length > 0 && xq.should.some((t) => c.tf.has(t))) {
+  if (xq.should.length > 0 && hasAnyTerm(xq.should, c.tf)) {
     fit += 0.2;
   }
   return fit;
+}
+
+/** Every phrase fully covered by the candidate's matched terms. Loops, not
+ * nested `.every` closures — this runs per candidate (≤200/query). */
+function coversAllPhrases(phrases: Term[][], tf: Map<Term, number>): boolean {
+  for (const phrase of phrases) {
+    for (const term of phrase) {
+      if (!tf.has(term)) return false;
+    }
+  }
+  return true;
+}
+
+/** Any soft term among the candidate's matched terms. */
+function hasAnyTerm(terms: Term[], tf: Map<Term, number>): boolean {
+  for (const term of terms) {
+    if (tf.has(term)) return true;
+  }
+  return false;
 }
 
 /** Reciprocal Rank Fusion across ranked lists (lexical, paraphrases, vectors). */
