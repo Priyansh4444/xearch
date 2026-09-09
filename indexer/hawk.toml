@@ -1,0 +1,45 @@
+# Hawk closed-world analysis: the shipped product is the backfill binary.
+# Benches, tests, and the lib they exercise are compiled as consumers, so
+# test-only helpers do not count as dead. Findings that name intentional
+# refresh-mode API get [[override]] entries with reasons, not deletions.
+[[production]]
+package = "xearch-indexer"
+bin = "xearch-indexer"
+reason = "shipped offline indexer binary (backfill mode)"
+
+# Refresh-mode slice (DESIGN §6.1–6.2): boost propagation + Tweepcred authority
+# plus the Convex endpoints that consume them. Unwired while `refresh` mode is
+# unimplemented (main.rs), but designed and documented — deleting it would
+# destroy work, so it is explicitly retained. Revisit when refresh lands.
+[[exclude]]
+crate = "xearch_indexer"
+module = "tweepcred"
+reason = "PageRank authority for unimplemented refresh mode (DESIGN §6.2)"
+
+[[override]]
+lint = "hawk::dead_public"
+crate = "xearch_indexer"
+item = "pipeline::propagate_boosts"
+level = "allow"
+reason = "one-hop boost propagation for unimplemented refresh mode (DESIGN §6.1)"
+
+[[override]]
+lint = "hawk::dead_public"
+crate = "xearch_indexer"
+item = "convex_api::ConvexClient::apply_metrics"
+level = "allow"
+reason = "Convex endpoint for refresh-mode metric re-crawls"
+
+[[override]]
+lint = "hawk::dead_public"
+crate = "xearch_indexer"
+item = "convex_api::ConvexClient::upsert_authority"
+level = "allow"
+reason = "Convex endpoint for refresh-mode authority writes"
+
+[[override]]
+lint = "hawk::dead_public"
+crate = "xearch_indexer"
+item = "num::usize_as_f64"
+level = "allow"
+reason = "only caller is the retained tweepcred module"

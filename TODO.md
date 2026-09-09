@@ -8,14 +8,14 @@ Source notes from comparative research vs t3code (2026-09-08): do **not** rewrit
 - [x] move FxTwitterClient to functional `makeFxTwitterClient` with Effect retries/backoff/schema validation
 - [x] close shared string unions as const enums + Schema.Literals (`AccountState`, `PauseReason`, `AcquisitionStatus`, `DiscoveryResolution`, `PageOutcome`, provider/media/normalize-kinds; engine `Intent`/`SortOrder`/`LadderLevel`/`MediaType`)
 - [x] `cargo bench` baselines (2026-09-09, `indexer/benches/`): `tokenizer/shared_goldens` ~12.9µs/12 texts (~930k texts/s); `pipeline/push_tweet_mixed_corpus` ~150µs/8 tweets (~53k tweets/s, ~100x the 500/s backfill target) — transform is not the bottleneck, Convex ack throughput is; gate any concurrent-pipeline work on these numbers
-- [ ] there is a lot of outdated code including things in R2 which are no longer being used please remove it. but do not get rid of convex and it's TODOs — **note:** collector R2 scripts + dashboard Worker are still live ops; only retire helpers after confirming unused (`run-snapshot` / `finish-run` / `push-status-loop` are first candidates)
-- [ ] there is a lot of destructuring happening, be careful a lot of these are not causing heap churn with respect to js and similarly with closures.
+- [x] retire stale R2 helpers (`run-snapshot` wrote to the dead `_active/` prefix; `finish-run` / `push-status-loop` unreferenced by scripts/docs/tests) — live ops kept: `pull-run` / `push-status` / `sync-runs` / `acquire-detached` + dashboard Worker; dashboard serves `<run-id>/` + `_live/` only
+- [x] destructuring / heap-churn audit (2026-09-09): all spreads sit on bounded small collections (≤12 query terms, ≤200 rerank candidates, per-request arrays); per-term/per-doc loops (`executePlan` intersection, `rerank` scoring, tokenizer scan) iterate without spreading, and the pipeline bench shows ~53k tweets/s headroom — no action needed
 - [x] migrate collector I/O to Effect (`Effect.fn` throughout acquire/discover/manifest/report/lifecycle/normalize I/O/probe/CLI/config/fs). Leave tokenize/parse/plan/rank/eval pure.
 - [x] extract SearchErrorBoundary fallback UI to a functional component (class shell required by React)
 - [x] branded domain IDs (Effect Schema brands in collector `contracts/ids.ts`; type-only brands in `convex/contracts/ids.ts` so validators stay `v.string()` and canonical XQuery JSON is unchanged; doc `_id` vs source-id spaces documented, not renamed)
 - [x] Dependabot/Renovate + lockfile verification (`.github/dependabot.yml` for npm/cargo/actions weekly; lockfile verified by CI's `pnpm install --frozen-lockfile`)
-- [ ] optional: introduce `Context.Service` + Layers only where DI clearly helps tests (FxTwitter / Clock); avoid a full service graph for its own sake
-- [ ] optional: `@effect/vitest` `it.effect` for collector Effect tests
+- [x] optional `Context.Service` + Layers — decided against (2026-09-09): DI needs are already covered by `Effect.fn` + injected-callback seams (`TierBDeps` pattern) with fixture-backed tests; a service graph would add abstraction without a consumer
+- [x] optional `@effect/vitest` `it.effect` — decided against (2026-09-09): exactly one test file (`acquisition.test.ts`, 3 call sites) runs Effects directly; a new dependency to save three `Effect.runPromise` wrappers is negative value
 
 ### P0 — highest return, do before algorithm / auth-risky work
 
