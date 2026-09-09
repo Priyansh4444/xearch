@@ -3,9 +3,10 @@
 //! is the number the backfill mode reports as tweets per second (the backfill
 //! target is at least 500/s), and the baseline any bounded-concurrent pipeline
 //! work must beat without changing the batch bytes (goldens pin those).
-use criterion::{black_box, Criterion, Throughput};
+use criterion::{Criterion, Throughput};
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::hint::black_box;
 use std::time::Duration;
 use xearch_indexer::ids::{AuthorId, Handle, Term, TweetId};
 use xearch_indexer::model::{Metrics, TweetIn};
