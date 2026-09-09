@@ -4,6 +4,9 @@
   "type": "module",
   "version": "0.1.0",
   "packageManager": "pnpm@11.10.0",
+  "engines": {
+    "node": ">=24"
+  },
   "description": "Search engine for tweets on Convex — see DESIGN.md / ARCHITECTURE.md",
   "scripts": {
     "collect:pilot": "node apps/collector/src/cli/pilot.ts",
