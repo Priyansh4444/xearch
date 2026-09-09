@@ -84,11 +84,15 @@ export async function acquire(options: AcquireOptions): Promise<Manifest> {
   return Effect.runPromise(acquireEffect(options));
 }
 
+/** Default pacing sleep, hoisted so every acquire call doesn't mint a closure. */
+function defaultSleep(delayMs: number): Promise<void> {
+  return new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+}
+
 export const acquireEffect = Effect.fn("acquireEffect")(
   function* (options: AcquireOptions): Effect.fn.Return<Manifest, AcquireError> {
     const now = options.now ?? Date.now;
-    const sleep = options.sleep
-      ?? ((delayMs: number) => new Promise<void>((resolve) => setTimeout(resolve, delayMs)));
+    const sleep = options.sleep ?? defaultSleep;
     const log = options.log ?? (() => undefined);
     const { paths, config, client } = options;
 

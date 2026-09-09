@@ -86,9 +86,11 @@ export function planL0(xq: XQuery, dfs: Map<Term, number>): ReadPlan {
     uniqueTerms(xq.must, xq.aspects, phraseTerms(xq)),
     dfs,
   );
+  const gates: PostingsRead[] = [];
+  for (const term of gateTerms) gates.push(readFor(term, xq));
   return {
     level: LadderLevel.L0,
-    gates: gateTerms.map((term) => readFor(term, xq)),
+    gates,
     unions: [],
     excludes: [...xq.exclude],
     postFilters: postFiltersOf(xq),
@@ -173,19 +175,29 @@ export function escalate(
   // L0/L1 -> L1: drop the lowest-idf (= highest-df) gate, at most twice, and only
   // while more than one gate remains. Filters ride along untouched (invariant 2).
   if (executed.level === LadderLevel.L0 || executed.level === LadderLevel.L1) {
-    const fullGateCount = uniqueTerms(xq.must, xq.aspects, phraseTerms(xq)).length;
-    const drops = fullGateCount - executed.gates.length;
-    const protectedTerms = new Set([...xq.aspects, ...phraseTerms(xq)]);
-    const droppable = executed.gates.filter((gate) =>
-      xq.must.includes(gate.term) && !protectedTerms.has(gate.term),
-    );
+    // Distinct-gate count only: feed one Set directly instead of building a
+    // deduped array (uniqueTerms) whose elements nobody reads here.
+    const gateSet = new Set<Term>();
+    for (const t of xq.must) gateSet.add(t);
+    for (const t of xq.aspects) gateSet.add(t);
+    for (const t of phraseTerms(xq)) gateSet.add(t);
+    const drops = gateSet.size - executed.gates.length;
+    const protectedTerms = new Set<Term>();
+    for (const t of xq.aspects) protectedTerms.add(t);
+    for (const t of phraseTerms(xq)) protectedTerms.add(t);
+    const droppable: PostingsRead[] = [];
+    for (const gate of executed.gates) {
+      if (xq.must.includes(gate.term) && !protectedTerms.has(gate.term)) {
+        droppable.push(gate);
+      }
+    }
     const toDrop = droppable.at(-1);
     if (executed.gates.length > 1 && drops < 2 && toDrop !== undefined) {
-      return {
-        ...executed,
-        level: LadderLevel.L1,
-        gates: executed.gates.filter((gate) => gate.term !== toDrop.term),
-      };
+      const gates: PostingsRead[] = [];
+      for (const gate of executed.gates) {
+        if (gate.term !== toDrop.term) gates.push(gate);
+      }
+      return { ...executed, level: LadderLevel.L1, gates };
     }
     return escalateToL2(xq, dfs);
   }
@@ -193,17 +205,17 @@ export function escalate(
   // L2 -> L3: PRF terms (mined by the caller from the docs found so far) join the
   // union. Without terms to add there is nothing left to relax in a query.
   if (executed.level === LadderLevel.L2 && prfTerms !== undefined && prfTerms.length > 0) {
-    const known = new Set(executed.unions.map((u) => u.term));
-    const extra = rarestFirst(
-      prfTerms.filter((t) => !known.has(t)),
-      dfs,
-    );
+    const known = new Set<Term>();
+    for (const u of executed.unions) known.add(u.term);
+    const fresh: Term[] = [];
+    for (const t of prfTerms) {
+      if (!known.has(t)) fresh.push(t);
+    }
+    const extra = rarestFirst(fresh, dfs);
     if (extra.length === 0) return null;
-    return {
-      ...executed,
-      level: LadderLevel.L3,
-      unions: [...executed.unions, ...extra.map((t) => readFor(t, xq))],
-    };
+    const unions = [...executed.unions];
+    for (const t of extra) unions.push(readFor(t, xq));
+    return { ...executed, level: LadderLevel.L3, unions };
   }
 
   return null; // L4 (vectors) is an action, not a plan
@@ -215,10 +227,12 @@ function escalateToL2(xq: XQuery, dfs: Map<Term, number>): ReadPlan | null {
     dfs,
   );
   if (unionTerms.length === 0) return null;
+  const unions: PostingsRead[] = [];
+  for (const t of unionTerms) unions.push(readFor(t, xq));
   return {
     level: LadderLevel.L2,
     gates: [],
-    unions: unionTerms.map((t) => readFor(t, xq)),
+    unions,
     excludes: [...xq.exclude],
     postFilters: postFiltersOf(xq),
   };
