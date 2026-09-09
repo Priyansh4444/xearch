@@ -3,22 +3,17 @@
 //! Pure: no I/O in this module (main.rs owns files and HTTP). One tweet in
 //! produces a tweet row, postings, and df deltas.
 
+use crate::ids::{AuthorId, Handle, Term, TweetId};
 use crate::model::{
     AuthorIn, AuthorKind, AuthorOut, DfDelta, IngestBatch, MediaType, Metrics, PostingOut, TweetIn,
     TweetOut,
 };
+use crate::num::u64_as_f64;
 use crate::tokenizer::tokenize;
-use color_eyre::eyre::Result;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-fn metric_as_f64(value: u64) -> f64 {
-    let high = u32::try_from(value >> 32).unwrap_or(u32::MAX);
-    let low = u32::try_from(value & u64::from(u32::MAX)).unwrap_or(0);
-    f64::from(high).mul_add(4_294_967_296.0, f64::from(low))
-}
-
 fn timestamp_delta_as_f64(value: i64) -> f64 {
-    let magnitude = metric_as_f64(value.unsigned_abs());
+    let magnitude = u64_as_f64(value.unsigned_abs());
     if value.is_negative() {
         -magnitude
     } else {
@@ -38,31 +33,68 @@ pub const RECENCY_MAX_DAYS: f64 = 730.0;
 /// Upper clamp for quantization: ln(1+4e7 engagement) ≈ 17.5 plus max recency ≈ 24.3.
 pub const SCORE_MAX: f64 = 42.0;
 
+/// Aspect token for `$` + digit / price lexicon hits (RISKS T4).
+pub const ASPECT_PRICE: &str = "~price";
+
+#[derive(Clone, Copy, Debug)]
+pub struct EngagementWeights {
+    pub like: f64,
+    pub reply: f64,
+    pub retweet: f64,
+    pub quote: f64,
+}
+
+/// Weighted engagement as `ln(1 + …)` — shared by static scoring and boost propagation.
+#[must_use]
+pub fn engagement_ln1p(metrics: &Metrics, w: &EngagementWeights) -> f64 {
+    let engagement = f64::mul_add(
+        w.quote,
+        u64_as_f64(metrics.quotes),
+        f64::mul_add(
+            w.retweet,
+            u64_as_f64(metrics.retweets),
+            f64::mul_add(
+                w.reply,
+                u64_as_f64(metrics.replies),
+                w.like * u64_as_f64(metrics.likes),
+            ),
+        ),
+    );
+    engagement.ln_1p()
+}
+
 #[derive(Clone)]
 pub struct Config {
     pub stopwords: HashSet<String>,
     pub aspects: AspectLexicon, // parsed from shared/lexicons/aspects.json
-    pub engagement_weights: (f64, f64, f64, f64), // like, reply, rt, quote = 1,2,3,4
+    pub engagement_weights: EngagementWeights, // like, reply, rt, quote = 1,2,3,4
     pub bucket_count: u16,      // 256
     pub config_hash: String,    // hash of all of the above (RISKS O4)
 }
 
 #[derive(Clone)]
+pub struct AspectPatterns {
+    pub strong: Vec<String>,
+    pub weak: Vec<String>,
+}
+
+#[derive(Clone)]
 pub struct AspectLexicon {
-    /// aspect -> (strong phrase patterns, weak single words). Same semantics as
+    /// aspect -> strong phrase patterns / weak single words. Same semantics as
     /// `convex/engine/parse.ts::mapAspects` — weak needs content co-occurrence (G5).
-    pub aspects: HashMap<String, (Vec<String>, Vec<String>)>,
+    /// Keys are aspect terms (`~price`, …); patterns stay raw strings.
+    pub aspects: HashMap<Term, AspectPatterns>,
 }
 
 pub struct BatchBuilder {
     cfg: Config,
     tweets: Vec<TweetOut>,
     authors: Vec<AuthorOut>,
-    df: HashMap<String, i64>, // aggregated per batch — the OCC mitigation (O2)
+    df: HashMap<Term, i64>, // aggregated per batch — the OCC mitigation (O2)
     /// authorId -> handle, fed by `push_author` and kept across `take_batch` calls.
     /// A read-through denorm cache, not batch state: authors precede their tweets
     /// in file order (INGRESS §3.3); main.rs re-warms it on checkpoint resume.
-    handles: HashMap<String, String>,
+    handles: HashMap<AuthorId, Handle>,
 }
 
 impl BatchBuilder {
@@ -79,43 +111,24 @@ impl BatchBuilder {
 
     /// Warm the authorId -> handle cache without emitting an author row (used when
     /// resuming from a checkpoint past the author records).
-    pub fn learn_handle(&mut self, author_id: &str, handle: &str) {
-        self.handles
-            .insert(author_id.to_string(), handle.to_string());
+    pub fn learn_handle(&mut self, author_id: &AuthorId, handle: &Handle) {
+        self.handles.insert(author_id.clone(), handle.clone());
     }
 
     /// Idempotence note: dedupe-by-id happens Convex-side (ingestBatch semantics);
     /// the builder itself is deliberately stateless across batches.
-    ///
-    /// # Errors
-    ///
-    /// This currently returns an error only if future pipeline validation is
-    /// added; the transformation itself is infallible.
-    pub fn push_tweet(&mut self, t: TweetIn) -> Result<()> {
+    pub fn push_tweet(&mut self, t: TweetIn) {
         // 1. tokenize(text) -> tokens, counts, has_link.
         let tok = tokenize(&t.text, &self.cfg.stopwords);
         // 2. aspects = map_aspects(tokens, raw_text) -> extra postings, tf = 1.
         let aspects = map_aspects(&tok.tokens, &t.text, &self.cfg.aspects);
         // 3. static score + bucket (DESIGN §6.1 phase 1).
-        let (w_like, w_reply, w_rt, w_quote) = self.cfg.engagement_weights;
-        let engagement = f64::mul_add(
-            w_quote,
-            metric_as_f64(t.metrics.quotes),
-            f64::mul_add(
-                w_rt,
-                metric_as_f64(t.metrics.retweets),
-                f64::mul_add(
-                    w_reply,
-                    metric_as_f64(t.metrics.replies),
-                    w_like * metric_as_f64(t.metrics.likes),
-                ),
-            ),
-        );
-        let static_score = engagement.ln_1p() + recency_score(t.created_at);
+        let static_score =
+            engagement_ln1p(&t.metrics, &self.cfg.engagement_weights) + recency_score(t.created_at);
         let score_bucket = quantize(static_score, self.cfg.bucket_count);
         // 4. postings = unique terms + aspect tokens; df[term] += 1 each.
         //    BTreeMap iteration keeps posting order deterministic across runs.
-        let mut terms: BTreeMap<String, u32> = BTreeMap::new();
+        let mut terms: BTreeMap<Term, u32> = BTreeMap::new();
         for (term, tf) in &tok.counts {
             terms.insert(term.clone(), *tf);
         }
@@ -131,13 +144,17 @@ impl BatchBuilder {
         // 5. push TweetOut. media_type is the FIRST media item's type (collector
         //    order); tweets never mix types in practice and one enum value per
         //    tweet is the schema's contract.
-        let media_type = t.media.first().map_or(MediaType::None, |m| m.r#type);
-        // Orphan fallback matches INGRESS §3.3's stub rule: handle = id.
+        let media_type = t
+            .media
+            .first()
+            .map_or(MediaType::None, |m| MediaType::from(m.r#type));
+        // Orphan fallback matches INGRESS §3.3's stub rule: handle = id. The
+        // brand conversion is explicit because it crosses identity spaces.
         let author_handle = self
             .handles
             .get(&t.author_id)
             .cloned()
-            .unwrap_or_else(|| t.author_id.clone());
+            .unwrap_or_else(|| Handle(t.author_id.0.clone()));
         self.tweets.push(TweetOut {
             tweet_id: t.id,
             author_id: t.author_id,
@@ -158,14 +175,9 @@ impl BatchBuilder {
             score_bucket,
             postings,
         });
-        Ok(())
     }
 
-    /// # Errors
-    ///
-    /// This currently returns an error only if future pipeline validation is
-    /// added; the transformation itself is infallible.
-    pub fn push_author(&mut self, a: AuthorIn) -> Result<()> {
+    pub fn push_author(&mut self, a: AuthorIn) {
         let name_tokens = tokenize(&a.display_name, &self.cfg.stopwords).tokens;
         self.handles.insert(a.id.clone(), a.handle.clone());
         self.authors.push(AuthorOut {
@@ -178,7 +190,6 @@ impl BatchBuilder {
             verified: a.verified,
             is_stub: AuthorKind::Full,
         });
-        Ok(())
     }
 
     #[must_use]
@@ -224,21 +235,26 @@ pub fn recency_score(created_at_ms: i64) -> f64 {
 /// non-aspect content token (ASPECTS G5). `$` + digit in the original text is
 /// a `~price` signal (RISKS T4).
 #[must_use]
-pub fn map_aspects(tokens: &[String], raw_text: &str, lexicon: &AspectLexicon) -> Vec<String> {
+pub fn map_aspects(tokens: &[Term], raw_text: &str, lexicon: &AspectLexicon) -> Vec<Term> {
     let joined = format!(" {} ", tokens.join(" "));
-    let mut found: Vec<String> = Vec::new();
-    for (aspect, (strong, weak)) in &lexicon.aspects {
-        if strong.iter().any(|p| joined.contains(&format!(" {p} "))) {
+    let mut found: Vec<Term> = Vec::new();
+    for (aspect, patterns) in &lexicon.aspects {
+        if patterns
+            .strong
+            .iter()
+            .any(|p| joined.contains(&format!(" {p} ")))
+        {
             found.push(aspect.clone());
             continue;
         }
-        let weak_hits = weak
+        let weak_hits = patterns
+            .weak
             .iter()
             .filter(|w| joined.contains(&format!(" {w} ")))
             .count();
         let has_content = tokens
             .iter()
-            .any(|t| !t.starts_with('~') && !weak.contains(t));
+            .any(|t| !t.starts_with('~') && !patterns.weak.iter().any(|w| w == t.as_str()));
         if weak_hits > 0 && has_content {
             found.push(aspect.clone());
         }
@@ -247,8 +263,8 @@ pub fn map_aspects(tokens: &[String], raw_text: &str, lexicon: &AspectLexicon) -
         .as_bytes()
         .windows(2)
         .any(|w| w.first() == Some(&b'$') && w.get(1).is_some_and(u8::is_ascii_digit));
-    if dollar_digit && !found.iter().any(|a| a == "~price") {
-        found.push("~price".to_string());
+    if dollar_digit && !found.iter().any(|a| a.as_str() == ASPECT_PRICE) {
+        found.push(Term(ASPECT_PRICE.to_string()));
     }
     found.sort();
     found
@@ -275,22 +291,16 @@ pub fn quantize(static_score: f64, buckets: u16) -> u8 {
 /// `propagated_boost` values for `ingest::applyMetrics`.
 #[must_use]
 pub fn propagate_boosts<S: std::hash::BuildHasher>(
-    edges: &[(String, Option<String>, Option<String>)],
-    metrics: &HashMap<String, Metrics, S>,
-) -> HashMap<String, f64> {
+    edges: &[(TweetId, Option<TweetId>, Option<TweetId>)],
+    metrics: &HashMap<TweetId, Metrics, S>,
+    weights: &EngagementWeights,
+) -> HashMap<TweetId, f64> {
     let mut boosts = HashMap::new();
     for (tweet_id, quoted_id, retweeted_id) in edges {
         let Some(source) = metrics.get(tweet_id) else {
             continue;
         };
-        let engagement = 4.0f64.mul_add(
-            metric_as_f64(source.quotes),
-            3.0f64.mul_add(
-                metric_as_f64(source.retweets),
-                2.0f64.mul_add(metric_as_f64(source.replies), metric_as_f64(source.likes)),
-            ),
-        );
-        let boost = 0.5 * engagement.ln_1p();
+        let boost = 0.5 * engagement_ln1p(source, weights);
         for target in [quoted_id.as_ref(), retweeted_id.as_ref()]
             .into_iter()
             .flatten()
@@ -336,35 +346,41 @@ mod tests {
         // Matches shared/lexicons/aspects.json rows used below.
         let mut aspects = HashMap::new();
         aspects.insert(
-            "~price".to_string(),
-            (
-                vec!["pricing".to_string(), "too expensive".to_string()],
-                vec!["cheap".to_string(), "expensive".to_string()],
-            ),
+            Term(ASPECT_PRICE.to_string()),
+            AspectPatterns {
+                strong: vec!["pricing".to_string(), "too expensive".to_string()],
+                weak: vec!["cheap".to_string(), "expensive".to_string()],
+            },
         );
         AspectLexicon { aspects }
+    }
+
+    fn toks(s: &str) -> Vec<Term> {
+        s.split_whitespace().map(|w| Term(w.to_string())).collect()
     }
 
     #[test]
     fn aspects_mirror_ts_semantics() {
         let lex = lexicon();
-        let toks = |s: &str| s.split_whitespace().map(String::from).collect::<Vec<_>>();
         // strong phrase always fires
         assert_eq!(
             map_aspects(&toks("pricing linux boxes"), "", &lex),
-            vec!["~price"]
+            vec![Term(ASPECT_PRICE.to_string())]
         );
         // weak word needs a co-occurring content token
-        assert_eq!(map_aspects(&toks("cheap laptop"), "", &lex), vec!["~price"]);
-        assert_eq!(map_aspects(&toks("cheap"), "", &lex), Vec::<String>::new());
+        assert_eq!(
+            map_aspects(&toks("cheap laptop"), "", &lex),
+            vec![Term(ASPECT_PRICE.to_string())]
+        );
+        assert_eq!(map_aspects(&toks("cheap"), "", &lex), Vec::<Term>::new());
         assert_eq!(
             map_aspects(&toks("cheap cheap expensive"), "", &lex),
-            Vec::<String>::new()
+            Vec::<Term>::new()
         );
         // $+digit in the raw text is a ~price signal on its own
         assert_eq!(
             map_aspects(&toks("99 sale"), "only $99 sale", &lex),
-            vec!["~price"]
+            vec![Term(ASPECT_PRICE.to_string())]
         );
     }
 }

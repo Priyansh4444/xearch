@@ -6,6 +6,7 @@
 //! Any divergence is a red test, never a silent recall bug (RISKS T1).
 
 use crate::extended_pictographic::EXTENDED_PICTOGRAPHIC;
+use crate::ids::Term;
 use std::collections::HashMap;
 use unicode_general_category::{get_general_category, GeneralCategory};
 use unicode_normalization::UnicodeNormalization;
@@ -59,8 +60,8 @@ fn is_word(c: char) -> bool {
 
 #[derive(Debug, Default)]
 pub struct Tokenized {
-    pub tokens: Vec<String>,
-    pub counts: HashMap<String, u32>,
+    pub tokens: Vec<Term>,
+    pub counts: HashMap<Term, u32>,
     pub has_link: bool,
 }
 
@@ -78,10 +79,11 @@ pub fn tokenize<S: std::hash::BuildHasher>(
     //    tokenize.ts — it is observable behavior ("$99" vs "$tsla").
     // 4. Stopword drop; counts.
     let chars: Vec<char> = text.chars().collect();
-    let mut tokens: Vec<String> = Vec::new();
+    let mut tokens: Vec<Term> = Vec::new();
     let mut push = |t: String| {
+        // The tokenizer is THE producer of the Term space: this wrap seals it.
         if !t.is_empty() && !stopwords.contains(&t) {
-            tokens.push(t);
+            tokens.push(Term(t));
         }
     };
 
@@ -120,7 +122,7 @@ pub fn tokenize<S: std::hash::BuildHasher>(
         }
     }
 
-    let mut counts: HashMap<String, u32> = HashMap::new();
+    let mut counts: HashMap<Term, u32> = HashMap::new();
     for t in &tokens {
         let count = counts.entry(t.clone()).or_insert(0);
         *count = count.saturating_add(1);
@@ -228,13 +230,16 @@ mod tests {
     #[test]
     fn word_predicate_matches_unicode_general_category_l() {
         let stopwords = std::collections::HashSet::new();
-        assert_eq!(tokenize("का", &stopwords).tokens, vec!["क"]);
+        assert_eq!(
+            tokenize("का", &stopwords).tokens,
+            vec![Term("क".to_string())]
+        );
     }
 
     #[derive(serde::Deserialize)]
     struct GoldenCase {
         text: String,
-        tokens: Vec<String>,
+        tokens: Vec<Term>,
         #[serde(rename = "hasLink")]
         has_link: bool,
     }

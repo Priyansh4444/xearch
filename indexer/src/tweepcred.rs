@@ -3,6 +3,8 @@
 //! This is weighted `PageRank` with Twitter's hyperparameters, post-adjusted
 //! by follower/following ratio. It runs in `refresh` mode.
 
+use crate::ids::AuthorId;
+use crate::num::usize_as_f64;
 use std::collections::HashMap;
 
 pub const JUMP_PROB: f64 = 0.1;
@@ -15,25 +17,18 @@ pub const W_RETWEET: f64 = 2.0;
 pub const W_REPLY: f64 = 1.5;
 pub const W_MENTION: f64 = 1.0;
 
-fn usize_as_f64(value: usize) -> f64 {
-    let value = u64::try_from(value).unwrap_or(u64::MAX);
-    let high = u32::try_from(value >> 32).unwrap_or(u32::MAX);
-    let low = u32::try_from(value & u64::from(u32::MAX)).unwrap_or(0);
-    f64::from(high).mul_add(4_294_967_296.0, f64::from(low))
-}
-
 pub struct InteractionGraph {
     /// src author -> [(dst author, weight)]; built from quoted/retweetOf/inReplyTo
     /// edges + mention entities across the corpus snapshot.
-    pub edges: HashMap<String, Vec<(String, f64)>>,
-    pub follower_ratio: HashMap<String, f64>, // followers / max(following, 1)
+    pub edges: HashMap<AuthorId, Vec<(AuthorId, f64)>>,
+    pub follower_ratio: HashMap<AuthorId, f64>, // followers / max(following, 1)
 }
 
 /// Power iteration until convergence or `MAX_ITERATIONS`. At hackathon scale
 /// (<=100k authors) this is seconds of CPU — a loop, not infrastructure.
 #[must_use]
-pub fn tweepcred(graph: &InteractionGraph) -> HashMap<String, f64> {
-    let nodes: Vec<&String> = graph
+pub fn tweepcred(graph: &InteractionGraph) -> HashMap<AuthorId, f64> {
+    let nodes: Vec<&AuthorId> = graph
         .edges
         .keys()
         .chain(graph.edges.values().flatten().map(|(node, _)| node))
@@ -44,12 +39,12 @@ pub fn tweepcred(graph: &InteractionGraph) -> HashMap<String, f64> {
         return HashMap::new();
     }
     let initial = 1.0 / usize_as_f64(nodes.len());
-    let mut scores: HashMap<String, f64> = nodes
+    let mut scores: HashMap<AuthorId, f64> = nodes
         .iter()
         .map(|node| ((*node).clone(), initial))
         .collect();
     for _ in 0..MAX_ITERATIONS {
-        let mut next: HashMap<String, f64> = nodes
+        let mut next: HashMap<AuthorId, f64> = nodes
             .iter()
             .map(|node| ((*node).clone(), JUMP_PROB * initial))
             .collect();

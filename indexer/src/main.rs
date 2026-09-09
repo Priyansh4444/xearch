@@ -9,10 +9,12 @@ use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use xearch_indexer::checkpoint::Checkpoint;
 use xearch_indexer::convex_api::ConvexClient;
+use xearch_indexer::ids::Term;
 use xearch_indexer::model::IngressRecord;
+use xearch_indexer::num::u64_as_f64;
 use xearch_indexer::pipeline::{
-    AspectLexicon, BatchBuilder, Config, RECENCY_EPOCH_MS, RECENCY_MAX_DAYS, RECENCY_PER_DAY,
-    SCORE_MAX,
+    AspectLexicon, AspectPatterns, BatchBuilder, Config, EngagementWeights, RECENCY_EPOCH_MS,
+    RECENCY_MAX_DAYS, RECENCY_PER_DAY, SCORE_MAX,
 };
 use xearch_indexer::tokenizer::TOKENIZER_VERSION;
 
@@ -100,6 +102,13 @@ fn backfill(cli: &Cli) -> Result<()> {
             std::fs::File::open(file).with_context(|| format!("opening {name}"))?,
         );
         let mut next_offset = offset;
+        let mut flush_ctx = FlushContext {
+            client: &client,
+            builder: &mut builder,
+            checkpoint: &mut checkpoint,
+            cli,
+            stats: &mut stats,
+        };
         for (idx, line) in reader.lines().enumerate() {
             let idx = u64::try_from(idx).unwrap_or(u64::MAX);
             let line = line.with_context(|| format!("reading {name}:{idx}"))?;
@@ -107,7 +116,7 @@ fn backfill(cli: &Cli) -> Result<()> {
                 // Already acked in a previous run — re-warm the handle cache only
                 // (authors precede their tweets; a resume must not forget them).
                 if let Ok(IngressRecord::Author(a)) = serde_json::from_str(&line) {
-                    builder.learn_handle(&a.id, &a.handle);
+                    flush_ctx.builder.learn_handle(&a.id, &a.handle);
                 }
                 continue;
             }
@@ -117,55 +126,41 @@ fn backfill(cli: &Cli) -> Result<()> {
             }
             match parse_and_gate(&line) {
                 Ok(IngressRecord::Tweet(t)) => {
-                    builder.push_tweet(t)?;
-                    stats.tweets = stats.tweets.saturating_add(1);
+                    flush_ctx.builder.push_tweet(t);
+                    flush_ctx.stats.tweets = flush_ctx.stats.tweets.saturating_add(1);
                 }
                 Ok(IngressRecord::Author(a)) => {
-                    builder.push_author(a)?;
-                    stats.authors = stats.authors.saturating_add(1);
+                    flush_ctx.builder.push_author(a);
+                    flush_ctx.stats.authors = flush_ctx.stats.authors.saturating_add(1);
                 }
                 Err(reason) => {
                     quarantine(&cli.quarantine, &name, &line, &reason)?;
-                    stats.quarantined = stats.quarantined.saturating_add(1);
+                    flush_ctx.stats.quarantined = flush_ctx.stats.quarantined.saturating_add(1);
                 }
             }
             next_offset = idx.saturating_add(1);
-            if builder.is_full() {
-                flush(
-                    &mut FlushContext {
-                        client: &client,
-                        builder: &mut builder,
-                        checkpoint: &mut checkpoint,
-                        cli,
-                        stats: &mut stats,
-                    },
-                    &name,
-                    next_offset,
-                )?;
+            if flush_ctx.builder.is_full() {
+                flush_ctx.flush(&name, next_offset)?;
             }
-            if cli.limit.is_some_and(|limit| stats.tweets >= limit) {
+            if cli
+                .limit
+                .is_some_and(|limit| flush_ctx.stats.tweets >= limit)
+            {
                 break;
             }
         }
         // Flush at the file boundary so offsets never describe a half-acked file.
-        if !builder.is_empty() {
-            flush(
-                &mut FlushContext {
-                    client: &client,
-                    builder: &mut builder,
-                    checkpoint: &mut checkpoint,
-                    cli,
-                    stats: &mut stats,
-                },
-                &name,
-                next_offset,
-            )?;
+        if !flush_ctx.builder.is_empty() {
+            flush_ctx.flush(&name, next_offset)?;
         }
         // All pending records have been acknowledged. Persist progress even if
         // the suffix contained only blank or quarantined lines.
-        checkpoint.offsets.insert(name.clone(), next_offset);
-        checkpoint.store(&cli.checkpoint)?;
-        if limit_reached(cli, &stats) {
+        flush_ctx
+            .checkpoint
+            .offsets
+            .insert(name.clone(), next_offset);
+        flush_ctx.checkpoint.store(&cli.checkpoint)?;
+        if limit_reached(cli, flush_ctx.stats) {
             report_limit(cli);
             break;
         }
@@ -214,26 +209,27 @@ struct FlushContext<'a> {
     stats: &'a mut Stats,
 }
 
-fn flush(context: &mut FlushContext<'_>, file: &str, next_offset: u64) -> Result<()> {
-    let batch = context.builder.take_batch();
-    let ack = context.client.ingest_batch(&batch)?;
-    context.stats.batches = context.stats.batches.saturating_add(1);
-    context
-        .checkpoint
-        .offsets
-        .insert(file.to_string(), next_offset);
-    context.checkpoint.store(&context.cli.checkpoint)?; // AFTER the ack — crash-resume without dupes/gaps
-    eprintln!(
-        "batch {}: {} tweets ({} inserted, {} updated, {} skipped), {} authors, {} df terms — {file}:{next_offset}",
-        context.stats.batches,
-        batch.tweets.len(),
-        ack.inserted,
-        ack.updated,
-        ack.skipped,
-        batch.authors.len(),
-        batch.df_deltas.len()
-    );
-    Ok(())
+impl FlushContext<'_> {
+    fn flush(&mut self, file: &str, next_offset: u64) -> Result<()> {
+        let batch = self.builder.take_batch();
+        let ack = self.client.ingest_batch(&batch)?;
+        self.stats.batches = self.stats.batches.saturating_add(1);
+        self.checkpoint
+            .offsets
+            .insert(file.to_string(), next_offset);
+        self.checkpoint.store(&self.cli.checkpoint)?; // AFTER the ack — crash-resume without dupes/gaps
+        eprintln!(
+            "batch {}: {} tweets ({} inserted, {} updated, {} skipped), {} authors, {} df terms — {file}:{next_offset}",
+            self.stats.batches,
+            batch.tweets.len(),
+            ack.inserted,
+            ack.updated,
+            ack.skipped,
+            batch.authors.len(),
+            batch.df_deltas.len()
+        );
+        Ok(())
+    }
 }
 
 /// serde is the parser; the INGRESS §5 sanity gates run on top of it.
@@ -318,13 +314,34 @@ fn load_config(lexicons: &Path) -> Result<Config> {
                 })
                 .unwrap_or_default()
         };
-        aspects.insert(name.clone(), (list("strong"), list("weak")));
+        aspects.insert(
+            Term(name.clone()),
+            AspectPatterns {
+                strong: list("strong"),
+                weak: list("weak"),
+            },
+        );
     }
 
-    let engagement_weights = (1.0, 2.0, 3.0, 4.0); // like, reply, rt, quote (DESIGN §6.1)
+    let engagement_weights = EngagementWeights {
+        like: 1.0,
+        reply: 2.0,
+        retweet: 3.0,
+        quote: 4.0,
+    }; // like, reply, rt, quote (DESIGN §6.1)
     let bucket_count: u16 = 256;
+    // Debug of the old `(f64,f64,f64,f64)` tuple — keep byte-identical for config_hash.
+    let weights_dbg = format!(
+        "{:?}",
+        (
+            engagement_weights.like,
+            engagement_weights.reply,
+            engagement_weights.retweet,
+            engagement_weights.quote
+        )
+    );
     let params = format!(
-        "tokenizerVersion={TOKENIZER_VERSION};aspectMapping=2;weights={engagement_weights:?};buckets={bucket_count};recency={RECENCY_EPOCH_MS},{RECENCY_PER_DAY},{RECENCY_MAX_DAYS};scoreMax={SCORE_MAX}"
+        "tokenizerVersion={TOKENIZER_VERSION};aspectMapping=2;weights={weights_dbg};buckets={bucket_count};recency={RECENCY_EPOCH_MS},{RECENCY_PER_DAY},{RECENCY_MAX_DAYS};scoreMax={SCORE_MAX}"
     );
     let config_hash = format!(
         "fnv1a64:{:016x}",
@@ -354,10 +371,4 @@ fn fnv1a64(parts: &[&[u8]]) -> u64 {
         }
     }
     hash
-}
-
-fn u64_as_f64(value: u64) -> f64 {
-    let high = u32::try_from(value >> 32).unwrap_or(u32::MAX);
-    let low = u32::try_from(value & u64::from(u32::MAX)).unwrap_or(0);
-    f64::from(high).mul_add(4_294_967_296.0, f64::from(low))
 }
