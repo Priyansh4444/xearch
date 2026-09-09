@@ -12,3 +12,4 @@ done/
 !.env.r2.example
 .wrangler/
 .DS_Store
+.delta/
