@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import * as Effect from "effect/Effect";
-import { makeFxTwitterClient } from "../acquisition/fxtwitter.ts";
+import { FxTwitterLive } from "../acquisition/fxtwitter.ts";
 import {
   runTimelineProbeEffect,
   type ProbeOptions,
@@ -21,12 +21,14 @@ const ProbeFlag = {
 
 const main = Effect.fn("cli.probe")(function* () {
   const options = parseArguments(process.argv.slice(2));
-  const client = makeFxTwitterClient({
-    baseUrl: options.baseUrl,
-    timeoutMs: options.timeoutMs,
-    retries: options.retries,
-  });
-  const report = yield* runTimelineProbeEffect(client, options);
+  const report = yield* Effect.provide(
+    runTimelineProbeEffect(options),
+    FxTwitterLive({
+      baseUrl: options.baseUrl,
+      timeoutMs: options.timeoutMs,
+      retries: options.retries,
+    }),
+  );
   printSummary(report, options.outputDirectory);
 });
 

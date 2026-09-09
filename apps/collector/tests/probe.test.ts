@@ -8,6 +8,7 @@ import {
   FxTwitterError,
   FxTwitterErrorKind,
   type FxTwitterJson,
+  type PilotClient,
   type TimelineClient,
   type TimelineRequest,
   type TimelineResponse,
@@ -128,7 +129,7 @@ describe("timeline probe", () => {
 });
 
 function fixedClient(responses: ReturnType<typeof timelineResponse>[]): {
-  client: TimelineClient;
+  client: PilotClient;
   requests: TimelineRequest[];
 } {
   const requests: TimelineRequest[] = [];
@@ -145,7 +146,7 @@ function fixedClient(responses: ReturnType<typeof timelineResponse>[]): {
 
 function timelineClientFromPromises(
   fetchTimelinePage: (request: TimelineRequest) => Promise<TimelineResponse>,
-): TimelineClient {
+): PilotClient {
   const baseUrl = "https://api.fxtwitter.com";
   return {
     baseUrl,
@@ -171,6 +172,12 @@ function timelineClientFromPromises(
               retryDelay: 0,
             }),
       }),
+    // Probe never resolves profiles; loud stubs keep the fake honest.
+    profileUrl: (handle) => `${baseUrl}/2/profile/${encodeURIComponent(handle)}`,
+    fetchProfile: async () => {
+      throw new Error("profile lookup not used by probe tests");
+    },
+    fetchProfileEffect: () => Effect.die(new Error("profile lookup not used by probe tests")),
   };
 }
 

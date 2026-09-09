@@ -3,7 +3,9 @@
 // records; that is normalization's job (apps/collector/src/normalization).
 
 import * as Data from "effect/Data";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
@@ -149,6 +151,24 @@ export interface ProfileClient {
 }
 
 export type PilotClient = TimelineClient & ProfileClient;
+
+/** Dependency-injection seam for the acquisition client. Only introduced where
+ * it helps tests: layers let specs swap a fake transport (and TestClock) with
+ * `Effect.provide`, instead of threading options through every call site. */
+export class FxTwitter extends Context.Service<FxTwitter, PilotClient>()("FxTwitter") {}
+
+/** Production layer: a real client from options. */
+export function FxTwitterLive(options: FxTwitterClientOptions = {}): Layer.Layer<FxTwitter> {
+  return Layer.succeed(FxTwitter, makeFxTwitterClient(options));
+}
+
+/** Test layer: a client over a fake `fetch` (pair with TestClock for sleeps). */
+export function FxTwitterTest(
+  fetchImpl: typeof fetch,
+  options: Omit<FxTwitterClientOptions, "fetchImpl"> = {},
+): Layer.Layer<FxTwitter> {
+  return Layer.succeed(FxTwitter, makeFxTwitterClient({ ...options, fetchImpl }));
+}
 
 export interface FxTwitterClientOptions {
   baseUrl?: string;
