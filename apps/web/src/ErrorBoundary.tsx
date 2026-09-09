@@ -4,13 +4,7 @@ interface State {
   error: Error | null;
 }
 
-function SearchErrorFallback({
-  error,
-  onRetry,
-}: {
-  error: Error;
-  onRetry: () => void;
-}): ReactNode {
+function SearchErrorFallback({ error, onRetry }: { error: Error; onRetry: () => void }): ReactNode {
   return (
     <div className="error-state" role="alert">
       <p className="error-title">Search is unreachable.</p>

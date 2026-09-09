@@ -23,8 +23,7 @@ export const TOKENIZER_VERSION = 1;
 
 const STOP = new Set<string>(stopwordsFile.stopwords);
 const URL_RE = /(?:https?:\/\/|www\.)\S+/g;
-const CJK_RE =
-  /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]/;
+const CJK_RE = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]/;
 const EMOJI_RE = /\p{Extended_Pictographic}/u;
 const WORD_RE = /[\p{L}\p{N}_]/u;
 
@@ -125,11 +124,7 @@ function takeWordRun(chars: string[], start: number): [string, number] {
   return [out, i];
 }
 
-function takeRun(
-  chars: string[],
-  start: number,
-  pred: (c: string) => boolean,
-): [string, number] {
+function takeRun(chars: string[], start: number, pred: (c: string) => boolean): [string, number] {
   let i = start;
   let out = "";
   while (i < chars.length && pred(chars[i]!)) {

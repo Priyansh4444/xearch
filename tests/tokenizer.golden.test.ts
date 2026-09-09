@@ -12,18 +12,16 @@ interface GoldenCase {
   note: string;
 }
 
-const fixture = readFileSync(
-  join(__dirname, "../shared/fixtures/tokenizer-golden.jsonl"),
-  "utf8",
-);
+const fixture = readFileSync(join(__dirname, "../shared/fixtures/tokenizer-golden.jsonl"), "utf8");
 
 describe("tokenizer golden parity", () => {
-  for (const line of fixture.split("\n").filter((l) => l.trim().length > 0)) {
-    const c = JSON.parse(line) as GoldenCase;
-    it(c.note, () => {
-      const got = tokenize(c.text);
-      expect(got.tokens).toEqual(c.tokens);
-      expect(got.hasLink).toBe(c.hasLink);
-    });
-  }
+  const cases = fixture
+    .split("\n")
+    .filter((l) => l.trim().length > 0)
+    .map((line) => JSON.parse(line) as GoldenCase);
+  it.each(cases)("$note", (c) => {
+    const got = tokenize(c.text);
+    expect(got.tokens).toEqual(c.tokens);
+    expect(got.hasLink).toBe(c.hasLink);
+  });
 });

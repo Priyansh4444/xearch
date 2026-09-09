@@ -12,7 +12,7 @@ export const semanticRescue = action({
     queryText: v.string(), // original terms joined — or the HyDE doc when cached
     media: v.optional(visualMediaTypeValidator),
   },
-  handler: async (ctx, args) => {
+  handler: async (_ctx, _args) => {
     // TODO(implement):
     // 1. Embed queryText via the same model family the indexer used (env-var'd
     //    endpoint; 384-dim text tower). Dimension mismatch = hard error, not fuzz.

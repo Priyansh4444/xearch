@@ -76,7 +76,8 @@ export function buildSummary(snapshot: Snapshot): Summary {
   const byId = new Map<string, RunSummary>();
   for (const run of snapshot.runs) {
     const existing = byId.get(run.runId);
-    if (existing === undefined || (existing.kind === "live" && run.kind === "archived")) byId.set(run.runId, run);
+    if (existing === undefined || (existing.kind === "live" && run.kind === "archived"))
+      byId.set(run.runId, run);
   }
   const distinct = [...byId.values()].sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
 
@@ -120,18 +121,20 @@ export function buildSummary(snapshot: Snapshot): Summary {
     totals.rowsReturned += run.rowsReturned ?? 0;
   }
 
-  const live = snapshot.runs.find((run) => run.kind === "live" && run.status === "in_progress") ?? null;
+  const live =
+    snapshot.runs.find((run) => run.kind === "live" && run.status === "in_progress") ?? null;
   const latest = distinct[0] ?? null;
   const reported = distinct.find((run) => run.report !== null) ?? null;
-  const quality: Summary["quality"] = reported && reported.report
-    ? {
-        runId: reported.runId,
-        generatedAt: reported.report.generatedAt,
-        passed: reported.report.thresholds.passed,
-        checks: reported.report.thresholds.checks,
-        acceptance: reported.acceptance,
-      }
-    : null;
+  const quality: Summary["quality"] =
+    reported && reported.report
+      ? {
+          runId: reported.runId,
+          generatedAt: reported.report.generatedAt,
+          passed: reported.report.thresholds.passed,
+          checks: reported.report.thresholds.checks,
+          acceptance: reported.acceptance,
+        }
+      : null;
 
   return {
     generatedAt: snapshot.generatedAt,

@@ -26,8 +26,9 @@ export function parseNonEmptyString(value: unknown): string | null {
   return parsed.value;
 }
 
-export function normalizeHandle(value: string | null): string | null {
-  return value === null ? null : value.replace(/^@/, "").toLowerCase();
+export function normalizeHandle(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  return value.replace(/^@/, "").toLowerCase();
 }
 
 export function formatCount(value: number | null): string {

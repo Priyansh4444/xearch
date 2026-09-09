@@ -30,7 +30,11 @@ export interface RunPaths {
 export const ACTIVE_ROOT = "runs";
 export const ARCHIVE_ROOT = "old";
 
-export function runPaths(dataDir: string, root: typeof ACTIVE_ROOT | typeof ARCHIVE_ROOT, runId: string): RunPaths {
+export function runPaths(
+  dataDir: string,
+  root: typeof ACTIVE_ROOT | typeof ARCHIVE_ROOT,
+  runId: string,
+): RunPaths {
   const base = join(dataDir, root, runId);
   return outputPaths(base);
 }
@@ -71,7 +75,10 @@ export const PROFILE_FILE = "profile.json";
 export const PROFILE_META_FILE = "profile.meta.json";
 
 export function createRunId(now: Date, label = "pilot"): string {
-  const stamp = now.toISOString().replace(/[:.]/g, "-").replace(/-\d{3}Z$/, "Z");
+  const stamp = now
+    .toISOString()
+    .replace(/[:.]/g, "-")
+    .replace(/-\d{3}Z$/, "Z");
   return `${stamp}-${label}`;
 }
 

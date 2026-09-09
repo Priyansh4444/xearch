@@ -109,10 +109,15 @@ interface Occurrence {
   receivedAt: number;
 }
 
-export function normalizePages(pages: RawPageInput[], options: NormalizeOptions): NormalizationResult {
+export function normalizePages(
+  pages: RawPageInput[],
+  options: NormalizeOptions,
+): NormalizationResult {
   const accountOrder = new Map(options.accounts.map((account, index) => [account.userId, index]));
   const ordered = [...pages].sort((a, b) => {
-    const accountDelta = (accountOrder.get(a.accountUserId) ?? Number.MAX_SAFE_INTEGER) - (accountOrder.get(b.accountUserId) ?? Number.MAX_SAFE_INTEGER);
+    const accountDelta =
+      (accountOrder.get(a.accountUserId) ?? Number.MAX_SAFE_INTEGER) -
+      (accountOrder.get(b.accountUserId) ?? Number.MAX_SAFE_INTEGER);
     return accountDelta !== 0 ? accountDelta : a.page - b.page;
   });
 
@@ -215,7 +220,11 @@ export function normalizePages(pages: RawPageInput[], options: NormalizeOptions)
       duplicates.push({
         kind: "duplicate",
         tweetId: tweet.id,
-        firstSeen: { accountUserId: existing.accountUserId, page: existing.page, origin: existing.origin },
+        firstSeen: {
+          accountUserId: existing.accountUserId,
+          page: existing.page,
+          origin: existing.origin,
+        },
         again: { accountUserId: context.accountUserId, page: context.page, origin: context.origin },
         metricsRefreshed: refresh,
       });
@@ -258,7 +267,8 @@ export function normalizePages(pages: RawPageInput[], options: NormalizeOptions)
     const authorId = occurrence.tweet.authorId;
     if (!emittedAuthors.has(authorId)) {
       const author = authors.get(authorId);
-      if (author === undefined) throw new Error(`author ${authorId} missing for accepted tweet ${id}`);
+      if (author === undefined)
+        throw new Error(`author ${authorId} missing for accepted tweet ${id}`);
       ingressLines.push(JSON.stringify(author.author));
       emittedAuthors.add(authorId);
     }
@@ -267,8 +277,10 @@ export function normalizePages(pages: RawPageInput[], options: NormalizeOptions)
     counts.accepted[occurrence.origin] += 1;
     perAuthor.set(authorId, (perAuthor.get(authorId) ?? 0) + 1);
     const createdAt = occurrence.tweet.createdAt;
-    counts.oldestCreatedAt = counts.oldestCreatedAt === null ? createdAt : Math.min(counts.oldestCreatedAt, createdAt);
-    counts.newestCreatedAt = counts.newestCreatedAt === null ? createdAt : Math.max(counts.newestCreatedAt, createdAt);
+    counts.oldestCreatedAt =
+      counts.oldestCreatedAt === null ? createdAt : Math.min(counts.oldestCreatedAt, createdAt);
+    counts.newestCreatedAt =
+      counts.newestCreatedAt === null ? createdAt : Math.max(counts.newestCreatedAt, createdAt);
   }
   counts.authors = emittedAuthors.size;
 
@@ -337,12 +349,12 @@ export const readRunPagesEffect = Effect.fn("readRunPages")(function* (
           cause instanceof FxTwitterError
             ? cause
             : new FxTwitterError({
-              message: `FxTwitter timeline decode failed: ${cause instanceof Error ? cause.message : String(cause)}`,
-              status: 200,
-              responseBody: null,
-              kind: FxTwitterErrorKind.Decode,
-              retryDelay: 0,
-            }),
+                message: `FxTwitter timeline decode failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+                status: 200,
+                responseBody: null,
+                kind: FxTwitterErrorKind.Decode,
+                retryDelay: 0,
+              }),
       });
       const meta = (yield* readJsonEffect(join(directory, pageMetaFileName(page)))) as PageMeta;
       pages.push({
@@ -374,7 +386,10 @@ export function normalizeOptionsFor(manifest: Manifest, config: PilotConfig): No
   };
 }
 
-export async function writeNormalizationOutput(paths: RunPaths, result: NormalizationResult): Promise<void> {
+export async function writeNormalizationOutput(
+  paths: RunPaths,
+  result: NormalizationResult,
+): Promise<void> {
   return Effect.runPromise(writeNormalizationOutputEffect(paths, result));
 }
 

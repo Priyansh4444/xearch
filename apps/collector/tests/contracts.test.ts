@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, it, test } from "vitest";
 import {
   formatCount,
   normalizeHandle,
@@ -17,11 +17,23 @@ import {
   isStatusRow,
   isTombstoneRow,
   parseProviderFacetType,
+  parseProviderStatusType,
+  ProviderFacetType,
+  ProviderStatusType,
 } from "../src/contracts/provider.ts";
 import {
+  isAdmissibleDiscoveryResolution,
+  isFinishedAccountState,
+  isNormalizableAcquisitionStatus,
+  isOpenAccountState,
+  needsIdentityResolution,
   parseAccountState,
   parseDiscoveryResolution,
   parsePauseReason,
+  AccountState,
+  AcquisitionStatus,
+  DiscoveryResolution,
+  PauseReason,
 } from "../src/contracts/run-state.ts";
 import {
   type AuthorId,
@@ -33,45 +45,157 @@ import {
 } from "../src/contracts/ids.ts";
 
 describe("collector shared contracts", () => {
-  test("parses only finite, non-negative numeric boundary values", () => {
-    expect(parseFiniteNumber(Number.NaN)).toBeNull();
-    expect(parseFiniteNumber(Number.POSITIVE_INFINITY)).toBeNull();
-    expect(parseNonNegativeNumber(-1)).toBeNull();
-    expect(parseNonNegativeNumber(0)).toBe(0);
+  it.each([
+    { value: Number.NaN, finite: null, nonNegative: null },
+    { value: Number.POSITIVE_INFINITY, finite: null, nonNegative: null },
+    { value: Number.NEGATIVE_INFINITY, finite: null, nonNegative: null },
+    { value: -1, finite: -1, nonNegative: null },
+    { value: -0.5, finite: -0.5, nonNegative: null },
+    { value: 0, finite: 0, nonNegative: 0 },
+    { value: 1, finite: 1, nonNegative: 1 },
+    { value: 1.5, finite: 1.5, nonNegative: 1.5 },
+    { value: "1", finite: null, nonNegative: null },
+    { value: null, finite: null, nonNegative: null },
+    { value: undefined, finite: null, nonNegative: null },
+    { value: {}, finite: null, nonNegative: null },
+  ])("numeric boundary $value", ({ value, finite, nonNegative }) => {
+    expect(parseFiniteNumber(value)).toBe(finite);
+    expect(parseNonNegativeNumber(value)).toBe(nonNegative);
   });
 
-  test("normalizes non-empty handles without accepting blank values", () => {
-    expect(parseNonEmptyString("  handle  ")).toBe("  handle  ");
-    expect(parseNonEmptyString("   ")).toBeNull();
-    expect(normalizeHandle("@Handle")).toBe("handle");
-    expect(normalizeHandle(null)).toBeNull();
+  it.each([
+    { value: "  handle  ", parsed: "  handle  ", normalized: "  handle  " },
+    { value: "   ", parsed: null, normalized: "   " },
+    { value: "", parsed: null, normalized: "" },
+    { value: "@Handle", parsed: "@Handle", normalized: "handle" },
+    { value: "@NASA", parsed: "@NASA", normalized: "nasa" },
+    { value: "NASA", parsed: "NASA", normalized: "nasa" },
+    { value: 42, parsed: null, normalized: null },
+    { value: null, parsed: null, normalized: null },
+  ])("string boundary %j", ({ value, parsed, normalized }) => {
+    expect(parseNonEmptyString(value)).toBe(parsed);
+    expect(normalizeHandle(value as string | null)).toBe(normalized);
   });
 
-  test("shares formatting and aggregate behavior", () => {
-    expect(formatCount(null)).toBe("—");
-    expect(formatCount(1_234)).toBe("1,234");
-    expect(mean([])).toBeNull();
-    expect(mean([2, 4])).toBe(3);
-    expect(percentile([10, 20, 30], 0.5)).toBe(20);
+  it.each([
+    { value: null, formatted: "—" },
+    { value: 0, formatted: "0" },
+    { value: 1_234, formatted: "1,234" },
+    { value: 1_000_000, formatted: "1,000,000" },
+  ])("formatCount $value", ({ value, formatted }) => {
+    expect(formatCount(value)).toBe(formatted);
   });
 
-  test("keeps provider media values closed at the acquisition boundary", () => {
-    // Unknown future formats decode to absence, never throw and never pass.
-    expect(parseProviderMediaType("future_format")).toBeNull();
-    expect(parseProviderMediaType(null)).toBeNull();
-    expect(parseProviderMediaType(42)).toBeNull();
-    // The mosaic/photo collapse is the one mapping that must never drift.
-    expect(toIngressMediaType(ProviderMediaType.MosaicPhoto)).toBe(IngressMediaType.Image);
+  it.each([
+    { values: [], expected: null },
+    { values: [2, 4], expected: 3 },
+    { values: [5], expected: 5 },
+    { values: [-2, 2], expected: 0 },
+    { values: [1, 2, 3, 4], expected: 2.5 },
+  ])("mean $values", ({ values, expected }) => {
+    expect(mean(values)).toBe(expected);
   });
 
-  test("closes run-state and provider string unions at decode time", () => {
-    expect(parseAccountState("running")).toBeNull();
-    expect(parsePauseReason("timeout")).toBeNull();
-    expect(parseDiscoveryResolution("pending")).toBeNull();
-    expect(parseProviderFacetType("emoji")).toBeNull();
-    expect(parseProviderFacetType(null)).toBeNull();
-    expect(isStatusRow("deleted")).toBe(false);
-    expect(isTombstoneRow(null)).toBe(false);
+  it.each([
+    { sorted: [], fraction: 0.5, expected: null },
+    { sorted: [10, 20, 30], fraction: 0.5, expected: 20 },
+    { sorted: [10, 20, 30], fraction: 0, expected: 10 },
+    { sorted: [10, 20, 30], fraction: 1, expected: 30 },
+    { sorted: [10, 20, 30], fraction: 0.34, expected: 20 },
+    { sorted: [7], fraction: 0.99, expected: 7 },
+  ])("percentile $sorted @ $fraction", ({ sorted, fraction, expected }) => {
+    expect(percentile(sorted, fraction)).toBe(expected);
+  });
+
+  it.each([
+    { value: "photo", parsed: ProviderMediaType.Photo, ingress: IngressMediaType.Image },
+    {
+      value: "mosaic_photo",
+      parsed: ProviderMediaType.MosaicPhoto,
+      ingress: IngressMediaType.Image,
+    },
+    { value: "video", parsed: ProviderMediaType.Video, ingress: IngressMediaType.Video },
+    { value: "gif", parsed: ProviderMediaType.Gif, ingress: IngressMediaType.Gif },
+    { value: "future_format", parsed: null, ingress: null },
+    { value: null, parsed: null, ingress: null },
+    { value: 42, parsed: null, ingress: null },
+    { value: "IMAGE", parsed: null, ingress: null },
+    { value: "", parsed: null, ingress: null },
+  ])("provider media boundary %j", ({ value, parsed, ingress }) => {
+    expect(parseProviderMediaType(value)).toBe(parsed);
+    if (parsed !== null) expect(toIngressMediaType(parsed)).toBe(ingress);
+  });
+
+  it.each([
+    { value: "status", status: true, tombstone: false },
+    { value: "tombstone", status: false, tombstone: true },
+    { value: "deleted", status: false, tombstone: false },
+    { value: "emoji", status: false, tombstone: false },
+    { value: null, status: false, tombstone: false },
+    { value: 42, status: false, tombstone: false },
+    { value: "STATUS", status: false, tombstone: false },
+  ])("provider row kind %j", ({ value, status, tombstone }) => {
+    expect(isStatusRow(value)).toBe(status);
+    expect(isTombstoneRow(value)).toBe(tombstone);
+  });
+
+  it.each([
+    { value: "hashtag", parsed: ProviderFacetType.Hashtag },
+    { value: "mention", parsed: ProviderFacetType.Mention },
+    { value: "url", parsed: ProviderFacetType.Url },
+    { value: "emoji", parsed: null },
+    { value: null, parsed: null },
+    { value: "", parsed: null },
+  ])("provider facet %j", ({ value, parsed }) => {
+    expect(parseProviderFacetType(value)).toBe(parsed);
+  });
+
+  it.each([
+    { value: "status", parsed: ProviderStatusType.Status },
+    { value: "tombstone", parsed: ProviderStatusType.Tombstone },
+    { value: "deleted", parsed: null },
+    { value: null, parsed: null },
+  ])("provider status %j", ({ value, parsed }) => {
+    expect(parseProviderStatusType(value)).toBe(parsed);
+  });
+
+  it.each(Object.values(AccountState))("account state %j round-trips and classifies", (state) => {
+    expect(parseAccountState(state)).toBe(state);
+    expect(isOpenAccountState(state)).toBe(
+      state === "pending" || state === "active" || state === "paused",
+    );
+    expect(isFinishedAccountState(state)).toBe(state === "completed" || state === "abandoned");
+  });
+
+  it.each(["running", "timeout", "", null, 42, "PENDING", "Active"])(
+    "run-state rejects non-union %j",
+    (value) => {
+      expect(parseAccountState(value)).toBeNull();
+      expect(parsePauseReason(value)).toBeNull();
+      expect(parseDiscoveryResolution(value)).toBeNull();
+    },
+  );
+
+  it.each(Object.values(PauseReason))("pause reason %j round-trips", (reason) => {
+    expect(parsePauseReason(reason)).toBe(reason);
+    expect(needsIdentityResolution(reason)).toBe(
+      reason === "identity_mismatch" ||
+        reason === "profile_not_found" ||
+        reason === "profile_protected",
+    );
+  });
+
+  it.each(Object.values(DiscoveryResolution))("discovery resolution %j", (resolution) => {
+    expect(parseDiscoveryResolution(resolution)).toBe(resolution);
+    expect(isAdmissibleDiscoveryResolution(resolution)).toBe(
+      resolution === "embedded" || resolution === "resolved",
+    );
+  });
+
+  it.each(Object.values(AcquisitionStatus))("acquisition status %j", (status) => {
+    expect(isNormalizableAcquisitionStatus(status)).toBe(
+      status === "completed" || status === "partial",
+    );
   });
 
   test("rejects every non-identity for branded domain ids", () => {
@@ -105,6 +229,7 @@ describe("collector shared contracts", () => {
     // The assertion IS the compilation (tsc runs in CI): if the brands ever
     // collapse to plain string, the @ts-expect-error below becomes unused and
     // typechecking fails. No runtime behavior to assert — erasure is the point.
+    expect.assertions(0);
     const tweetId = parseTweetId("123");
     if (tweetId !== null) {
       // @ts-expect-error: TweetId must not be directly assignable to AuthorId

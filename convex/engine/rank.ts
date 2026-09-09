@@ -85,9 +85,9 @@ export function rerank(
   // signal objects and no per-signal closures. The previous shape —
   // `candidates.map(...)` plus 3× `Math.max(...rows.map(pick))` — allocated an
   // object per candidate and four throwaway arrays per rerank (see bytecode).
-  const rels: number[] = new Array(candidates.length);
-  const engs: number[] = new Array(candidates.length);
-  const auths: number[] = new Array(candidates.length);
+  const rels: number[] = Array.from({ length: candidates.length });
+  const engs: number[] = Array.from({ length: candidates.length });
+  const auths: number[] = Array.from({ length: candidates.length });
   let zRel = 1e-9;
   let zEng = 1e-9;
   let zAuth = 1e-9;
@@ -95,13 +95,7 @@ export function rerank(
     const c = candidates[i]!;
     let rel = 0;
     for (const [term, tf] of c.tf) {
-      rel += bm25(
-        tf,
-        stats.dfs.get(term) ?? 0,
-        stats.totalDocs,
-        c.tokenCount,
-        stats.avgTokenCount,
-      );
+      rel += bm25(tf, stats.dfs.get(term) ?? 0, stats.totalDocs, c.tokenCount, stats.avgTokenCount);
     }
     const eng = Math.log1p(
       WEIGHTS.w_like * c.likeCount +
@@ -128,8 +122,7 @@ export function rerank(
     const auth = auths[i]! / z.auth;
     const rec = Math.exp(-Math.max(0, now - c.createdAt) / tau);
     const fb =
-      Math.max(-WEIGHTS.fbClamp, Math.min(WEIGHTS.fbClamp, c.feedbackVotes)) /
-      WEIGHTS.fbClamp;
+      Math.max(-WEIGHTS.fbClamp, Math.min(WEIGHTS.fbClamp, c.feedbackVotes)) / WEIGHTS.fbClamp;
     const fit = fitBonus(xq, c);
     const parts = {
       rel: WEIGHTS.rel * rel,

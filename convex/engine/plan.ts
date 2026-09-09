@@ -44,11 +44,7 @@ export type LadderLevel = (typeof LadderLevel)[keyof typeof LadderLevel];
 export interface PostingsRead {
   term: Term;
   /** Which compound index serves this read — mirrors schema.ts index names. */
-  index:
-    | "by_term_score"
-    | "by_term_time"
-    | "by_term_author_time"
-    | "by_term_media_score";
+  index: "by_term_score" | "by_term_time" | "by_term_author_time" | "by_term_media_score";
   /** Equality prefix beyond `term` (authorId or mediaType), when the index has one. */
   eq?: { authorId?: AuthorId | undefined; mediaType?: string | undefined } | undefined;
   /** createdAt range for time-ordered indexes; postFilter for score-ordered ones. */
@@ -82,10 +78,7 @@ export interface ReadPlan {
  * Terms are ordered rarest-first by caller-provided dfs (planner stays pure).
  */
 export function planL0(xq: XQuery, dfs: Map<Term, number>): ReadPlan {
-  const gateTerms = rarestFirst(
-    uniqueTerms(xq.must, xq.aspects, phraseTerms(xq)),
-    dfs,
-  );
+  const gateTerms = rarestFirst(uniqueTerms(xq.must, xq.aspects, phraseTerms(xq)), dfs);
   const gates: PostingsRead[] = [];
   for (const term of gateTerms) gates.push(readFor(term, xq));
   return {
@@ -222,10 +215,7 @@ export function escalate(
 }
 
 function escalateToL2(xq: XQuery, dfs: Map<Term, number>): ReadPlan | null {
-  const unionTerms = rarestFirst(
-    uniqueTerms(xq.must, xq.should, xq.aspects, phraseTerms(xq)),
-    dfs,
-  );
+  const unionTerms = rarestFirst(uniqueTerms(xq.must, xq.should, xq.aspects, phraseTerms(xq)), dfs);
   if (unionTerms.length === 0) return null;
   const unions: PostingsRead[] = [];
   for (const t of unionTerms) unions.push(readFor(t, xq));

@@ -81,8 +81,21 @@ function useSearchPage() {
     setInput(next);
     startTransition(() => setQuery(next.trim()));
   };
-  return { input, query, setSort, lane, setLane, shown, error, searching,
-    operatorSort, activeSort, canVote: canVote === true, pickQuery, changeInput };
+  return {
+    input,
+    query,
+    setSort,
+    lane,
+    setLane,
+    shown,
+    error,
+    searching,
+    operatorSort,
+    activeSort,
+    canVote: canVote === true,
+    pickQuery,
+    changeInput,
+  };
 }
 
 function presentResults(
@@ -92,21 +105,43 @@ function presentResults(
   baseline: BaselineResults | undefined,
 ): Shown | undefined {
   if (lane === "baseline") {
-    return baseline === undefined ? undefined : {
-      error: null, results: baseline, ladder: null, queryKey: null, terms: query.split(/\s+/),
-    };
+    return baseline === undefined
+      ? undefined
+      : {
+          error: null,
+          results: baseline,
+          ladder: null,
+          queryKey: null,
+          terms: query.split(/\s+/),
+        };
   }
   if (full === undefined) return undefined;
   const q = full.appliedQuery;
   return {
-    error: full.error, results: full.results, ladder: full.ladder, queryKey: full.queryKey,
+    error: full.error,
+    results: full.results,
+    ladder: full.ladder,
+    queryKey: full.queryKey,
     terms: [...q.must, ...q.should, ...q.phrases.flat(), ...q.exclude.map((term) => `-${term}`)],
   };
 }
 
 export function App(): ReactElement {
-  const { input, query, setSort, lane, setLane, shown, error, searching,
-    operatorSort, activeSort, canVote, pickQuery, changeInput } = useSearchPage();
+  const {
+    input,
+    query,
+    setSort,
+    lane,
+    setLane,
+    shown,
+    error,
+    searching,
+    operatorSort,
+    activeSort,
+    canVote,
+    pickQuery,
+    changeInput,
+  } = useSearchPage();
   return (
     <div className="page">
       <header className="masthead">
@@ -123,9 +158,7 @@ export function App(): ReactElement {
           aria-label="Search posts"
         />
         {/* Only while the input is ahead of the executed query — typing, not idle. */}
-        {input.trim() !== query ? (
-          <Typeahead input={input} onPick={pickQuery} />
-        ) : null}
+        {input.trim() !== query ? <Typeahead input={input} onPick={pickQuery} /> : null}
       </div>
 
       {query !== "" ? (
@@ -182,7 +215,14 @@ interface SearchBodyProps {
   onPick: (query: string) => void;
 }
 
-function SearchBody({ query, error, shown, searching, canVote, onPick }: SearchBodyProps): ReactElement {
+function SearchBody({
+  query,
+  error,
+  shown,
+  searching,
+  canVote,
+  onPick,
+}: SearchBodyProps): ReactElement {
   if (query === "") return <Intro onPick={onPick} />;
   if (error) return <p role="alert">{error}</p>;
   if (shown === undefined) return <SkeletonList />;
@@ -200,11 +240,18 @@ function SearchBody({ query, error, shown, searching, canVote, onPick }: SearchB
   }
   return (
     <main aria-busy={searching}>
-      <p className="count-line">{countLabel}{notice}</p>
+      <p className="count-line">
+        {countLabel}
+        {notice}
+      </p>
       <ol className="results">
         {shown.results.map((tweet) => (
           <li key={`${shown.queryKey ?? query}:${tweet._id}`}>
-            <ResultRow tweet={tweet} terms={shown.terms} queryKey={canVote ? shown.queryKey : null} />
+            <ResultRow
+              tweet={tweet}
+              terms={shown.terms}
+              queryKey={canVote ? shown.queryKey : null}
+            />
           </li>
         ))}
       </ol>
@@ -215,7 +262,10 @@ function SearchBody({ query, error, shown, searching, canVote, onPick }: SearchB
 function Intro({ onPick }: { onPick: (q: string) => void }) {
   return (
     <div className="intro">
-      <p>Type a query to search the indexed corpus. Every result is a real post; nothing is mocked. Try one:</p>
+      <p>
+        Type a query to search the indexed corpus. Every result is a real post; nothing is mocked.
+        Try one:
+      </p>
       <DemoChips onPick={onPick} />
     </div>
   );
@@ -225,8 +275,9 @@ function EmptyState({ query, onPick }: { query: string; onPick: (q: string) => v
   return (
     <div className="empty-state">
       <p>
-        No matches found in the bounded search window for <span className="query-echo">{query}</span>. The corpus starts from 62 tech accounts — try words people
-        actually posted:
+        No matches found in the bounded search window for{" "}
+        <span className="query-echo">{query}</span>. The corpus starts from 62 tech accounts — try
+        words people actually posted:
       </p>
       <DemoChips onPick={onPick} />
     </div>
@@ -274,8 +325,7 @@ function Typeahead({ input, onPick }: { input: string; onPick: (q: string) => vo
   ) {
     return null;
   }
-  const complete = (term: string) =>
-    [...input.split(/\s+/).slice(0, -1), term].join(" ");
+  const complete = (term: string) => [...input.split(/\s+/).slice(0, -1), term].join(" ");
   return (
     <ul className="typeahead" role="listbox" aria-label="Suggestions">
       {suggestions
@@ -317,9 +367,10 @@ function ResultRow({ tweet, terms, queryKey }: ResultRowProps): ReactElement {
       await vote({ queryKey, tweetId: tweet._id, vote: value });
       setVoted(value);
     } catch (error: unknown) {
-      const message = error instanceof ConvexError && typeof error.data === "string"
-        ? error.data
-        : "Vote failed. Please try again.";
+      const message =
+        error instanceof ConvexError && typeof error.data === "string"
+          ? error.data
+          : "Vote failed. Please try again.";
       setVoteError(message);
     } finally {
       setVoting(false);
@@ -361,7 +412,9 @@ function ResultRow({ tweet, terms, queryKey }: ResultRowProps): ReactElement {
               className={voted === 1 ? "vote on" : "vote"}
               aria-label="Good result for this search"
               disabled={voting}
-              onClick={() => { void submitVote(1); }}
+              onClick={() => {
+                void submitVote(1);
+              }}
             >
               +1
             </button>
@@ -370,7 +423,9 @@ function ResultRow({ tweet, terms, queryKey }: ResultRowProps): ReactElement {
               className={voted === -1 ? "vote on" : "vote"}
               aria-label="Bad result for this search"
               disabled={voting}
-              onClick={() => { void submitVote(-1); }}
+              onClick={() => {
+                void submitVote(-1);
+              }}
             >
               -1
             </button>

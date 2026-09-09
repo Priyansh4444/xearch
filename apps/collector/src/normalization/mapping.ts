@@ -5,10 +5,7 @@
 
 import { Option } from "effect";
 import * as Schema from "effect/Schema";
-import {
-  parseNonEmptyString,
-  parseNonNegativeNumber,
-} from "../contracts/primitives.ts";
+import { parseNonEmptyString, parseNonNegativeNumber } from "../contracts/primitives.ts";
 import {
   type AuthorId,
   type Handle,
@@ -95,7 +92,9 @@ const ProviderStatusSchema = Schema.Struct({
     Schema.NullOr(
       Schema.Union([
         Schema.String,
-        Schema.Array(Schema.Union([Schema.String, Schema.Struct({ id: Schema.optional(Schema.String) })])),
+        Schema.Array(
+          Schema.Union([Schema.String, Schema.Struct({ id: Schema.optional(Schema.String) })]),
+        ),
       ]),
     ),
   ),
@@ -250,7 +249,8 @@ function mapProviderStatus(value: ProviderStatus, context: CandidateContext): Ma
   const text = typeof value.text === "string" ? value.text : "";
   if (text.trim().length === 0) reasons.push("empty_text");
 
-  const createdAt = timestampMilliseconds(value.created_timestamp) ?? dateMilliseconds(value.created_at);
+  const createdAt =
+    timestampMilliseconds(value.created_timestamp) ?? dateMilliseconds(value.created_at);
   if (createdAt === null) reasons.push("invalid_created_at");
 
   const metrics = mapMetrics(value);
@@ -262,14 +262,22 @@ function mapProviderStatus(value: ProviderStatus, context: CandidateContext): Ma
   const authorResult = mapAuthor(value.author);
   if (!authorResult.ok) reasons.push(...authorResult.reasons);
 
-  if (reasons.length > 0 || id === null || createdAt === null || metrics === null || media === null || !authorResult.ok) {
+  if (
+    reasons.length > 0 ||
+    id === null ||
+    createdAt === null ||
+    metrics === null ||
+    media === null ||
+    !authorResult.ok
+  ) {
     return reject(context, id, dedupe(reasons), embedded);
   }
 
   const quote = value.quote;
-  const quotedTweetId = quote !== null && typeof quote === "object" && !Array.isArray(quote)
-    ? parseTweetId(quote["id"])
-    : null;
+  const quotedTweetId =
+    quote !== null && typeof quote === "object" && !Array.isArray(quote)
+      ? parseTweetId(quote["id"])
+      : null;
   const quoteTombstone =
     quote !== null &&
     typeof quote === "object" &&
@@ -307,7 +315,9 @@ function mapProviderStatus(value: ProviderStatus, context: CandidateContext): Ma
   };
 }
 
-export type MappedAuthor = { ok: true; author: IngressAuthor } | { ok: false; reasons: RejectionCode[] };
+export type MappedAuthor =
+  | { ok: true; author: IngressAuthor }
+  | { ok: false; reasons: RejectionCode[] };
 
 /** Map an embedded provider author (status.author or profile user). */
 export function mapAuthor(value: unknown): MappedAuthor {
@@ -363,7 +373,11 @@ export function mapAuthor(value: unknown): MappedAuthor {
   return { ok: true, author };
 }
 
-function mapEmbedded(status: ProviderStatus, context: CandidateContext, parentId: string | null): MappedCandidate[] {
+function mapEmbedded(
+  status: ProviderStatus,
+  context: CandidateContext,
+  parentId: string | null,
+): MappedCandidate[] {
   const quote = status.quote;
   const quotedStatus = parseProviderStatus(quote);
   if (quotedStatus === null || !isStatusRow(quotedStatus.type)) return [];
@@ -436,7 +450,10 @@ function mapEntities(rawText: ProviderStatus["raw_text"]): IngressEntities | nul
     } else if (facetType === ProviderFacetType.Mention) {
       pushUnique(mentions, parseNonEmptyString(facet.original)?.replace(/^@/, ""));
     } else if (facetType === ProviderFacetType.Url) {
-      pushUnique(urls, parseNonEmptyString(facet.replacement) ?? parseNonEmptyString(facet.original));
+      pushUnique(
+        urls,
+        parseNonEmptyString(facet.replacement) ?? parseNonEmptyString(facet.original),
+      );
     }
   }
   return { hashtags, mentions, urls };

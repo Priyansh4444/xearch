@@ -8,15 +8,10 @@
 // and compared against the collector contracts value-for-value.
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { describe, expect, test } from "vitest";
-import {
-  AccountState,
-  AcquisitionStatus,
-} from "../apps/collector/src/contracts/run-state.ts";
+import { describe, expect, it } from "vitest";
+import { AccountState, AcquisitionStatus } from "../apps/collector/src/contracts/run-state.ts";
 
-const DASHBOARD_INDEX = fileURLToPath(
-  new URL("../apps/dashboard/src/index.ts", import.meta.url),
-);
+const DASHBOARD_INDEX = fileURLToPath(new URL("../apps/dashboard/src/index.ts", import.meta.url));
 
 function mirroredValues(source: string, constName: string): Record<string, string> {
   const block = new RegExp(`export const ${constName} = \\{([^}]*)\\}`).exec(source)?.[1];
@@ -27,9 +22,11 @@ function mirroredValues(source: string, constName: string): Record<string, strin
 }
 
 describe("dashboard contract mirror", () => {
-  test("AccountState and AcquisitionStatus match the collector exactly", async () => {
+  it.each([
+    { name: "AccountState", expected: { ...AccountState } },
+    { name: "AcquisitionStatus", expected: { ...AcquisitionStatus } },
+  ])("$name matches the collector exactly", async ({ name, expected }) => {
     const source = await readFile(DASHBOARD_INDEX, "utf8");
-    expect(mirroredValues(source, "AccountState")).toEqual({ ...AccountState });
-    expect(mirroredValues(source, "AcquisitionStatus")).toEqual({ ...AcquisitionStatus });
+    expect(mirroredValues(source, name)).toEqual(expected);
   });
 });

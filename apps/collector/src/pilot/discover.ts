@@ -7,10 +7,7 @@ import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
-import {
-  FxTwitterProfileEnvelopeSchema,
-  type PilotClient,
-} from "../acquisition/fxtwitter.ts";
+import { FxTwitterProfileEnvelopeSchema, type PilotClient } from "../acquisition/fxtwitter.ts";
 import type { PilotAccount, PilotConfig } from "../config/pilot.ts";
 import {
   parseProviderAuthor,
@@ -27,15 +24,8 @@ import {
   parseNonEmptyString,
 } from "../contracts/primitives.ts";
 import { InteractionKind } from "../contracts/normalize-kinds.ts";
-import {
-  isStatusRow,
-  parseProviderFacetType,
-  ProviderFacetType,
-} from "../contracts/provider.ts";
-import {
-  DiscoveryResolution,
-  isAdmissibleDiscoveryResolution,
-} from "../contracts/run-state.ts";
+import { isStatusRow, parseProviderFacetType, ProviderFacetType } from "../contracts/provider.ts";
+import { DiscoveryResolution, isAdmissibleDiscoveryResolution } from "../contracts/run-state.ts";
 
 export type { InteractionKind };
 
@@ -75,7 +65,10 @@ interface Bucket {
 }
 
 /** Pure: raw pages in, ranked candidates out. */
-export function discoverFromPages(pages: RawPageInput[], options: DiscoveryOptions): DiscoveryCandidate[] {
+export function discoverFromPages(
+  pages: RawPageInput[],
+  options: DiscoveryOptions,
+): DiscoveryCandidate[] {
   const handleToId = new Map<string, string>();
   const byId = new Map<string, Bucket>();
   const byHandle = new Map<string, Bucket>();
@@ -116,7 +109,12 @@ export function discoverFromPages(pages: RawPageInput[], options: DiscoveryOptio
     return bucket;
   };
 
-  const record = (bucket: Bucket | null, seed: string, kind: InteractionKind, author?: ProviderAuthor | null): void => {
+  const record = (
+    bucket: Bucket | null,
+    seed: string,
+    kind: InteractionKind,
+    author?: ProviderAuthor | null,
+  ): void => {
     if (bucket === null) return;
     bucket.seeds.add(seed);
     bucket.interactions[kind] += 1;
@@ -172,7 +170,12 @@ export function discoverFromPages(pages: RawPageInput[], options: DiscoveryOptio
         record(bucketFor(null, handle), seed, InteractionKind.Reply);
       }
       const quote = parseProviderStatus(status.quote);
-      if (quote !== null && isStatusRow(quote.type) && quote.author !== undefined && quote.author !== null) {
+      if (
+        quote !== null &&
+        isStatusRow(quote.type) &&
+        quote.author !== undefined &&
+        quote.author !== null
+      ) {
         const quoteAuthor = parseProviderAuthor(quote.author);
         record(
           bucketFor(
@@ -213,7 +216,8 @@ export function discoverFromPages(pages: RawPageInput[], options: DiscoveryOptio
       seeds: [...bucket.seeds].sort(),
       interactions: { ...bucket.interactions },
       configured,
-      resolution: bucket.userId === null ? DiscoveryResolution.Unresolved : DiscoveryResolution.Embedded,
+      resolution:
+        bucket.userId === null ? DiscoveryResolution.Unresolved : DiscoveryResolution.Embedded,
     });
   }
   return candidates.sort(
@@ -234,46 +238,47 @@ export async function resolveCandidates(
   return Effect.runPromise(resolveCandidatesEffect(candidates, client, pace, log));
 }
 
-export const resolveCandidatesEffect = Effect.fn("resolveCandidatesEffect")(
-  function* (
-    candidates: DiscoveryCandidate[],
-    client: PilotClient,
-    pace: () => Promise<void>,
-    log: (line: string) => void = () => undefined,
-  ): Effect.fn.Return<void> {
-    for (const candidate of candidates) {
-      if (candidate.resolution !== DiscoveryResolution.Unresolved || candidate.handle === null) continue;
-      yield* Effect.tryPromise({
-        try: () => pace(),
-        catch: (cause) => new Error(String(cause)),
-      }).pipe(Effect.orDie);
-      const exit = yield* Effect.exit(client.fetchProfileEffect(candidate.handle));
-      if (Exit.isFailure(exit)) {
-        candidate.resolution = DiscoveryResolution.Unresolved;
-        const error = Cause.squash(exit.cause);
-        log(`@${candidate.handle}: resolution failed: ${error instanceof Error ? error.message : String(error)}`);
-        continue;
-      }
-      const response = exit.value;
-      if (response.profile === null) {
-        candidate.resolution = DiscoveryResolution.NotFound;
-        continue;
-      }
-      candidate.userId = response.profile.id;
-      candidate.handle = response.profile.screenName.toLowerCase();
-      candidate.displayName = response.profile.name;
-      candidate.protected = response.profile.protected;
-      candidate.followers = response.profile.followers ?? candidate.followers;
-      candidate.statuses = response.profile.statuses ?? candidate.statuses;
-      const envelope = Schema.decodeUnknownOption(FxTwitterProfileEnvelopeSchema)(response.raw);
-      if (Option.isSome(envelope)) {
-        candidate.followers = envelope.value.user.followers ?? candidate.followers;
-        candidate.statuses = envelope.value.user.statuses ?? candidate.statuses;
-      }
-      candidate.resolution = DiscoveryResolution.Resolved;
+export const resolveCandidatesEffect = Effect.fn("resolveCandidatesEffect")(function* (
+  candidates: DiscoveryCandidate[],
+  client: PilotClient,
+  pace: () => Promise<void>,
+  log: (line: string) => void = () => undefined,
+): Effect.fn.Return<void> {
+  for (const candidate of candidates) {
+    if (candidate.resolution !== DiscoveryResolution.Unresolved || candidate.handle === null)
+      continue;
+    yield* Effect.tryPromise({
+      try: () => pace(),
+      catch: (cause) => new Error(String(cause)),
+    }).pipe(Effect.orDie);
+    const exit = yield* Effect.exit(client.fetchProfileEffect(candidate.handle));
+    if (Exit.isFailure(exit)) {
+      candidate.resolution = DiscoveryResolution.Unresolved;
+      const error = Cause.squash(exit.cause);
+      log(
+        `@${candidate.handle}: resolution failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      continue;
     }
-  },
-);
+    const response = exit.value;
+    if (response.profile === null) {
+      candidate.resolution = DiscoveryResolution.NotFound;
+      continue;
+    }
+    candidate.userId = response.profile.id;
+    candidate.handle = response.profile.screenName.toLowerCase();
+    candidate.displayName = response.profile.name;
+    candidate.protected = response.profile.protected;
+    candidate.followers = response.profile.followers ?? candidate.followers;
+    candidate.statuses = response.profile.statuses ?? candidate.statuses;
+    const envelope = Schema.decodeUnknownOption(FxTwitterProfileEnvelopeSchema)(response.raw);
+    if (Option.isSome(envelope)) {
+      candidate.followers = envelope.value.user.followers ?? candidate.followers;
+      candidate.statuses = envelope.value.user.statuses ?? candidate.statuses;
+    }
+    candidate.resolution = DiscoveryResolution.Resolved;
+  }
+});
 
 /** Candidates that can go straight into a gate-2 config: resolved, public, not already configured. */
 export function proposeConfig(base: PilotConfig, candidates: DiscoveryCandidate[]): PilotConfig {
@@ -287,7 +292,11 @@ export function proposeConfig(base: PilotConfig, candidates: DiscoveryCandidate[
   return { ...base, accounts };
 }
 
-export function renderMarkdown(candidates: DiscoveryCandidate[], minSeeds: number, sourceRuns: string[]): string {
+export function renderMarkdown(
+  candidates: DiscoveryCandidate[],
+  minSeeds: number,
+  sourceRuns: string[],
+): string {
   const lines = [
     `# Discovery report`,
     ``,
@@ -333,7 +342,8 @@ function newBucket(userId: string | null, handle: string | null): Bucket {
 
 function mergeInto(target: Bucket, source: Bucket): void {
   for (const seed of source.seeds) target.seeds.add(seed);
-  for (const kind of Object.keys(source.interactions) as InteractionKind[]) target.interactions[kind] += source.interactions[kind];
+  for (const kind of Object.keys(source.interactions) as InteractionKind[])
+    target.interactions[kind] += source.interactions[kind];
   target.displayName ??= source.displayName;
   target.followers ??= source.followers;
   target.statuses ??= source.statuses;

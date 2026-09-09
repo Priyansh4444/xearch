@@ -7,11 +7,7 @@ import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import type { Cohort, PilotConfig } from "../config/pilot.ts";
 import { configHash } from "../config/pilot.ts";
-import {
-  readJsonEffect,
-  readJsonIfExistsEffect,
-  writeJsonAtomicEffect,
-} from "../contracts/fs.ts";
+import { readJsonEffect, readJsonIfExistsEffect, writeJsonAtomicEffect } from "../contracts/fs.ts";
 import {
   AccountState,
   AcquisitionStatus,
@@ -31,7 +27,9 @@ export type {
 
 export const RUN_FORMAT_VERSION = 2;
 
-export class UnsupportedCheckpointVersionError extends Data.TaggedError("UnsupportedCheckpointVersionError")<{
+export class UnsupportedCheckpointVersionError extends Data.TaggedError(
+  "UnsupportedCheckpointVersionError",
+)<{
   readonly message: string;
   readonly path: string;
   readonly version: unknown;
@@ -97,7 +95,10 @@ export interface Checkpoint {
   accounts: AccountRecord[];
 }
 
-export interface ManifestAccount extends Omit<AccountRecord, "nextPage" | "nextCursor" | "seenCursors"> {}
+export interface ManifestAccount extends Omit<
+  AccountRecord,
+  "nextPage" | "nextCursor" | "seenCursors"
+> {}
 
 export interface FileDigest {
   path: string;
@@ -177,15 +178,22 @@ export function isTerminal(status: AcquisitionStatus): boolean {
   return status !== AcquisitionStatus.InProgress;
 }
 
-export function acceptance(checkpoint: Checkpoint, manifest: Pick<Manifest, "normalization" | "archive">): Manifest["acceptance"] {
+export function acceptance(
+  checkpoint: Checkpoint,
+  manifest: Pick<Manifest, "normalization" | "archive">,
+): Manifest["acceptance"] {
   const reasons: string[] = [];
   const status = acquisitionStatus(checkpoint);
   if (status !== AcquisitionStatus.Completed) reasons.push(`acquisition status is ${status}`);
   for (const account of checkpoint.accounts) {
     if (account.state === AccountState.Abandoned) {
-      reasons.push(`account ${account.requestedHandle} abandoned: ${account.abandonReason ?? "no reason recorded"}`);
+      reasons.push(
+        `account ${account.requestedHandle} abandoned: ${account.abandonReason ?? "no reason recorded"}`,
+      );
     } else if (account.state !== AccountState.Completed) {
-      reasons.push(`account ${account.requestedHandle} is ${account.state}${account.pauseReason ? ` (${account.pauseReason})` : ""}`);
+      reasons.push(
+        `account ${account.requestedHandle} is ${account.state}${account.pauseReason ? ` (${account.pauseReason})` : ""}`,
+      );
     }
   }
   if (manifest.normalization === null) reasons.push("run has not been normalized");
@@ -199,7 +207,10 @@ export function projectManifest(
   previous: Pick<Manifest, "normalization" | "archive"> | null,
   now: number,
 ): Manifest {
-  const partial = { normalization: previous?.normalization ?? null, archive: previous?.archive ?? null };
+  const partial = {
+    normalization: previous?.normalization ?? null,
+    archive: previous?.archive ?? null,
+  };
   return {
     version: RUN_FORMAT_VERSION,
     runId: checkpoint.runId,
@@ -220,7 +231,9 @@ export function projectManifest(
       status: acquisitionStatus(checkpoint),
       startedAt: checkpoint.acquisitionStartedAt,
       completedAt: checkpoint.acquisitionCompletedAt,
-      accounts: checkpoint.accounts.map(({ nextPage: _p, nextCursor: _c, seenCursors: _s, ...rest }) => rest),
+      accounts: checkpoint.accounts.map(
+        ({ nextPage: _p, nextCursor: _c, seenCursors: _s, ...rest }) => rest,
+      ),
     },
     ...partial,
     acceptance: acceptance(checkpoint, partial),
@@ -289,8 +302,14 @@ export function findAccount(checkpoint: Checkpoint, handle: string): AccountReco
 
 function collectorRevision(): { revision: string; dirty: boolean } {
   try {
-    const revision = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-    const status = execFileSync("git", ["status", "--porcelain"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+    const revision = execFileSync("git", ["rev-parse", "HEAD"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    const status = execFileSync("git", ["status", "--porcelain"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
     return { revision, dirty: status.trim().length > 0 };
   } catch {
     return { revision: "unknown", dirty: true };

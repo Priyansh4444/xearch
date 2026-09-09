@@ -1,13 +1,9 @@
 {
   "name": "xearch",
-  "private": true,
-  "type": "module",
   "version": "0.1.0",
-  "packageManager": "pnpm@11.10.0",
-  "engines": {
-    "node": ">=24"
-  },
+  "private": true,
   "description": "Search engine for tweets on Convex — see DESIGN.md / ARCHITECTURE.md",
+  "type": "module",
   "scripts": {
     "collect:pilot": "node apps/collector/src/cli/pilot.ts",
     "collect:probe": "node apps/collector/src/cli/probe.ts",
@@ -17,6 +13,10 @@
     "dev": "convex dev",
     "test": "vitest run",
     "test:golden": "vitest run tests/tokenizer.golden.test.ts",
+    "lint": "oxlint",
+    "lint:fix": "oxlint --fix",
+    "format": "oxfmt",
+    "format:check": "oxfmt --check",
     "codegen": "convex codegen",
     "typecheck": "tsc --noEmit && pnpm --filter xearch-web typecheck",
     "web": "pnpm --filter xearch-web dev",
@@ -30,8 +30,14 @@
     "@types/node": "^26.4.1",
     "convex-test": "^0.0.56",
     "jsdom": "^30.0.1",
+    "oxfmt": "0.67.0",
+    "oxlint": "1.82.0",
     "react-doctor": "^0.9.13",
     "typescript": "^7.0.2",
     "vitest": "^5.0.0"
-  }
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "packageManager": "pnpm@11.10.0"
 }

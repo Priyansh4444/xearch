@@ -20,7 +20,7 @@ import {
   uniqueTerms,
 } from "./engine/plan";
 import { rerank, rrfFuse, type Candidate } from "./engine/rank";
-import { queryKey, emptyXQuery, SortOrder, type XQuery } from "./engine/xquery";
+import { queryKey, emptyXQuery, SortOrder } from "./engine/xquery";
 import type { AuthorId, Term, TweetId } from "./contracts/ids";
 import { matchesConstraints, queryInputError, MAX_QUERY_TERMS } from "./engine/constraints";
 
@@ -69,12 +69,14 @@ export const search = query({
     const xq = parsed.xq;
     if (!Object.values(parsed.trace.consumed).includes("sort")) xq.sort = args.sort;
     const unknownAuthor = parsed.trace.leftover.find((term) => term.startsWith("from:"));
-    if (unknownAuthor !== undefined) return invalidSearch(`Unknown author: ${unknownAuthor.slice(5)}.`);
+    if (unknownAuthor !== undefined)
+      return invalidSearch(`Unknown author: ${unknownAuthor.slice(5)}.`);
     const key = queryKey(xq);
 
     // 2. df point reads for every term the planner or reranker will touch.
     const allTerms = uniqueTerms(xq.must, xq.should, xq.aspects, phraseTerms(xq));
-    if (allTerms.length > MAX_QUERY_TERMS) return invalidSearch("Use at most 12 search terms and aspects.");
+    if (allTerms.length > MAX_QUERY_TERMS)
+      return invalidSearch("Use at most 12 search terms and aspects.");
     const dfs = new Map<Term, number>();
     for (const term of allTerms) {
       const row = await ctx.db
@@ -96,7 +98,7 @@ export const search = query({
     ): Promise<Map<string, Match>> {
       const accepted = new Map<string, Match>();
       for (const [id, match] of found) {
-        const tweet = tweets.get(id) ?? await ctx.db.get(id as Id<"tweets">);
+        const tweet = tweets.get(id) ?? (await ctx.db.get(id as Id<"tweets">));
         if (tweet === null) continue;
         tweets.set(id, tweet);
         if (!matchesConstraints(tweet, xq)) continue;
@@ -129,7 +131,8 @@ export const search = query({
           const range = q.eq("authorId", xq.filters.authorId!);
           const since = xq.filters.since;
           const until = xq.filters.until;
-          if (since !== null && until !== null) return range.gte("createdAt", since).lt("createdAt", until);
+          if (since !== null && until !== null)
+            return range.gte("createdAt", since).lt("createdAt", until);
           if (since !== null) return range.gte("createdAt", since);
           if (until !== null) return range.lt("createdAt", until);
           return range;
@@ -137,9 +140,10 @@ export const search = query({
         .order("desc")
         .take(PER_TERM_CAP);
       for (const row of rows) tweets.set(row._id, row);
-      matches = await eligible(new Map(rows.map((r) =>
-        [r._id as string, { tf: new Map<Term, number>() }],
-      )), LadderLevel.L0);
+      matches = await eligible(
+        new Map(rows.map((r) => [r._id as string, { tf: new Map<Term, number>() }])),
+        LadderLevel.L0,
+      );
       level = LadderLevel.L0;
     }
 
@@ -219,19 +223,17 @@ async function executePlan(
     if (cached !== undefined) return cached;
     let q;
     if (r.index === "by_term_author_time") {
-      q = ctx.db
-        .query("postings")
-        .withIndex(r.index, (ix) => {
-          const range = ix.eq("term", r.term).eq("authorId", r.eq!.authorId!);
-          const since = r.timeRange?.since;
-          const until = r.timeRange?.until;
-          if (since !== undefined && until !== undefined) {
-            return range.gte("createdAt", since).lt("createdAt", until);
-          }
-          if (since !== undefined) return range.gte("createdAt", since);
-          if (until !== undefined) return range.lt("createdAt", until);
-          return range;
-        });
+      q = ctx.db.query("postings").withIndex(r.index, (ix) => {
+        const range = ix.eq("term", r.term).eq("authorId", r.eq!.authorId!);
+        const since = r.timeRange?.since;
+        const until = r.timeRange?.until;
+        if (since !== undefined && until !== undefined) {
+          return range.gte("createdAt", since).lt("createdAt", until);
+        }
+        if (since !== undefined) return range.gte("createdAt", since);
+        if (until !== undefined) return range.lt("createdAt", until);
+        return range;
+      });
     } else if (r.index === "by_term_media_score") {
       q = ctx.db
         .query("postings")
@@ -239,19 +241,17 @@ async function executePlan(
           ix.eq("term", r.term).eq("mediaType", r.eq!.mediaType! as Doc<"postings">["mediaType"]),
         );
     } else if (r.index === "by_term_time") {
-      q = ctx.db
-        .query("postings")
-        .withIndex(r.index, (ix) => {
-          const range = ix.eq("term", r.term);
-          const since = r.timeRange?.since;
-          const until = r.timeRange?.until;
-          if (since !== undefined && until !== undefined) {
-            return range.gte("createdAt", since).lt("createdAt", until);
-          }
-          if (since !== undefined) return range.gte("createdAt", since);
-          if (until !== undefined) return range.lt("createdAt", until);
-          return range;
-        });
+      q = ctx.db.query("postings").withIndex(r.index, (ix) => {
+        const range = ix.eq("term", r.term);
+        const since = r.timeRange?.since;
+        const until = r.timeRange?.until;
+        if (since !== undefined && until !== undefined) {
+          return range.gte("createdAt", since).lt("createdAt", until);
+        }
+        if (since !== undefined) return range.gte("createdAt", since);
+        if (until !== undefined) return range.lt("createdAt", until);
+        return range;
+      });
     } else {
       q = ctx.db.query("postings").withIndex("by_term_score", (ix) => ix.eq("term", r.term));
     }
@@ -297,8 +297,8 @@ async function executePlan(
   }
   if (lists.length > 0) {
     const scores = rrfFuse(lists);
-    const ordered = [...acc].sort(([a], [b]) =>
-      (scores.get(b) ?? 0) - (scores.get(a) ?? 0) || a.localeCompare(b),
+    const ordered = [...acc].sort(
+      ([a], [b]) => (scores.get(b) ?? 0) - (scores.get(a) ?? 0) || a.localeCompare(b),
     );
     return new Map(ordered);
   }

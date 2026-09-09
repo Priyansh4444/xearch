@@ -1,11 +1,7 @@
 import { resolve } from "node:path";
 import * as Effect from "effect/Effect";
 import { FxTwitterLive } from "../acquisition/fxtwitter.ts";
-import {
-  runTimelineProbeEffect,
-  type ProbeOptions,
-  type ProbeReport,
-} from "../probe/run.ts";
+import { runTimelineProbeEffect, type ProbeOptions, type ProbeReport } from "../probe/run.ts";
 
 const DEFAULT_BASE_URL = "https://api.fxtwitter.com";
 const ProbeFlag = {
@@ -108,10 +104,14 @@ function printSummary(report: ProbeReport, outputDirectory: string): void {
 
   console.log(`FxTwitter timeline probe: @${report.handle}`);
   console.log(`pages: ${report.pagesCompleted}`);
-  console.log(`results: ${report.totalResults} (${report.uniqueTweets} unique, ${report.duplicateTweets} duplicates)`);
+  console.log(
+    `results: ${report.totalResults} (${report.uniqueTweets} unique, ${report.duplicateTweets} duplicates)`,
+  );
   console.log(`range: ${oldest} .. ${newest}`);
   console.log(`stop: ${report.stopReason}`);
-  console.log(`missing required fields: ${missing.length === 0 ? "none" : JSON.stringify(report.missingRequiredFields)}`);
+  console.log(
+    `missing required fields: ${missing.length === 0 ? "none" : JSON.stringify(report.missingRequiredFields)}`,
+  );
   console.log(`report: ${resolve(outputDirectory, "report.json")}`);
 }
 
