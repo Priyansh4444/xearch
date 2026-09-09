@@ -10,6 +10,7 @@ import { tokenize } from "./engine/tokenize";
 import {
   planL0,
   escalate,
+  LadderLevel,
   type PostingsRead,
   type ReadPlan,
   MIN_RESULTS,
@@ -18,18 +19,19 @@ import {
   phraseTerms,
 } from "./engine/plan";
 import { rerank, rrfFuse, type Candidate } from "./engine/rank";
-import { queryKey, emptyXQuery, type XQuery } from "./engine/xquery";
+import { queryKey, emptyXQuery, SortOrder, type XQuery } from "./engine/xquery";
+import type { AuthorId, Term, TweetId } from "./contracts/ids";
 import { matchesConstraints, queryInputError, MAX_QUERY_TERMS } from "./engine/constraints";
 
 interface Match {
-  tf: Map<string, number>;
+  tf: Map<Term, number>;
 }
 
 function invalidSearch(error: string) {
   return {
     error,
     queryKey: "",
-    ladder: "L0" as const,
+    ladder: LadderLevel.L0,
     appliedQuery: emptyXQuery(),
     trace: tierA("").trace,
     results: [] as never[],
@@ -52,7 +54,7 @@ const AVG_TOKEN_COUNT_ESTIMATE = 30;
 export const search = query({
   args: {
     raw: v.string(),
-    sort: v.union(v.literal("top"), v.literal("latest")),
+    sort: v.union(v.literal(SortOrder.Top), v.literal(SortOrder.Latest)),
     // Presentation mode rides OUTSIDE the IR (DESIGN §4.1); list-mode only here.
     cursor: v.optional(v.string()),
   },
@@ -74,7 +76,7 @@ export const search = query({
       ...new Set([...xq.must, ...xq.should, ...xq.aspects, ...phraseTerms(xq)]),
     ];
     if (allTerms.length > MAX_QUERY_TERMS) return invalidSearch("Use at most 12 search terms and aspects.");
-    const dfs = new Map<string, number>();
+    const dfs = new Map<Term, number>();
     for (const term of allTerms) {
       const row = await ctx.db
         .query("terms")
@@ -104,16 +106,16 @@ export const search = query({
       }
       return accepted;
     }
-    let level: ReadPlan["level"] = "L0";
+    let level: ReadPlan["level"] = LadderLevel.L0;
     for (let step = 0; step < 5 && plan !== null; step++) {
       const found = await executePlan(ctx, plan, postingCache);
-      const via = plan.level === "L5" ? "L4" : plan.level;
+      const via = plan.level === LadderLevel.L5 ? LadderLevel.L4 : plan.level;
       const accepted = await eligible(found, via);
       // Retain prior exact hits when a widened candidate set is truncated.
       for (const [id, match] of accepted) matches.set(id, match);
       level = plan.level;
-      let prfTerms: string[] | undefined;
-      if (plan.level === "L2" && matches.size < MIN_RESULTS && matches.size > 0) {
+      let prfTerms: Term[] | undefined;
+      if (plan.level === LadderLevel.L2 && matches.size < MIN_RESULTS && matches.size > 0) {
         prfTerms = await minePrfTerms(ctx, matches, allTerms, dfs, tweets);
       }
       plan = escalate(plan, matches.size, xq, dfs, prfTerms);
@@ -137,9 +139,9 @@ export const search = query({
         .take(PER_TERM_CAP);
       for (const row of rows) tweets.set(row._id, row);
       matches = await eligible(new Map(rows.map((r) =>
-        [r._id as string, { tf: new Map<string, number>() }],
-      )), "L0");
-      level = "L0";
+        [r._id as string, { tf: new Map<Term, number>() }],
+      )), LadderLevel.L0);
+      level = LadderLevel.L0;
     }
 
     // 4. Hydrate candidates, with one exact feedback-total lookup per candidate.
@@ -170,9 +172,10 @@ export const search = query({
         authorAuthority: authors.get(t.authorId)?.authority ?? 0,
         mediaType: t.mediaType,
         feedbackVotes: feedback?.total ?? 0,
-        retweetOfTweetId: t.retweetOfTweetId,
-        quotedTweetId: t.quotedTweetId,
-        sourceTweetId: t.tweetId,
+        // Doc rows carry source ids as plain strings; assert the space once here.
+        retweetOfTweetId: t.retweetOfTweetId as TweetId | undefined,
+        quotedTweetId: t.quotedTweetId as TweetId | undefined,
+        sourceTweetId: t.tweetId as TweetId,
       });
     }
 
@@ -211,7 +214,7 @@ async function executePlan(
   ctx: QueryCtx,
   plan: ReadPlan,
   cache: Map<string, Doc<"postings">[]>,
-): Promise<Map<string, { tf: Map<string, number> }>> {
+): Promise<Map<string, { tf: Map<Term, number> }>> {
   const read = async (r: PostingsRead) => {
     const cached = cache.get(r.term);
     if (cached !== undefined) return cached;
@@ -266,7 +269,7 @@ async function executePlan(
     return filtered;
   };
 
-  const acc = new Map<string, { tf: Map<string, number> }>();
+  const acc = new Map<string, { tf: Map<Term, number> }>();
   if (plan.gates.length > 0) {
     // Rarest term seeds the map in impact order; every later gate intersects.
     const first = plan.gates[0]!;
@@ -311,13 +314,13 @@ async function executePlan(
  */
 async function minePrfTerms(
   ctx: QueryCtx,
-  matches: Map<string, { tf: Map<string, number> }>,
-  queryTerms: string[],
-  dfs: Map<string, number>,
+  matches: Map<string, { tf: Map<Term, number> }>,
+  queryTerms: Term[],
+  dfs: Map<Term, number>,
   hydrated: Map<string, Doc<"tweets">>,
-): Promise<string[]> {
+): Promise<Term[]> {
   const known = new Set(queryTerms);
-  const counts = new Map<string, number>();
+  const counts = new Map<Term, number>();
   for (const tweetId of [...matches.keys()].slice(0, 20)) {
     const t = hydrated.get(tweetId) ?? (await ctx.db.get(tweetId as Id<"tweets">));
     if (t === null) continue;
@@ -390,14 +393,15 @@ function deps(ctx: QueryCtx): TierBDeps {
         .query("authors")
         .withIndex("by_handle", (q) => q.eq("handle", joined))
         .unique();
-      return author === null ? null : { authorId: author.authorId };
+      // Doc rows carry source ids as plain strings; assert the space once here.
+      return author === null ? null : { authorId: author.authorId as AuthorId };
     },
     async resolveHandle(handle) {
       const author = await ctx.db
         .query("authors")
         .withIndex("by_handle", (q) => q.eq("handle", handle))
         .unique();
-      return author === null ? null : { authorId: author.authorId };
+      return author === null ? null : { authorId: author.authorId as AuthorId };
     },
     dfOf,
     now: () => Date.now(),

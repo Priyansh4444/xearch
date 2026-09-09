@@ -4,9 +4,11 @@
 // can back them with fixtures (per boundary-discipline).
 
 import { tokenize } from "./tokenize";
+import type { AuthorId, Term } from "../contracts/ids";
 import {
   emptyXQuery,
-  type Intent,
+  Intent,
+  SortOrder,
   type MediaFilter,
   type XQuery,
 } from "./xquery";
@@ -26,13 +28,13 @@ export interface TierBDeps {
    * rule (top authority >= 10x runner-up AND token not a high-df common word) and
    * return null otherwise — under-linking beats wrong-linking (RISKS P1).
    */
-  resolveEntity(ngram: string[]): Promise<{ authorId: string } | null>;
+  resolveEntity(ngram: string[]): Promise<{ authorId: AuthorId } | null>;
   /**
    * Resolve an explicit from:-operator handle. Unlike resolveEntity this is a
    * hard filter with no dominance rule: the user typed the handle; exact
    * authors.by_handle match or null.
    */
-  resolveHandle(handle: string): Promise<{ authorId: string } | null>;
+  resolveHandle(handle: string): Promise<{ authorId: AuthorId } | null>;
   /** df probe for spelling repair; null when term unseen. */
   dfOf(term: string): Promise<number | null>;
   now(): number;
@@ -80,7 +82,7 @@ export function tierA(raw: string): { xq: XQuery; trace: ParseTrace } {
     lang: (val) =>
       /^[a-z]{2}$/.test(val) ? ((xq.filters.lang = val), true) : false,
     sort: (val) =>
-      val === "latest" || val === "top" ? ((xq.sort = val), true) : false,
+      val === SortOrder.Latest || val === SortOrder.Top ? ((xq.sort = val), true) : false,
   };
   let pendingFromHandle: string | null = null;
   const pendingTime: { since: string | null; until: string | null } = {
@@ -226,7 +228,7 @@ export async function tierB(
   const leading = tokensWithoutGlue[0];
   if (leading !== undefined && MEDIA_NOUNS[leading] !== undefined) {
     if (xq.filters.media === null) xq.filters.media = MEDIA_NOUNS[leading]!;
-    xq.intent = "media";
+    xq.intent = Intent.Media;
     xq.must = tokensWithoutGlue.slice(1);
     consume(leading, "filters.media");
   } else {
@@ -236,17 +238,17 @@ export async function tierB(
   // 2f. Question intent: interrogative shape, trailing "?", or an attribute-of
   //     opener ("height of taj mahal" — the attribute survives as structure).
   const question = detectQuestionIntent(rawRest, xq.must);
-  if (question !== null && xq.intent === "topic") xq.intent = question;
+  if (question !== null && xq.intent === Intent.Topic) xq.intent = question;
   if (
-    xq.intent === "topic" &&
+    xq.intent === Intent.Topic &&
     /^\s*(height|weight|size|specs?|price|cost|dimensions?)\s+of\s/i.test(rawRest)
   ) {
-    xq.intent = "question";
+    xq.intent = Intent.Question;
   }
 
   // 2g. Compare: "vs"/"versus" is glue AND a compare signal.
   if (tokensForAspects.some((t) => t === "vs" || t === "versus")) {
-    if (xq.intent === "topic") xq.intent = "compare";
+    if (xq.intent === Intent.Topic) xq.intent = Intent.Compare;
   }
 
   // Aspect mapping (step 5) sees the pre-glue token stream: glue words like
@@ -258,7 +260,7 @@ export async function tierB(
   //    with person-shaped evidence (a question, e.g. "what did X say", or a
   //    single-token query): a handle-colliding word inside a topic query
   //    ("typescript tips") must never hijack retrieval into one author's timeline.
-  const personShaped = xq.intent === "question" || xq.must.length === 1;
+  const personShaped = xq.intent === Intent.Question || xq.must.length === 1;
   if (xq.filters.authorId === null && personShaped) {
     for (const token of xq.must.slice(0, 2)) {
       const hit = await deps.resolveEntity([token]);
@@ -266,8 +268,8 @@ export async function tierB(
         xq.filters.authorId = hit.authorId;
         xq.must = xq.must.filter((t) => t !== token);
         // A question stays a question; otherwise this is a person(+topic) query.
-        if (xq.intent === "topic") {
-          xq.intent = xq.must.length > 0 ? "person_topic" : "person";
+        if (xq.intent === Intent.Topic) {
+          xq.intent = xq.must.length > 0 ? Intent.PersonTopic : Intent.Person;
         }
         consume(token, "filters.authorId");
         break;
@@ -285,10 +287,10 @@ export async function tierB(
       [string, { strong: string[]; weak: string[] }]
     >;
     for (const [aspect, { weak }] of entries) {
-      if (!aspects.includes(aspect)) continue;
+      if (!aspects.includes(aspect as Term)) continue;
       for (const w of weak) weakWords.add(w);
     }
-    const stay: string[] = [];
+    const stay: Term[] = [];
     for (const t of xq.must) {
       if (weakWords.has(t)) {
         xq.should.push(t);
@@ -428,8 +430,8 @@ function stripTokens(xq: XQuery, fragment: string) {
  * non-aspect content token (ASPECTS.md G5). "$"+digits in the ORIGINAL text is a
  * ~price signal (tokenizer already reduced it to a bare number — hence rawText).
  */
-export function mapAspects(tokens: string[], rawText: string): string[] {
-  const found = new Set<string>();
+export function mapAspects(tokens: Term[], rawText: string): Term[] {
+  const found = new Set<Term>();
   const joined = " " + tokens.join(" ") + " ";
   const entries = Object.entries(aspectsFile.aspects) as Array<
     [string, { strong: string[]; weak: string[] }]
@@ -437,15 +439,15 @@ export function mapAspects(tokens: string[], rawText: string): string[] {
   const contentTokens = tokens.filter((t) => !t.startsWith("~"));
   for (const [aspect, { strong, weak }] of entries) {
     if (strong.some((p) => joined.includes(" " + p + " "))) {
-      found.add(aspect);
+      found.add(aspect as Term);
       continue;
     }
     const weakHits = weak.filter((w) => joined.includes(" " + w + " "));
     if (weakHits.length > 0 && contentTokens.some((token) => !weak.includes(token))) {
-      found.add(aspect);
+      found.add(aspect as Term);
     }
   }
-  if (/\$\d/.test(rawText)) found.add("~price");
+  if (/\$\d/.test(rawText)) found.add("~price" as Term);
   return [...found].sort();
 }
 
@@ -453,7 +455,7 @@ export function mapAspects(tokens: string[], rawText: string): string[] {
 export function detectQuestionIntent(raw: string, tokens: string[]): Intent | null {
   const first = tokens[0];
   const interrogatives = ["what", "who", "why", "how", "when", "where", "which"];
-  if (first !== undefined && interrogatives.includes(first)) return "question";
-  if (raw.trimEnd().endsWith("?")) return "question";
+  if (first !== undefined && interrogatives.includes(first)) return Intent.Question;
+  if (raw.trimEnd().endsWith("?")) return Intent.Question;
   return null;
 }

@@ -4,22 +4,31 @@
 // the Tier C output grammar. Bump `v` on any breaking change.
 
 import type { VisualMediaType } from "../contracts/media";
+import type { AuthorId, QueryKey, Term } from "../contracts/ids";
 
 export const XQUERY_VERSION = 1 as const;
 
-export type Intent =
-  | "topic"
-  | "person"
-  | "person_topic"
-  | "media"
-  | "question"
-  | "compare"
-  | "event";
+export const Intent = {
+  Topic: "topic",
+  Person: "person",
+  PersonTopic: "person_topic",
+  Media: "media",
+  Question: "question",
+  Compare: "compare",
+  Event: "event",
+} as const;
+export type Intent = (typeof Intent)[keyof typeof Intent];
+
+export const SortOrder = {
+  Top: "top",
+  Latest: "latest",
+} as const;
+export type SortOrder = (typeof SortOrder)[keyof typeof SortOrder];
 
 export type MediaFilter = VisualMediaType;
 
 export interface XQueryFilters {
-  authorId: string | null; // resolved id — NEVER a handle or display name
+  authorId: AuthorId | null; // resolved id — NEVER a handle or display name
   since: number | null; // epoch ms, absolute (parser resolves relative forms)
   until: number | null;
   media: MediaFilter | null;
@@ -31,16 +40,16 @@ export interface XQuery {
   v: typeof XQUERY_VERSION;
   intent: Intent;
   /** AND terms, tokenizer-normalized. Gate retrieval. */
-  must: string[];
+  must: Term[];
   /** Soft terms: rerank boosts + L2 union. Never gate. */
-  should: string[];
+  should: Term[];
   /** Exact token-adjacency groups, including stopwords; verified on candidate text. */
-  phrases: string[][];
-  exclude: string[];
+  phrases: Term[][];
+  exclude: Term[];
   /** Canonical aspect tokens (~price, ...) — closed vocabulary from shared/lexicons. */
-  aspects: string[];
+  aspects: Term[];
   filters: XQueryFilters;
-  sort: "top" | "latest";
+  sort: SortOrder;
   // NOTE deliberately absent: presentation mode (list|answer). It rides in the
   // request envelope, chosen by the user — never inferred (DESIGN §4.1).
 }
@@ -56,14 +65,14 @@ export const emptyFilters = (): XQueryFilters => ({
 
 export const emptyXQuery = (): XQuery => ({
   v: XQUERY_VERSION,
-  intent: "topic",
+  intent: Intent.Topic,
   must: [],
   should: [],
   phrases: [],
   exclude: [],
   aspects: [],
   filters: emptyFilters(),
-  sort: "top",
+  sort: SortOrder.Top,
 });
 
 /**
@@ -72,7 +81,7 @@ export const emptyXQuery = (): XQuery => ({
  * this string is the identity used by queryCache, answers, and feedback.
  */
 export function canonicalJson(xq: XQuery): string {
-  const sorted = (xs: string[]) => [...xs].sort();
+  const sorted = (xs: Term[]) => [...xs].sort();
   const phrases = xq.phrases
     .map((p) => [...p])
     .sort((a, b) => (a[0] ?? "").localeCompare(b[0] ?? ""));
@@ -100,7 +109,7 @@ export function canonicalJson(xq: XQuery): string {
  * queryKey: FNV-1a 64-bit over canonical JSON, hex. Not cryptographic — it's a
  * cache/aggregation key at hackathon scale; trivially portable to Rust.
  */
-export function queryKey(xq: XQuery): string {
+export function queryKey(xq: XQuery): QueryKey {
   const s = canonicalJson(xq);
   let h = 0xcbf29ce484222325n;
   const prime = 0x100000001b3n;
@@ -109,7 +118,7 @@ export function queryKey(xq: XQuery): string {
     h ^= BigInt(s.charCodeAt(i));
     h = (h * prime) & mask;
   }
-  return h.toString(16).padStart(16, "0");
+  return h.toString(16).padStart(16, "0") as QueryKey;
 }
 
 /** Parse + validate an untrusted JSON string (Tier C output, cache rows). */
