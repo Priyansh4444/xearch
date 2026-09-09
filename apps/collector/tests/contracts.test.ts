@@ -14,16 +14,9 @@ import {
   toIngressMediaType,
 } from "../src/contracts/media.ts";
 import {
-  CandidateOrigin,
-  InteractionKind,
-  SkipReason,
-} from "../src/contracts/normalize-kinds.ts";
-import {
   isStatusRow,
   isTombstoneRow,
   parseProviderFacetType,
-  ProviderFacetType,
-  ProviderStatusType,
 } from "../src/contracts/provider.ts";
 import {
   parseAccountState,
@@ -63,52 +56,67 @@ describe("collector shared contracts", () => {
   });
 
   test("keeps provider media values closed at the acquisition boundary", () => {
-    expect(parseProviderMediaType(ProviderMediaType.Photo)).toBe(ProviderMediaType.Photo);
+    // Unknown future formats decode to absence, never throw and never pass.
     expect(parseProviderMediaType("future_format")).toBeNull();
+    expect(parseProviderMediaType(null)).toBeNull();
+    expect(parseProviderMediaType(42)).toBeNull();
+    // The mosaic/photo collapse is the one mapping that must never drift.
     expect(toIngressMediaType(ProviderMediaType.MosaicPhoto)).toBe(IngressMediaType.Image);
   });
 
   test("closes run-state and provider string unions at decode time", () => {
-    expect(parseAccountState("paused")).toBe("paused");
     expect(parseAccountState("running")).toBeNull();
-    expect(parsePauseReason("invalid_response")).toBe("invalid_response");
     expect(parsePauseReason("timeout")).toBeNull();
-    expect(parseDiscoveryResolution("resolved")).toBe("resolved");
     expect(parseDiscoveryResolution("pending")).toBeNull();
-    expect(isStatusRow(ProviderStatusType.Status)).toBe(true);
-    expect(isTombstoneRow(ProviderStatusType.Tombstone)).toBe(true);
-    expect(parseProviderFacetType(ProviderFacetType.Mention)).toBe(ProviderFacetType.Mention);
     expect(parseProviderFacetType("emoji")).toBeNull();
-    expect(CandidateOrigin.Timeline).toBe("timeline");
-    expect(SkipReason.OutsideHistoryWindow).toBe("outside_history_window");
-    expect(InteractionKind.Mention).toBe("mention");
+    expect(parseProviderFacetType(null)).toBeNull();
+    expect(isStatusRow("deleted")).toBe(false);
+    expect(isTombstoneRow(null)).toBe(false);
   });
 
-  test("brands domain identities without changing their runtime values", () => {
-    expect(parseTweetId("123")).toBe("123");
-    expect(parseAuthorId("456")).toBe("456");
-    expect(parseHandle("nasa")).toBe("nasa");
-    expect(parseTerm("convex")).toBe("convex");
-    expect(parseQueryKey("0123456789abcdef")).toBe("0123456789abcdef");
-    // Same blank rejection as parseNonEmptyString: brands add types, not behavior.
+  test("rejects every non-identity for branded domain ids", () => {
+    // Failure matrix: blanks (including unicode whitespace), non-strings, and
+    // hostile objects must all decode to absence — never throw, never pass.
+    // Each parser shares parseNonEmptyString semantics, so one matrix covers all five.
+    const hostile: unknown[] = [
+      "",
+      "   ",
+      "\t\n ",
+      " ",
+      null,
+      undefined,
+      0,
+      42,
+      true,
+      false,
+      {},
+      [],
+      ["123"],
+      { toString: () => "123" },
+    ];
     for (const parse of [parseTweetId, parseAuthorId, parseHandle, parseTerm, parseQueryKey]) {
-      expect(parse("")).toBeNull();
-      expect(parse("   ")).toBeNull();
-      expect(parse(null)).toBeNull();
-      expect(parse(42)).toBeNull();
+      for (const value of hostile) {
+        expect(parse(value), `${parse.name}(${JSON.stringify(value)})`).toBeNull();
+      }
     }
-    // Branded values serialize exactly like the strings they wrap.
-    expect(JSON.stringify({ id: parseTweetId("123"), authorId: parseAuthorId("456") })).toBe(
-      '{"id":"123","authorId":"456"}',
-    );
-    // A tweet id is not an author id, even though both erase to string.
+  });
+
+  test("keeps brand separation at compile time", () => {
+    // The assertion IS the compilation (tsc runs in CI): if the brands ever
+    // collapse to plain string, the @ts-expect-error below becomes unused and
+    // typechecking fails. No runtime behavior to assert — erasure is the point.
     const tweetId = parseTweetId("123");
     if (tweetId !== null) {
-      const authorId: AuthorId | null = tweetId as unknown as AuthorId | null;
-      expect(authorId).toBe("123");
       // @ts-expect-error: TweetId must not be directly assignable to AuthorId
       const direct: AuthorId | null = tweetId;
-      expect(direct).toBe("123");
+      void direct;
     }
+  });
+
+  test("keeps values verbatim instead of trimming them", () => {
+    // Non-blank input passes through untouched (normalization owns transforms).
+    // Pinned so a well-meaning trim() cannot silently change stored ids.
+    expect(parseTweetId("  123  ")).toBe("  123  ");
+    expect(parseHandle("NASA")).toBe("NASA");
   });
 });

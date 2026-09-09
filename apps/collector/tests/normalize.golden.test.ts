@@ -4,19 +4,25 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import fixture from "./fixtures/fxtwitter/pages.json" with { type: "json" };
 import { mapStatus } from "../src/normalization/mapping.ts";
-import { normalizePages, unknownRejectionCodes } from "../src/normalization/normalize.ts";
+import {
+  normalizePages,
+  unknownRejectionCodes,
+  type NormalizationResult,
+  type NormalizeAccount,
+  type RawPageInput,
+} from "../src/normalization/normalize.ts";
 import type { AuthorId, Handle } from "../src/contracts/ids.ts";
 
 const EXPECTED_DIR = fileURLToPath(new URL("./fixtures/fxtwitter/expected/", import.meta.url));
 
-function accounts() {
+function accounts(): NormalizeAccount[] {
   return fixture.accounts.map((account) => ({
     userId: account.userId as AuthorId,
     handle: account.handle as Handle,
   }));
 }
 
-function pages() {
+function pages(): RawPageInput[] {
   return fixture.pages.map((page) => ({
     ...page,
     accountUserId: page.accountUserId as AuthorId,
@@ -24,7 +30,7 @@ function pages() {
   }));
 }
 
-function run() {
+function run(): NormalizationResult {
   return normalizePages(
     pages(),
     { cutoffAt: fixture.cutoffAt, coverageFloor: fixture.coverageFloor, accounts: accounts() },
