@@ -1,6 +1,7 @@
-use criterion::{black_box, Criterion, Throughput};
+use criterion::{Criterion, Throughput};
 use serde::Deserialize;
 use std::collections::HashSet;
+use std::hint::black_box;
 use std::time::Duration;
 use xearch_indexer::tokenizer::tokenize;
 
