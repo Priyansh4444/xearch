@@ -1,19 +1,31 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { Option } from "effect";
+import * as Data from "effect/Data";
+import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import type {
+  FxTwitterError,
   FxTwitterTimelinePage,
   TimelineClient,
   TimelineRequest,
   TimelineResponse,
 } from "../acquisition/fxtwitter.ts";
 import {
+  readJsonIfExistsEffect,
+  writeJsonAtomicEffect,
+  type FsError,
+} from "../contracts/fs.ts";
+import {
   parseNonEmptyString,
   parseNonNegativeNumber,
 } from "../contracts/primitives.ts";
-import { parseProviderMediaType } from "../contracts/media.ts";
+import {
+  isImageProviderMedia,
+  parseProviderMediaType,
+  ProviderMediaType,
+} from "../contracts/media.ts";
+import { isStatusRow, isTombstoneRow } from "../contracts/provider.ts";
 import { parseProviderStatus, type ProviderStatus } from "../normalization/mapping.ts";
 
 const CHECKPOINT_VERSION = 1;
@@ -87,6 +99,22 @@ interface ProbeCheckpoint {
   report: ProbeReport;
 }
 
+export class ProbeValidationError extends Data.TaggedError("ProbeValidationError")<{
+  readonly message: string;
+}> {}
+
+export class ProbeCheckpointError extends Data.TaggedError("ProbeCheckpointError")<{
+  readonly message: string;
+  readonly path: string;
+  readonly cause: unknown;
+}> {}
+
+export type ProbeError =
+  | ProbeValidationError
+  | ProbeCheckpointError
+  | FsError
+  | FxTwitterError;
+
 const StopReasonSchema = Schema.Union([
   Schema.Literal("page-limit"),
   Schema.Literal("no-content"),
@@ -158,81 +186,86 @@ export async function runTimelineProbe(
   client: TimelineClient,
   options: ProbeOptions,
 ): Promise<ProbeReport> {
-  validateOptions(options);
-  await mkdir(join(options.outputDirectory, "raw"), { recursive: true });
-
-  const checkpointPath = join(options.outputDirectory, "checkpoint.json");
-  const reportPath = join(options.outputDirectory, "report.json");
-  const checkpoint =
-    (await loadCheckpoint(checkpointPath)) ?? newCheckpoint(options);
-  assertCheckpointMatches(checkpoint, options);
-
-  if (checkpoint.completed) return checkpoint.report;
-
-  const seenTweetIds = new Set(checkpoint.seenTweetIds);
-  const seenCursors = new Set(checkpoint.seenCursors ?? []);
-
-  for (let requestIndex = 0; requestIndex < options.pages; requestIndex += 1) {
-    const pageNumber = checkpoint.nextPage;
-    const inputCursor = checkpoint.nextCursor;
-    const request: TimelineRequest = {
-      handle: options.handle,
-      count: options.count,
-      cursor: inputCursor,
-      withReplies: options.withReplies,
-    };
-    const response = await client.fetchTimelinePage(request);
-
-    await writeJson(
-      join(options.outputDirectory, "raw", `${String(pageNumber).padStart(6, "0")}.json`),
-      response.raw,
-    );
-
-    if (response.page === null) {
-      checkpoint.report.stopReason = "no-content";
-      checkpoint.report.updatedAt = new Date().toISOString();
-      checkpoint.completed = true;
-      await persist(checkpointPath, reportPath, checkpoint);
-      break;
-    }
-
-    const pageReport = analyzeTimelinePage(
-      pageNumber,
-      inputCursor,
-      response,
-      seenTweetIds,
-    );
-    checkpoint.report.pages.push(pageReport);
-    mergePageReport(checkpoint.report, pageReport);
-    checkpoint.nextPage += 1;
-    checkpoint.nextCursor = response.page.cursor.bottom;
-    checkpoint.seenTweetIds = [...seenTweetIds];
-
-    const stopReason = terminalStopReason(
-      response.page,
-      inputCursor,
-      seenCursors,
-    );
-    if (response.page.cursor.bottom !== null) seenCursors.add(response.page.cursor.bottom);
-    checkpoint.seenCursors = [...seenCursors];
-
-    if (stopReason !== null) {
-      checkpoint.report.stopReason = stopReason;
-      checkpoint.completed = true;
-    } else {
-      checkpoint.report.stopReason = "page-limit";
-    }
-    checkpoint.report.updatedAt = new Date().toISOString();
-    await persist(checkpointPath, reportPath, checkpoint);
-
-    if (checkpoint.completed) break;
-    if (requestIndex + 1 < options.pages && options.delayMs > 0) {
-      await new Promise((resolve) => setTimeout(resolve, options.delayMs));
-    }
-  }
-
-  return checkpoint.report;
+  return Effect.runPromise(runTimelineProbeEffect(client, options));
 }
+
+export const runTimelineProbeEffect = Effect.fn("probe.runTimelineProbe")(
+  function* (client: TimelineClient, options: ProbeOptions) {
+    yield* validateOptions(options);
+
+    const checkpointPath = join(options.outputDirectory, "checkpoint.json");
+    const reportPath = join(options.outputDirectory, "report.json");
+    const loaded = yield* loadCheckpoint(checkpointPath);
+    const checkpoint = loaded ?? newCheckpoint(options);
+    yield* assertCheckpointMatches(checkpoint, options);
+
+    if (checkpoint.completed) return checkpoint.report;
+
+    const seenTweetIds = new Set(checkpoint.seenTweetIds);
+    const seenCursors = new Set(checkpoint.seenCursors ?? []);
+
+    for (let requestIndex = 0; requestIndex < options.pages; requestIndex += 1) {
+      const pageNumber = checkpoint.nextPage;
+      const inputCursor = checkpoint.nextCursor;
+      const request: TimelineRequest = {
+        handle: options.handle,
+        count: options.count,
+        cursor: inputCursor,
+        withReplies: options.withReplies,
+      };
+      const response = yield* client.fetchTimelinePageEffect(request);
+
+      yield* writeJsonAtomicEffect(
+        join(options.outputDirectory, "raw", `${String(pageNumber).padStart(6, "0")}.json`),
+        response.raw,
+      );
+
+      if (response.page === null) {
+        checkpoint.report.stopReason = "no-content";
+        checkpoint.report.updatedAt = new Date().toISOString();
+        checkpoint.completed = true;
+        yield* persist(checkpointPath, reportPath, checkpoint);
+        break;
+      }
+
+      const pageReport = analyzeTimelinePage(
+        pageNumber,
+        inputCursor,
+        response,
+        seenTweetIds,
+      );
+      checkpoint.report.pages.push(pageReport);
+      mergePageReport(checkpoint.report, pageReport);
+      checkpoint.nextPage += 1;
+      checkpoint.nextCursor = response.page.cursor.bottom;
+      checkpoint.seenTweetIds = [...seenTweetIds];
+
+      const stopReason = terminalStopReason(
+        response.page,
+        inputCursor,
+        seenCursors,
+      );
+      if (response.page.cursor.bottom !== null) seenCursors.add(response.page.cursor.bottom);
+      checkpoint.seenCursors = [...seenCursors];
+
+      if (stopReason !== null) {
+        checkpoint.report.stopReason = stopReason;
+        checkpoint.completed = true;
+      } else {
+        checkpoint.report.stopReason = "page-limit";
+      }
+      checkpoint.report.updatedAt = new Date().toISOString();
+      yield* persist(checkpointPath, reportPath, checkpoint);
+
+      if (checkpoint.completed) break;
+      if (requestIndex + 1 < options.pages && options.delayMs > 0) {
+        yield* Effect.sleep(options.delayMs);
+      }
+    }
+
+    return checkpoint.report;
+  },
+);
 
 export function analyzeTimelinePage(
   pageNumber: number,
@@ -241,7 +274,7 @@ export function analyzeTimelinePage(
   seenTweetIds: Set<string>,
 ): PageReport {
   if (response.page === null) {
-    throw new Error("Cannot analyze an empty timeline response");
+    throw new ProbeValidationError({ message: "Cannot analyze an empty timeline response" });
   }
 
   const missingRequiredFields: Record<string, number> = {};
@@ -278,15 +311,16 @@ export function analyzeTimelinePage(
 
     if (status.replying_to !== undefined && status.replying_to !== null) kinds.replies += 1;
     const quote = parseProviderStatus(status.quote);
-    if (quote !== null && quote.type !== "tombstone") kinds.quotes += 1;
+    if (quote !== null && !isTombstoneRow(quote.type)) kinds.quotes += 1;
     if (status.reposted_by !== undefined && status.reposted_by !== null) kinds.reposts += 1;
 
     if (status.media?.all !== undefined && status.media.all !== null) {
       for (const media of status.media.all) {
         const mediaType = parseProviderMediaType(media.type);
-        if (mediaType === "photo" || mediaType === "mosaic_photo") kinds.images += 1;
-        else if (mediaType === "video") kinds.videos += 1;
-        else if (mediaType === "gif") kinds.gifs += 1;
+        if (mediaType === null) continue;
+        if (isImageProviderMedia(mediaType)) kinds.images += 1;
+        else if (mediaType === ProviderMediaType.Video) kinds.videos += 1;
+        else if (mediaType === ProviderMediaType.Gif) kinds.gifs += 1;
       }
     }
   }
@@ -311,7 +345,7 @@ export function analyzeTimelinePage(
 
 function missingIngressFields(status: ProviderStatus): string[] {
   const missing: string[] = [];
-  requireValue(missing, "type", status.type === "status");
+  requireValue(missing, "type", isStatusRow(status.type));
   requireValue(missing, "text", parseNonEmptyString(status.text) !== null);
   requireValue(missing, "created_timestamp", timestampMilliseconds(status.created_timestamp) !== null);
   const metrics = [
@@ -410,74 +444,77 @@ function newCheckpoint(options: ProbeOptions): ProbeCheckpoint {
   };
 }
 
-async function loadCheckpoint(path: string): Promise<ProbeCheckpoint | null> {
-  try {
-    const parsed: unknown = JSON.parse(await readFile(path, "utf8"));
-    const checkpoint = Schema.decodeUnknownOption(ProbeCheckpointSchema)(parsed);
-    if (Option.isNone(checkpoint)) {
-      throw new Error(`Unsupported checkpoint at ${path}`);
+const loadCheckpoint = Effect.fn("probe.loadCheckpoint")(function* (path: string) {
+  const parsed = yield* readJsonIfExistsEffect(path);
+  if (parsed === null) return null;
+
+  const checkpoint = Schema.decodeUnknownOption(ProbeCheckpointSchema)(parsed);
+  if (Option.isNone(checkpoint)) {
+    return yield* new ProbeCheckpointError({
+      message: `Unsupported checkpoint at ${path}`,
+      path,
+      cause: null,
+    });
+  }
+
+  return {
+    ...checkpoint.value,
+    seenCursors: [...checkpoint.value.seenCursors],
+    seenTweetIds: [...checkpoint.value.seenTweetIds],
+    report: {
+      ...checkpoint.value.report,
+      pages: checkpoint.value.report.pages.map((page) => ({
+        ...page,
+        missingRequiredFields: { ...page.missingRequiredFields },
+        kinds: { ...page.kinds },
+      })),
+      missingRequiredFields: { ...checkpoint.value.report.missingRequiredFields },
+    },
+  } satisfies ProbeCheckpoint;
+});
+
+const assertCheckpointMatches = Effect.fn("probe.assertCheckpointMatches")(
+  function* (checkpoint: ProbeCheckpoint, options: ProbeOptions) {
+    const expected = JSON.stringify({
+      handle: options.handle,
+      baseUrl: options.baseUrl,
+      count: options.count,
+      withReplies: options.withReplies,
+    });
+    if (JSON.stringify(checkpoint.identity) !== expected) {
+      return yield* new ProbeCheckpointError({
+        message:
+          "Existing checkpoint options do not match this run. Choose another --out directory.",
+        path: options.outputDirectory,
+        cause: null,
+      });
     }
-    return {
-      ...checkpoint.value,
-      seenCursors: [...checkpoint.value.seenCursors],
-      seenTweetIds: [...checkpoint.value.seenTweetIds],
-      report: {
-        ...checkpoint.value.report,
-        pages: checkpoint.value.report.pages.map((page) => ({
-          ...page,
-          missingRequiredFields: { ...page.missingRequiredFields },
-          kinds: { ...page.kinds },
-        })),
-        missingRequiredFields: { ...checkpoint.value.report.missingRequiredFields },
-      },
-    };
-  } catch (error) {
-    if (isNodeError(error) && error.code === "ENOENT") return null;
-    throw error;
-  }
-}
+  },
+);
 
-function assertCheckpointMatches(checkpoint: ProbeCheckpoint, options: ProbeOptions): void {
-  const expected = JSON.stringify({
-    handle: options.handle,
-    baseUrl: options.baseUrl,
-    count: options.count,
-    withReplies: options.withReplies,
-  });
-  if (JSON.stringify(checkpoint.identity) !== expected) {
-    throw new Error(
-      `Existing checkpoint options do not match this run. Choose another --out directory.`,
-    );
-  }
-}
-
-async function persist(
+const persist = Effect.fn("probe.persist")(function* (
   checkpointPath: string,
   reportPath: string,
   checkpoint: ProbeCheckpoint,
-): Promise<void> {
-  await writeJson(reportPath, checkpoint.report);
-  await writeJson(checkpointPath, checkpoint);
-}
+) {
+  yield* writeJsonAtomicEffect(reportPath, checkpoint.report);
+  yield* writeJsonAtomicEffect(checkpointPath, checkpoint);
+});
 
-async function writeJson(path: string, value: unknown): Promise<void> {
-  const temporaryPath = `${path}.tmp`;
-  await writeFile(temporaryPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-  await rename(temporaryPath, path);
-}
-
-function validateOptions(options: ProbeOptions): void {
-  if (parseNonEmptyString(options.handle) === null) throw new Error("handle is required");
+const validateOptions = Effect.fn("probe.validateOptions")(function* (options: ProbeOptions) {
+  if (parseNonEmptyString(options.handle) === null) {
+    return yield* new ProbeValidationError({ message: "handle is required" });
+  }
   if (!Number.isInteger(options.pages) || options.pages < 1) {
-    throw new Error("pages must be a positive integer");
+    return yield* new ProbeValidationError({ message: "pages must be a positive integer" });
   }
   if (!Number.isInteger(options.count) || options.count < 1 || options.count > 100) {
-    throw new Error("count must be an integer from 1 to 100");
+    return yield* new ProbeValidationError({ message: "count must be an integer from 1 to 100" });
   }
   if (!Number.isFinite(options.delayMs) || options.delayMs < 0) {
-    throw new Error("delayMs must be zero or greater");
+    return yield* new ProbeValidationError({ message: "delayMs must be zero or greater" });
   }
-}
+});
 
 function cursorFingerprint(cursor: string | null): string | null {
   if (cursor === null) return null;
@@ -503,8 +540,4 @@ function requireValue(missing: string[], field: string, present: boolean): void 
 
 function increment(counts: Record<string, number>, field: string): void {
   counts[field] = (counts[field] ?? 0) + 1;
-}
-
-function isNodeError(error: unknown): error is NodeJS.ErrnoException {
-  return error instanceof Error && "code" in error;
 }

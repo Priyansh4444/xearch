@@ -3,7 +3,10 @@ import { useMutation, useQuery } from "convex/react";
 import { ConvexError } from "convex/values";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "../../../convex/_generated/api";
+import { MediaType } from "../../../convex/contracts/media";
 import { queryInputError } from "../../../convex/engine/constraints";
+import { LadderLevel } from "../../../convex/engine/plan";
+import { SortOrder } from "../../../convex/engine/xquery";
 
 type SearchReturn = FunctionReturnType<typeof api.search.search>;
 type BaselineResults = FunctionReturnType<typeof api.search.searchBaseline>;
@@ -11,7 +14,6 @@ type Result = BaselineResults[number] & {
   matchedVia?: SearchReturn["results"][number]["matchedVia"];
 };
 type Lane = "xearch" | "baseline";
-type Sort = "top" | "latest";
 
 interface Shown {
   error: string | null;
@@ -31,13 +33,13 @@ function useSearchPage() {
     return {
       input: params.get("q") ?? "",
       query: (params.get("q") ?? "").trim(),
-      sort: params.get("sort") === "latest" ? ("latest" as const) : ("top" as const),
+      sort: params.get("sort") === SortOrder.Latest ? SortOrder.Latest : SortOrder.Top,
       lane: params.get("lane") === "baseline" ? ("baseline" as const) : ("xearch" as const),
     };
   });
   const [input, setInput] = useState(initial.input);
   const [query, setQuery] = useState(initial.query);
-  const [sort, setSort] = useState<Sort>(initial.sort);
+  const [sort, setSort] = useState<SortOrder>(initial.sort);
   const [lane, setLane] = useState<Lane>(initial.lane);
   const inputError = queryInputError(query);
   const canVote = useQuery(api.feedback.canVote);
@@ -47,7 +49,7 @@ function useSearchPage() {
     const url = new URL(window.location.href);
     if (query === "") url.searchParams.delete("q");
     else url.searchParams.set("q", query);
-    if (sort === "top") url.searchParams.delete("sort");
+    if (sort === SortOrder.Top) url.searchParams.delete("sort");
     else url.searchParams.set("sort", sort);
     if (lane === "xearch") url.searchParams.delete("lane");
     else url.searchParams.set("lane", lane);
@@ -129,7 +131,7 @@ export function App(): ReactElement {
       {query !== "" ? (
         <div className="controls">
           <div className="tabs" role="tablist" aria-label="Sort">
-            {((["top", "latest"] as const)).map((s) => (
+            {([SortOrder.Top, SortOrder.Latest] as const).map((s) => (
               <button
                 key={s}
                 type="button"
@@ -139,7 +141,7 @@ export function App(): ReactElement {
                 onClick={() => setSort(s)}
                 disabled={lane === "baseline" || operatorSort}
               >
-                {s === "top" ? "Top" : "Latest"}
+                {s === SortOrder.Top ? "Top" : "Latest"}
               </button>
             ))}
           </div>
@@ -191,7 +193,7 @@ function SearchBody({ query, error, shown, searching, canVote, onPick }: SearchB
   if (count === 1) countLabel = "1 post";
   if (count === 20) countLabel = "top 20 posts";
   let notice = "";
-  if (shown.ladder !== null && shown.ladder !== "L0") {
+  if (shown.ladder !== null && shown.ladder !== LadderLevel.L0) {
     notice = ` — exact matches were thin; widened to related posts (${shown.ladder})`;
   } else if (count < 20) {
     notice = " — matches within the bounded search window";
@@ -381,19 +383,19 @@ function ResultRow({ tweet, terms, queryKey }: ResultRowProps): ReactElement {
 }
 
 function Media({ tweet }: { tweet: Result }) {
-  if (tweet.mediaType === "none" || tweet.mediaUrls.length === 0) return null;
+  if (tweet.mediaType === MediaType.None || tweet.mediaUrls.length === 0) return null;
   return (
     <div className={tweet.mediaUrls.length > 1 ? "media grid" : "media"}>
       {tweet.mediaUrls.map((url) =>
-        tweet.mediaType === "image" ? (
+        tweet.mediaType === MediaType.Image ? (
           <img key={url} src={url} alt="" loading="lazy" />
         ) : (
           <video
             key={url}
             src={url}
-            controls={tweet.mediaType === "video"}
-            autoPlay={tweet.mediaType === "gif"}
-            loop={tweet.mediaType === "gif"}
+            controls={tweet.mediaType === MediaType.Video}
+            autoPlay={tweet.mediaType === MediaType.Gif}
+            loop={tweet.mediaType === MediaType.Gif}
             muted
             playsInline
             preload="metadata"

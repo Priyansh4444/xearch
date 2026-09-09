@@ -7,6 +7,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { mapAspects, tierA, tierB, type TierBDeps } from "../convex/engine/parse";
+import type { AuthorId, Term } from "../convex/contracts/ids";
 import { COMMON_DF_FLOOR } from "../convex/search";
 
 const NOW = Date.UTC(2026, 8, 7, 12); // fixed clock: 2026-09-07T12:00Z
@@ -24,8 +25,8 @@ const DF: Record<string, number> = {
 };
 
 test("repeated weak triggers do not count as content", () => {
-  expect(mapAspects(["cheap", "cheap", "expensive"], "")).not.toContain("~price");
-  expect(mapAspects(["cheap", "laptop"], "")).toContain("~price");
+  expect(mapAspects(["cheap", "cheap", "expensive"] as Term[], "")).not.toContain("~price");
+  expect(mapAspects(["cheap", "laptop"] as Term[], "")).toContain("~price");
 });
 
 test("invalid absolute dates remain visible instead of rolling over", async () => {
@@ -40,11 +41,11 @@ const deps: TierBDeps = {
     const df = DF[joined];
     if (df !== undefined && df >= COMMON_DF_FLOOR) return null;
     const authorId = AUTHORS[joined];
-    return authorId === undefined ? null : { authorId };
+    return authorId === undefined ? null : { authorId: authorId as AuthorId };
   },
   async resolveHandle(handle) {
     const authorId = AUTHORS[handle];
-    return authorId === undefined ? null : { authorId };
+    return authorId === undefined ? null : { authorId: authorId as AuthorId };
   },
   async dfOf(term) {
     return DF[term] ?? null;

@@ -3,40 +3,66 @@
 
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import * as Data from "effect/Data";
+import * as Effect from "effect/Effect";
 import type { PilotConfig } from "../config/pilot.ts";
+import {
+  fileExistsEffect,
+  listFilesEffect,
+  moveDirectoryEffect,
+  readJsonEffect,
+  readJsonIfExistsEffect,
+  readTextEffect,
+  sha256FileEffect,
+  writeJsonAtomicEffect,
+  writeTextAtomicEffect,
+  FsError,
+} from "../contracts/fs.ts";
 import {
   normalizeOptionsFor,
   normalizePages,
-  readRunPages,
+  readRunPagesEffect,
   unknownRejectionCodes,
-  writeNormalizationOutput,
   type NormalizationCounts,
   type NormalizationResult,
 } from "../normalization/normalize.ts";
 import {
   ARCHIVE_ROOT,
-  fileExists,
-  listFiles,
-  moveDirectory,
   outputPaths,
-  readJson,
-  readJsonIfExists,
   runPaths,
-  sha256File,
-  writeJsonAtomic,
   type RunPaths,
 } from "./layout.ts";
 import {
+  AccountState,
+  AcquisitionStatus,
+  PauseReason,
+  StopReason,
+  isNormalizableAcquisitionStatus,
+} from "../contracts/run-state.ts";
+import {
+  AccountNotFoundError,
+  UnsupportedCheckpointVersionError,
   acquisitionStatus,
-  findAccount,
+  findAccountEffect,
   isTerminal,
-  loadCheckpoint,
+  loadCheckpointEffect,
   projectManifest,
-  saveState,
+  saveStateEffect,
   type FileDigest,
   type Manifest,
 } from "./manifest.ts";
-import { buildReport } from "./report.ts";
+import { buildReportEffect } from "./report.ts";
+
+export class LifecycleError extends Data.TaggedError("LifecycleError")<{
+  readonly message: string;
+  readonly cause: unknown;
+}> {}
+
+export type LifecycleFailure =
+  | LifecycleError
+  | FsError
+  | AccountNotFoundError
+  | UnsupportedCheckpointVersionError;
 
 export interface LifecycleOptions {
   dataDir: string;
@@ -52,67 +78,102 @@ export interface NormalizeAndArchiveResult {
   counts: NormalizationCounts;
 }
 
+function lifecycleFail(message: string, cause: unknown = null): LifecycleError {
+  return new LifecycleError({ message, cause });
+}
+
+function readBytesEffect(path: string): Effect.Effect<Buffer, FsError> {
+  return Effect.tryPromise({
+    try: () => readFile(path),
+    catch: (cause) =>
+      new FsError({ message: `failed to read ${path}`, path, operation: "read", cause }),
+  });
+}
+
 /** Normalize a terminal run, validate the outputs, write the report, finalize hashes, archive. */
+export const normalizeAndArchiveEffect = Effect.fn("normalizeAndArchive")(
+  function* (options: LifecycleOptions) {
+    const now = options.now ?? Date.now;
+    const log = options.log ?? (() => undefined);
+    const { paths, config } = options;
+
+    const checkpoint = yield* loadCheckpointEffect(paths);
+    const status = acquisitionStatus(checkpoint);
+    if (!isNormalizableAcquisitionStatus(status)) {
+      return yield* lifecycleFail(
+        `run ${checkpoint.runId} acquisition is ${status}; only completed or partial runs can be normalized`,
+      );
+    }
+
+    let manifest = yield* saveStateEffect(paths, checkpoint, config, now());
+    const pages = yield* readRunPagesEffect(paths, manifest);
+    const result = normalizePages(pages, normalizeOptionsFor(manifest, config));
+    yield* writeTextAtomicEffect(paths.ingress, result.ingress);
+    yield* writeTextAtomicEffect(paths.rejections, result.rejections);
+    yield* writeTextAtomicEffect(paths.duplicates, result.duplicates);
+    yield* writeTextAtomicEffect(paths.skips, result.skips);
+    yield* validateNormalizationEffect(paths, result);
+    log(
+      `run ${checkpoint.runId}: normalized ${pages.length} page(s): ${result.counts.accepted.total} accepted, ${result.counts.rejected.total} rejected, ${result.counts.duplicates} duplicates, ${result.counts.skippedOutsideWindow} outside window`,
+    );
+
+    manifest = projectManifest(
+      checkpoint,
+      config,
+      { normalization: { normalizedAt: now(), counts: result.counts }, archive: null },
+      now(),
+    );
+    yield* writeJsonAtomicEffect(paths.manifest, manifest);
+
+    const report = yield* buildReportEffect(paths, manifest, result.counts);
+    yield* writeJsonAtomicEffect(paths.report, report);
+
+    const archivedPaths = yield* finalizeAndArchiveEffect(options.dataDir, paths, manifest, now());
+    log(`run ${checkpoint.runId}: archived to ${archivedPaths.root}`);
+    const archivedManifest = (yield* readJsonEffect(archivedPaths.manifest)) as Manifest;
+    return { archivedPaths, manifest: archivedManifest, counts: result.counts } satisfies NormalizeAndArchiveResult;
+  },
+);
+
 export async function normalizeAndArchive(options: LifecycleOptions): Promise<NormalizeAndArchiveResult> {
-  const now = options.now ?? Date.now;
-  const log = options.log ?? (() => undefined);
-  const { paths, config } = options;
-
-  const checkpoint = await loadCheckpoint(paths);
-  const status = acquisitionStatus(checkpoint);
-  if (status !== "completed" && status !== "partial") {
-    throw new Error(`run ${checkpoint.runId} acquisition is ${status}; only completed or partial runs can be normalized`);
-  }
-
-  let manifest = await saveState(paths, checkpoint, config, now());
-  const pages = await readRunPages(paths, manifest);
-  const result = normalizePages(pages, normalizeOptionsFor(manifest, config));
-  await writeNormalizationOutput(paths, result);
-  await validateNormalization(paths, result);
-  log(
-    `run ${checkpoint.runId}: normalized ${pages.length} page(s): ${result.counts.accepted.total} accepted, ${result.counts.rejected.total} rejected, ${result.counts.duplicates} duplicates, ${result.counts.skippedOutsideWindow} outside window`,
-  );
-
-  manifest = projectManifest(
-    checkpoint,
-    config,
-    { normalization: { normalizedAt: now(), counts: result.counts }, archive: null },
-    now(),
-  );
-  await writeJsonAtomic(paths.manifest, manifest);
-
-  const report = await buildReport(paths, manifest, result.counts);
-  await writeJsonAtomic(paths.report, report);
-
-  const archivedPaths = await finalizeAndArchive(options.dataDir, paths, manifest, now());
-  log(`run ${checkpoint.runId}: archived to ${archivedPaths.root}`);
-  return { archivedPaths, manifest: await readJson<Manifest>(archivedPaths.manifest), counts: result.counts };
+  return Effect.runPromise(normalizeAndArchiveEffect(options));
 }
 
 /** Compute digests for every retained file, write the final manifest, move the run to data/old. */
-export async function finalizeAndArchive(dataDir: string, paths: RunPaths, manifest: Manifest, now: number): Promise<RunPaths> {
-  const files = await digestRun(paths);
-  const finalManifest: Manifest = {
-    ...manifest,
-    updatedAt: now,
-    archive: { archivedAt: now, files },
-  };
-  finalManifest.acceptance = manifestAcceptance(finalManifest);
-  await writeJsonAtomic(paths.manifest, finalManifest);
-  const archived = runPaths(dataDir, ARCHIVE_ROOT, manifest.runId);
-  await moveDirectory(paths.root, archived.root);
-  return archived;
+export const finalizeAndArchiveEffect = Effect.fn("finalizeAndArchive")(
+  function* (dataDir: string, paths: RunPaths, manifest: Manifest, now: number) {
+    const files = yield* digestRunEffect(paths);
+    const finalManifest: Manifest = {
+      ...manifest,
+      updatedAt: now,
+      archive: { archivedAt: now, files },
+    };
+    finalManifest.acceptance = manifestAcceptance(finalManifest);
+    yield* writeJsonAtomicEffect(paths.manifest, finalManifest);
+    const archived = runPaths(dataDir, ARCHIVE_ROOT, manifest.runId);
+    yield* moveDirectoryEffect(paths.root, archived.root);
+    return archived;
+  },
+);
+
+export async function finalizeAndArchive(
+  dataDir: string,
+  paths: RunPaths,
+  manifest: Manifest,
+  now: number,
+): Promise<RunPaths> {
+  return Effect.runPromise(finalizeAndArchiveEffect(dataDir, paths, manifest, now));
 }
 
-async function digestRun(paths: RunPaths): Promise<FileDigest[]> {
-  const files = await listFiles(paths.root);
+const digestRunEffect = Effect.fn("digestRun")(function* (paths: RunPaths) {
+  const files = yield* listFilesEffect(paths.root);
   const digests: FileDigest[] = [];
   for (const path of files) {
     if (path === "manifest.json" || path.endsWith(".tmp")) continue;
-    digests.push({ path, ...(await sha256File(join(paths.root, path))) });
+    digests.push({ path, ...(yield* sha256FileEffect(join(paths.root, path))) });
   }
   return digests;
-}
+});
 
 function manifestAcceptance(manifest: Manifest): Manifest["acceptance"] {
   const reasons = manifest.acceptance.reasons.filter(
@@ -124,23 +185,33 @@ function manifestAcceptance(manifest: Manifest): Manifest["acceptance"] {
 }
 
 /** Line counts on disk must equal the counts the normalizer reported. */
+export const validateNormalizationEffect = Effect.fn("validateNormalization")(
+  function* (paths: RunPaths, result: NormalizationResult) {
+    const counts = result.counts;
+    const checks: [string, string, number][] = [
+      [paths.ingress, "ingress", counts.accepted.total + counts.authors],
+      [paths.rejections, "rejections", counts.rejected.total],
+      [paths.duplicates, "duplicates", counts.duplicates],
+      [paths.skips, "skips", counts.skippedOutsideWindow],
+    ];
+    for (const [path, name, expected] of checks) {
+      const actual = countLines(yield* readTextEffect(path));
+      if (actual !== expected) {
+        return yield* lifecycleFail(`${name} has ${actual} line(s) but the normalizer counted ${expected}`);
+      }
+    }
+    const unknown = unknownRejectionCodes(counts);
+    if (unknown.length > 0) {
+      return yield* lifecycleFail(`unknown rejection codes: ${unknown.join(", ")}`);
+    }
+    if (counts.accepted.total !== counts.accepted.timeline + counts.accepted.embedded) {
+      return yield* lifecycleFail("accepted totals do not reconcile by origin");
+    }
+  },
+);
+
 export async function validateNormalization(paths: RunPaths, result: NormalizationResult): Promise<void> {
-  const counts = result.counts;
-  const checks: [string, string, number][] = [
-    [paths.ingress, "ingress", counts.accepted.total + counts.authors],
-    [paths.rejections, "rejections", counts.rejected.total],
-    [paths.duplicates, "duplicates", counts.duplicates],
-    [paths.skips, "skips", counts.skippedOutsideWindow],
-  ];
-  for (const [path, name, expected] of checks) {
-    const actual = countLines(await readFile(path, "utf8"));
-    if (actual !== expected) throw new Error(`${name} has ${actual} line(s) but the normalizer counted ${expected}`);
-  }
-  const unknown = unknownRejectionCodes(counts);
-  if (unknown.length > 0) throw new Error(`unknown rejection codes: ${unknown.join(", ")}`);
-  if (counts.accepted.total !== counts.accepted.timeline + counts.accepted.embedded) {
-    throw new Error("accepted totals do not reconcile by origin");
-  }
+  return Effect.runPromise(validateNormalizationEffect(paths, result));
 }
 
 export interface VerifyResult {
@@ -153,58 +224,90 @@ export interface VerifyResult {
 }
 
 /** Re-normalize an archived run into a scratch directory and compare bytes; the archive is never modified. */
-export async function verifyArchive(archivedPaths: RunPaths, scratchDir: string, config: PilotConfig): Promise<VerifyResult> {
-  const manifest = await readJson<Manifest>(archivedPaths.manifest);
-  if (manifest.archive === null) throw new Error(`run ${manifest.runId} is not archived`);
-
-  const hashMismatches: string[] = [];
-  for (const file of manifest.archive.files) {
-    const digest = await sha256File(join(archivedPaths.root, file.path));
-    if (digest.sha256 !== file.sha256 || digest.bytes !== file.bytes) hashMismatches.push(file.path);
-  }
-
-  const outputsCompared: string[] = [];
-  const outputsDiffering: string[] = [];
-  if (manifest.normalization !== null) {
-    const pages = await readRunPages(archivedPaths, manifest);
-    const result = normalizePages(pages, normalizeOptionsFor(manifest, config));
-    const scratch = outputPaths(scratchDir);
-    await writeNormalizationOutput(scratch, result);
-    const pairs: [string, string, string][] = [
-      ["ingress/records.jsonl", archivedPaths.ingress, scratch.ingress],
-      ["rejections/records.jsonl", archivedPaths.rejections, scratch.rejections],
-      ["duplicates/records.jsonl", archivedPaths.duplicates, scratch.duplicates],
-      ["skips/records.jsonl", archivedPaths.skips, scratch.skips],
-    ];
-    for (const [name, archivedFile, scratchFile] of pairs) {
-      outputsCompared.push(name);
-      const [a, b] = await Promise.all([readFile(archivedFile), readFile(scratchFile)]);
-      if (!a.equals(b)) outputsDiffering.push(name);
+export const verifyArchiveEffect = Effect.fn("verifyArchive")(
+  function* (archivedPaths: RunPaths, scratchDir: string, config: PilotConfig) {
+    const manifest = (yield* readJsonEffect(archivedPaths.manifest)) as Manifest;
+    if (manifest.archive === null) {
+      return yield* lifecycleFail(`run ${manifest.runId} is not archived`);
     }
-  }
 
-  return {
-    runId: manifest.runId,
-    hashesChecked: manifest.archive.files.length,
-    hashMismatches,
-    outputsCompared,
-    outputsDiffering,
-    passed: hashMismatches.length === 0 && outputsDiffering.length === 0,
-  };
+    const hashMismatches: string[] = [];
+    for (const file of manifest.archive.files) {
+      const digest = yield* sha256FileEffect(join(archivedPaths.root, file.path));
+      if (digest.sha256 !== file.sha256 || digest.bytes !== file.bytes) hashMismatches.push(file.path);
+    }
+
+    const outputsCompared: string[] = [];
+    const outputsDiffering: string[] = [];
+    if (manifest.normalization !== null) {
+      const pages = yield* readRunPagesEffect(archivedPaths, manifest);
+      const result = normalizePages(pages, normalizeOptionsFor(manifest, config));
+      const scratch = outputPaths(scratchDir);
+      yield* writeTextAtomicEffect(scratch.ingress, result.ingress);
+      yield* writeTextAtomicEffect(scratch.rejections, result.rejections);
+      yield* writeTextAtomicEffect(scratch.duplicates, result.duplicates);
+      yield* writeTextAtomicEffect(scratch.skips, result.skips);
+      const pairs: [string, string, string][] = [
+        ["ingress/records.jsonl", archivedPaths.ingress, scratch.ingress],
+        ["rejections/records.jsonl", archivedPaths.rejections, scratch.rejections],
+        ["duplicates/records.jsonl", archivedPaths.duplicates, scratch.duplicates],
+        ["skips/records.jsonl", archivedPaths.skips, scratch.skips],
+      ];
+      for (const [name, archivedFile, scratchFile] of pairs) {
+        outputsCompared.push(name);
+        const a = yield* readBytesEffect(archivedFile);
+        const b = yield* readBytesEffect(scratchFile);
+        if (!a.equals(b)) outputsDiffering.push(name);
+      }
+    }
+
+    return {
+      runId: manifest.runId,
+      hashesChecked: manifest.archive.files.length,
+      hashMismatches,
+      outputsCompared,
+      outputsDiffering,
+      passed: hashMismatches.length === 0 && outputsDiffering.length === 0,
+    } satisfies VerifyResult;
+  },
+);
+
+export async function verifyArchive(
+  archivedPaths: RunPaths,
+  scratchDir: string,
+  config: PilotConfig,
+): Promise<VerifyResult> {
+  return Effect.runPromise(verifyArchiveEffect(archivedPaths, scratchDir, config));
 }
 
-export async function abandonAccount(options: LifecycleOptions, handle: string, reason: string): Promise<Manifest> {
-  const now = options.now ?? Date.now;
-  if (reason.trim().length === 0) throw new Error("an abandon reason is required");
-  const checkpoint = await loadCheckpoint(options.paths);
-  const account = findAccount(checkpoint, handle);
-  if (account.state === "completed") throw new Error(`account ${handle} already completed`);
-  if (account.state === "abandoned") throw new Error(`account ${handle} already abandoned`);
-  account.state = "abandoned";
-  account.abandonReason = reason.trim();
-  account.abandonedAt = now();
-  if (isTerminal(acquisitionStatus(checkpoint))) checkpoint.acquisitionCompletedAt ??= now();
-  return saveState(options.paths, checkpoint, options.config, now());
+export const abandonAccountEffect = Effect.fn("abandonAccount")(
+  function* (options: LifecycleOptions, handle: string, reason: string) {
+    const now = options.now ?? Date.now;
+    if (reason.trim().length === 0) {
+      return yield* lifecycleFail("an abandon reason is required");
+    }
+    const checkpoint = yield* loadCheckpointEffect(options.paths);
+    const account = yield* findAccountEffect(checkpoint, handle);
+    if (account.state === AccountState.Completed) {
+      return yield* lifecycleFail(`account ${handle} already completed`);
+    }
+    if (account.state === AccountState.Abandoned) {
+      return yield* lifecycleFail(`account ${handle} already abandoned`);
+    }
+    account.state = AccountState.Abandoned;
+    account.abandonReason = reason.trim();
+    account.abandonedAt = now();
+    if (isTerminal(acquisitionStatus(checkpoint))) checkpoint.acquisitionCompletedAt ??= now();
+    return yield* saveStateEffect(options.paths, checkpoint, options.config, now());
+  },
+);
+
+export async function abandonAccount(
+  options: LifecycleOptions,
+  handle: string,
+  reason: string,
+): Promise<Manifest> {
+  return Effect.runPromise(abandonAccountEffect(options, handle, reason));
 }
 
 /**
@@ -212,62 +315,97 @@ export async function abandonAccount(options: LifecycleOptions, handle: string, 
  * re-requests the cursor that produced the last (empty) page. Used after the
  * transient-empty-page fix; completed-by-cutoff accounts are never reopened.
  */
-export async function reopenAccount(options: LifecycleOptions, handle: string, reason: string): Promise<Manifest> {
-  const now = options.now ?? Date.now;
-  if (reason.trim().length === 0) throw new Error("a reopen reason is required");
-  const checkpoint = await loadCheckpoint(options.paths);
-  const account = findAccount(checkpoint, handle);
-  const exhausted = account.state === "completed" && account.stopReason === "cursor_exhausted";
-  const stalled = account.state === "paused" && account.pauseReason === "cursor_stalled";
-  if (!exhausted && !stalled) {
-    throw new Error(
-      `account ${handle} is ${account.state}${account.stopReason ? ` (${account.stopReason})` : ""}${account.pauseReason ? ` (${account.pauseReason})` : ""}; only cursor_exhausted or cursor_stalled accounts can be reopened`,
-    );
-  }
-  if (account.userId === null || account.pagesCompleted === 0) throw new Error(`account ${handle} has no retained pages to continue from`);
-  const lastMeta = await readJson<{ request: { cursor: string | null }; outputCursor: string | null }>(
-    join(options.paths.raw, account.userId, `${String(account.pagesCompleted).padStart(6, "0")}.meta.json`),
-  );
-  account.state = "active";
-  account.stopReason = null;
-  account.pauseReason = null;
-  account.pausedAt = null;
-  account.consecutiveEmptyPages = 0;
-  account.nextPage = account.pagesCompleted + 1;
-  account.nextCursor = lastMeta.request.cursor;
-  // We are deliberately re-requesting the last cursor; a replay of the same output
-  // cursor must not be flagged as a stall.
-  account.seenCursors = account.seenCursors.filter((cursor) => cursor !== lastMeta.outputCursor);
-  account.lastError = `reopened: ${reason.trim()}`;
-  checkpoint.acquisitionCompletedAt = null;
-  return saveState(options.paths, checkpoint, options.config, now());
+export const reopenAccountEffect = Effect.fn("reopenAccount")(
+  function* (options: LifecycleOptions, handle: string, reason: string) {
+    const now = options.now ?? Date.now;
+    if (reason.trim().length === 0) {
+      return yield* lifecycleFail("a reopen reason is required");
+    }
+    const checkpoint = yield* loadCheckpointEffect(options.paths);
+    const account = yield* findAccountEffect(checkpoint, handle);
+    const exhausted = account.state === AccountState.Completed && account.stopReason === StopReason.CursorExhausted;
+    const stalled = account.state === AccountState.Paused && account.pauseReason === PauseReason.CursorStalled;
+    if (!exhausted && !stalled) {
+      return yield* lifecycleFail(
+        `account ${handle} is ${account.state}${account.stopReason ? ` (${account.stopReason})` : ""}${account.pauseReason ? ` (${account.pauseReason})` : ""}; only cursor_exhausted or cursor_stalled accounts can be reopened`,
+      );
+    }
+    if (account.userId === null || account.pagesCompleted === 0) {
+      return yield* lifecycleFail(`account ${handle} has no retained pages to continue from`);
+    }
+    const lastMeta = (yield* readJsonEffect(
+      join(options.paths.raw, account.userId, `${String(account.pagesCompleted).padStart(6, "0")}.meta.json`),
+    )) as { request: { cursor: string | null }; outputCursor: string | null };
+    account.state = AccountState.Active;
+    account.stopReason = null;
+    account.pauseReason = null;
+    account.pausedAt = null;
+    account.consecutiveEmptyPages = 0;
+    account.nextPage = account.pagesCompleted + 1;
+    account.nextCursor = lastMeta.request.cursor;
+    // We are deliberately re-requesting the last cursor; a replay of the same output
+    // cursor must not be flagged as a stall.
+    account.seenCursors = account.seenCursors.filter((cursor) => cursor !== lastMeta.outputCursor);
+    account.lastError = `reopened: ${reason.trim()}`;
+    checkpoint.acquisitionCompletedAt = null;
+    return yield* saveStateEffect(options.paths, checkpoint, options.config, now());
+  },
+);
+
+export async function reopenAccount(
+  options: LifecycleOptions,
+  handle: string,
+  reason: string,
+): Promise<Manifest> {
+  return Effect.runPromise(reopenAccountEffect(options, handle, reason));
 }
 
 /** Stop the whole run on purpose; it is archived as-is with its terminal state recorded. */
+export const abandonRunEffect = Effect.fn("abandonRun")(
+  function* (options: LifecycleOptions, reason: string) {
+    const now = options.now ?? Date.now;
+    if (reason.trim().length === 0) {
+      return yield* lifecycleFail("an abandon reason is required");
+    }
+    const checkpoint = yield* loadCheckpointEffect(options.paths);
+    if (isTerminal(acquisitionStatus(checkpoint))) {
+      return yield* lifecycleFail(`run ${checkpoint.runId} is already ${acquisitionStatus(checkpoint)}`);
+    }
+    checkpoint.runOverride = { status: AcquisitionStatus.Abandoned, reason: reason.trim(), at: now() };
+    checkpoint.acquisitionCompletedAt = now();
+    const manifest = yield* saveStateEffect(options.paths, checkpoint, options.config, now());
+    return yield* finalizeAndArchiveEffect(options.dataDir, options.paths, manifest, now());
+  },
+);
+
 export async function abandonRun(options: LifecycleOptions, reason: string): Promise<RunPaths> {
-  const now = options.now ?? Date.now;
-  if (reason.trim().length === 0) throw new Error("an abandon reason is required");
-  const checkpoint = await loadCheckpoint(options.paths);
-  if (isTerminal(acquisitionStatus(checkpoint))) {
-    throw new Error(`run ${checkpoint.runId} is already ${acquisitionStatus(checkpoint)}`);
-  }
-  checkpoint.runOverride = { status: "abandoned", reason: reason.trim(), at: now() };
-  checkpoint.acquisitionCompletedAt = now();
-  const manifest = await saveState(options.paths, checkpoint, options.config, now());
-  return finalizeAndArchive(options.dataDir, options.paths, manifest, now());
+  return Effect.runPromise(abandonRunEffect(options, reason));
 }
 
 /** Locate a run by id in either root. */
-export async function locateRun(dataDir: string, runId: string): Promise<{ paths: RunPaths; archived: boolean } | null> {
-  const active = runPaths(dataDir, "runs", runId);
-  if (await fileExists(active.manifest)) return { paths: active, archived: false };
-  const archived = runPaths(dataDir, ARCHIVE_ROOT, runId);
-  if (await fileExists(archived.manifest)) return { paths: archived, archived: true };
-  return null;
+export const locateRunEffect = Effect.fn("locateRun")(
+  function* (dataDir: string, runId: string) {
+    const active = runPaths(dataDir, "runs", runId);
+    if (yield* fileExistsEffect(active.manifest)) return { paths: active, archived: false };
+    const archived = runPaths(dataDir, ARCHIVE_ROOT, runId);
+    if (yield* fileExistsEffect(archived.manifest)) return { paths: archived, archived: true };
+    return null;
+  },
+);
+
+export async function locateRun(
+  dataDir: string,
+  runId: string,
+): Promise<{ paths: RunPaths; archived: boolean } | null> {
+  return Effect.runPromise(locateRunEffect(dataDir, runId));
 }
 
+export const loadRunConfigEffect = Effect.fn("loadRunConfig")(function* (paths: RunPaths) {
+  return (yield* readJsonIfExistsEffect(paths.config)) as PilotConfig | null;
+});
+
 export async function loadRunConfig(paths: RunPaths): Promise<PilotConfig | null> {
-  return readJsonIfExists<PilotConfig>(paths.config);
+  return Effect.runPromise(loadRunConfigEffect(paths));
 }
 
 function countLines(text: string): number {

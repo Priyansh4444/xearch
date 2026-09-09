@@ -4,14 +4,36 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import fixture from "./fixtures/fxtwitter/pages.json" with { type: "json" };
 import { mapStatus } from "../src/normalization/mapping.ts";
-import { normalizePages, unknownRejectionCodes } from "../src/normalization/normalize.ts";
+import {
+  normalizePages,
+  unknownRejectionCodes,
+  type NormalizationResult,
+  type NormalizeAccount,
+  type RawPageInput,
+} from "../src/normalization/normalize.ts";
+import type { AuthorId, Handle } from "../src/contracts/ids.ts";
 
 const EXPECTED_DIR = fileURLToPath(new URL("./fixtures/fxtwitter/expected/", import.meta.url));
 
-function run() {
+function accounts(): NormalizeAccount[] {
+  return fixture.accounts.map((account) => ({
+    userId: account.userId as AuthorId,
+    handle: account.handle as Handle,
+  }));
+}
+
+function pages(): RawPageInput[] {
+  return fixture.pages.map((page) => ({
+    ...page,
+    accountUserId: page.accountUserId as AuthorId,
+    rawFile: `raw/${page.accountUserId}/${String(page.page).padStart(6, "0")}.json`,
+  }));
+}
+
+function run(): NormalizationResult {
   return normalizePages(
-    fixture.pages.map((page) => ({ ...page, rawFile: `raw/${page.accountUserId}/${String(page.page).padStart(6, "0")}.json` })),
-    { cutoffAt: fixture.cutoffAt, coverageFloor: fixture.coverageFloor, accounts: fixture.accounts },
+    pages(),
+    { cutoffAt: fixture.cutoffAt, coverageFloor: fixture.coverageFloor, accounts: accounts() },
   );
 }
 
@@ -33,8 +55,8 @@ describe("normalization golden fixture", () => {
 
   it("is deterministic regardless of page input order", () => {
     const shuffled = normalizePages(
-      [...fixture.pages].reverse().map((page) => ({ ...page, rawFile: `raw/${page.accountUserId}/${String(page.page).padStart(6, "0")}.json` })),
-      { cutoffAt: fixture.cutoffAt, coverageFloor: fixture.coverageFloor, accounts: fixture.accounts },
+      [...pages()].reverse(),
+      { cutoffAt: fixture.cutoffAt, coverageFloor: fixture.coverageFloor, accounts: accounts() },
     );
     expect(shuffled.ingress).toBe(run().ingress);
     expect(shuffled.rejections).toBe(run().rejections);
@@ -60,7 +82,7 @@ describe("normalization golden fixture", () => {
 
 describe("provider mapping", () => {
   const context = {
-    accountUserId: "1",
+    accountUserId: "1" as AuthorId,
     page: 1,
     rawFile: "raw/1/000001.json",
     receivedAt: 1_700_000_000_000,
@@ -102,7 +124,7 @@ describe("provider mapping", () => {
   });
 
   it("maps a repost row to its original author and flags it as reposted", () => {
-    const mapped = mapStatus(fixture.pages[0]?.results[4], { ...context, accountUserId: "100" });
+    const mapped = mapStatus(fixture.pages[0]?.results[4], { ...context, accountUserId: "100" as AuthorId });
     expect(mapped.ok).toBe(true);
     if (mapped.ok) {
       expect(mapped.reposted).toBe(true);

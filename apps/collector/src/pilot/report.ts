@@ -3,10 +3,13 @@
 // live requests.
 
 import { join } from "node:path";
+import * as Effect from "effect/Effect";
+import { readJsonEffect } from "../contracts/fs.ts";
+import { AccountState, AcquisitionStatus } from "../contracts/run-state.ts";
+import { mean, percentile } from "../contracts/statistics.ts";
 import type { NormalizationCounts } from "../normalization/normalize.ts";
 import type { PageMeta } from "../normalization/normalize.ts";
-import { mean, percentile } from "../contracts/statistics.ts";
-import { accountRawDirectory, pageMetaFileName, readJson, type RunPaths } from "./layout.ts";
+import { accountRawDirectory, pageMetaFileName, type RunPaths } from "./layout.ts";
 import type { Manifest } from "./manifest.ts";
 
 export interface ThresholdCheck {
@@ -57,7 +60,11 @@ export interface PilotReport {
   thresholds: { passed: boolean; checks: ThresholdCheck[] };
 }
 
-export async function buildReport(paths: RunPaths, manifest: Manifest, counts: NormalizationCounts | null): Promise<PilotReport> {
+export const buildReportEffect = Effect.fn("buildReportEffect")(function* (
+  paths: RunPaths,
+  manifest: Manifest,
+  counts: NormalizationCounts | null,
+) {
   const now = Date.now();
   const latencies: number[] = [];
   const rowsPerPage: number[] = [];
@@ -67,11 +74,13 @@ export async function buildReport(paths: RunPaths, manifest: Manifest, counts: N
   for (const account of manifest.acquisition.accounts) {
     if (account.userId === null) continue;
     for (let page = 1; page <= account.pagesCompleted; page += 1) {
-      const meta = await readJson<PageMeta>(join(accountRawDirectory(paths, account.userId), pageMetaFileName(page)));
+      const meta = (yield* readJsonEffect(
+        join(accountRawDirectory(paths, account.userId), pageMetaFileName(page)),
+      )) as PageMeta;
       latencies.push(meta.latencyMs);
       attempts += meta.attempts;
       requestsWithMeta += 1;
-      const terminal = page === account.pagesCompleted && account.state === "completed";
+      const terminal = page === account.pagesCompleted && account.state === AccountState.Completed;
       if (!terminal && meta.resultCount > 0) rowsPerPage.push(meta.resultCount);
     }
   }
@@ -89,7 +98,7 @@ export async function buildReport(paths: RunPaths, manifest: Manifest, counts: N
   const meanLatency = mean(latencies);
   const p95Latency = percentile(sortedLatencies, 0.95);
   const meanRows = mean(rowsPerPage);
-  const pausedAccounts = manifest.acquisition.accounts.filter((account) => account.state === "paused");
+  const pausedAccounts = manifest.acquisition.accounts.filter((account) => account.state === AccountState.Paused);
 
   const checks: ThresholdCheck[] = [
     check("timeline rejection rate", timelineRejectionRate, "<= 1%", timelineRejectionRate === null ? null : timelineRejectionRate <= 0.01),
@@ -104,12 +113,17 @@ export async function buildReport(paths: RunPaths, manifest: Manifest, counts: N
     check("p95 latency ms", p95Latency, "<= 5000", p95Latency === null ? null : p95Latency <= 5_000),
     check("retry rate", retryRate, "< 5%", retryRate === null ? null : retryRate < 0.05),
     check("paused accounts", pausedAccounts.length, "0", pausedAccounts.length === 0),
-    check("acquisition status", manifest.acquisition.status, "completed", manifest.acquisition.status === "completed"),
+    check(
+      "acquisition status",
+      manifest.acquisition.status,
+      AcquisitionStatus.Completed,
+      manifest.acquisition.status === AcquisitionStatus.Completed,
+    ),
   ];
 
   const top = counts?.perAuthor[0] ?? null;
   return {
-    version: 1,
+    version: 1 as const,
     runId: manifest.runId,
     generatedAt: now,
     archiveNotice: manifest.archiveNotice,
@@ -167,6 +181,14 @@ export async function buildReport(paths: RunPaths, manifest: Manifest, counts: N
     rejectionRates: { timeline: timelineRejectionRate, embedded: embeddedRejectionRate },
     thresholds: { passed: checks.every((entry) => entry.passed !== false), checks },
   };
+});
+
+export async function buildReport(
+  paths: RunPaths,
+  manifest: Manifest,
+  counts: NormalizationCounts | null,
+): Promise<PilotReport> {
+  return Effect.runPromise(buildReportEffect(paths, manifest, counts));
 }
 
 function check(name: string, value: number | string | null, bound: string, passed: boolean | null): ThresholdCheck {

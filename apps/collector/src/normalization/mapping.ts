@@ -10,11 +10,26 @@ import {
   parseNonNegativeNumber,
 } from "../contracts/primitives.ts";
 import {
+  type AuthorId,
+  type Handle,
+  parseAuthorId,
+  type TweetId,
+  parseTweetId,
+} from "../contracts/ids.ts";
+import {
+  type IngressMediaType,
   parseProviderMediaType,
   toIngressMediaType,
 } from "../contracts/media.ts";
+import { CandidateOrigin } from "../contracts/normalize-kinds.ts";
+import {
+  isStatusRow,
+  isTombstoneRow,
+  parseProviderFacetType,
+  ProviderFacetType,
+} from "../contracts/provider.ts";
 
-export type CandidateOrigin = "timeline" | "embedded";
+export type { CandidateOrigin };
 
 const ProviderVerificationSchema = Schema.Struct({
   verified: Schema.optional(Schema.Boolean),
@@ -102,7 +117,7 @@ export function parseProviderAuthor(value: unknown): ProviderAuthor | null {
 
 export interface CandidateContext {
   /** Numeric id of the seed account whose timeline this page belongs to. */
-  accountUserId: string;
+  accountUserId: AuthorId;
   page: number;
   /** Run-relative path of the retained provider page, e.g. raw/123/000001.json. */
   rawFile: string;
@@ -111,7 +126,8 @@ export interface CandidateContext {
   origin: CandidateOrigin;
   /** Index of the top-level result on its page (shared by embedded candidates). */
   index: number;
-  /** Tweet id of the enclosing candidate for embedded candidates. */
+  /** Tweet id of the enclosing candidate for embedded candidates — except the
+   * `rawFile#index` synthetic fallback in `mapEmbedded`, so this stays `string`. */
   parentId: string | null;
 }
 
@@ -123,7 +139,7 @@ export interface IngressMetrics {
 }
 
 export interface IngressMedia {
-  type: "image" | "video" | "gif";
+  type: IngressMediaType;
   url: string;
 }
 
@@ -136,24 +152,24 @@ export interface IngressEntities {
 /** Field order here is the field order on disk; keep it stable. */
 export interface IngressTweet {
   kind: "tweet";
-  id: string;
+  id: TweetId;
   text: string;
-  authorId: string;
+  authorId: AuthorId;
   createdAt: number;
   metrics: IngressMetrics;
   metricsAt: number;
   media: IngressMedia[];
-  quotedTweetId: string | null;
+  quotedTweetId: TweetId | null;
   retweetOfTweetId: null;
-  inReplyToTweetId: string | null;
+  inReplyToTweetId: TweetId | null;
   lang?: string;
   entities?: IngressEntities;
 }
 
 export interface IngressAuthor {
   kind: "author";
-  id: string;
-  handle: string;
+  id: AuthorId;
+  handle: Handle;
   displayName: string;
   followerCount: number;
   followingCount: number;
@@ -183,13 +199,13 @@ export type RejectionCode = (typeof REJECTION_CODES)[number];
 
 export interface Rejection {
   kind: "rejection";
-  accountUserId: string;
+  accountUserId: AuthorId;
   page: number;
   rawFile: string;
   index: number;
   origin: CandidateOrigin;
   parentId: string | null;
-  candidateId: string | null;
+  candidateId: TweetId | null;
   reasons: RejectionCode[];
 }
 
@@ -218,14 +234,14 @@ export type MappedCandidate = MappedTweet | RejectedCandidate;
 /** Map one provider status (timeline row or embedded quote) and everything nested in it. */
 export function mapStatus(value: unknown, context: CandidateContext): MappedCandidate {
   const status = parseProviderStatus(value);
-  if (status === null || status.type !== "status") {
+  if (status === null || !isStatusRow(status.type)) {
     return reject(context, null, ["invalid_response_shape"], []);
   }
   return mapProviderStatus(status, context);
 }
 
 function mapProviderStatus(value: ProviderStatus, context: CandidateContext): MappedCandidate {
-  const id = parseNonEmptyString(value.id);
+  const id = parseTweetId(value.id);
   const reasons: RejectionCode[] = [];
   if (id === null) reasons.push("missing_tweet_id");
 
@@ -252,13 +268,13 @@ function mapProviderStatus(value: ProviderStatus, context: CandidateContext): Ma
 
   const quote = value.quote;
   const quotedTweetId = quote !== null && typeof quote === "object" && !Array.isArray(quote)
-    ? parseNonEmptyString(quote["id"])
+    ? parseTweetId(quote["id"])
     : null;
   const quoteTombstone =
     quote !== null &&
     typeof quote === "object" &&
     !Array.isArray(quote) &&
-    quote["type"] === "tombstone";
+    isTombstoneRow(quote["type"]);
   const reposted = value.reposted_by !== undefined && value.reposted_by !== null;
 
   const tweet: IngressTweet = {
@@ -299,7 +315,7 @@ export function mapAuthor(value: unknown): MappedAuthor {
   if (authorData === null) return { ok: false, reasons: ["missing_author"] };
   const reasons: RejectionCode[] = [];
 
-  const id = parseNonEmptyString(authorData.id);
+  const id = parseAuthorId(authorData.id);
   if (id === null) reasons.push("missing_author_id");
   const screenName = parseNonEmptyString(authorData.screen_name);
   if (screenName === null) reasons.push("missing_author_handle");
@@ -331,7 +347,9 @@ export function mapAuthor(value: unknown): MappedAuthor {
   const author: IngressAuthor = {
     kind: "author",
     id,
-    handle: screenName.replace(/^@/, "").toLowerCase(),
+    // Cast, not parse: a screen_name of "@" strips to "" and the old behavior
+    // keeps it (golden fixtures); re-validating here would newly reject it.
+    handle: screenName.replace(/^@/, "").toLowerCase() as Handle,
     displayName,
     followerCount,
     followingCount,
@@ -348,11 +366,11 @@ export function mapAuthor(value: unknown): MappedAuthor {
 function mapEmbedded(status: ProviderStatus, context: CandidateContext, parentId: string | null): MappedCandidate[] {
   const quote = status.quote;
   const quotedStatus = parseProviderStatus(quote);
-  if (quotedStatus === null || quotedStatus.type !== "status") return [];
+  if (quotedStatus === null || !isStatusRow(quotedStatus.type)) return [];
   return [
     mapProviderStatus(quotedStatus, {
       ...context,
-      origin: "embedded",
+      origin: CandidateOrigin.Embedded,
       parentId: parentId ?? `${context.rawFile}#${context.index}`,
     }),
   ];
@@ -391,19 +409,19 @@ function mapMedia(value: ProviderStatus["media"]): IngressMedia[] | null {
   return out;
 }
 
-function mapInReplyTo(status: ProviderStatus): string | null {
+function mapInReplyTo(status: ProviderStatus): TweetId | null {
   if (status.replying_to !== undefined && status.replying_to !== null) {
-    const parent = parseNonEmptyString(status.replying_to.status);
+    const parent = parseTweetId(status.replying_to.status);
     if (parent !== null) return parent;
   }
   if (Array.isArray(status.replying_to_status)) {
     const first = status.replying_to_status[0];
     if (typeof first === "object" && first !== null && !Array.isArray(first)) {
-      return parseNonEmptyString(first.id);
+      return parseTweetId(first.id);
     }
-    return parseNonEmptyString(first);
+    return parseTweetId(first);
   }
-  return parseNonEmptyString(status.replying_to_status);
+  return parseTweetId(status.replying_to_status);
 }
 
 function mapEntities(rawText: ProviderStatus["raw_text"]): IngressEntities | null {
@@ -412,16 +430,21 @@ function mapEntities(rawText: ProviderStatus["raw_text"]): IngressEntities | nul
   const mentions: string[] = [];
   const urls: string[] = [];
   for (const facet of rawText.facets) {
-    if (facet.type === "hashtag") pushUnique(hashtags, parseNonEmptyString(facet.original)?.replace(/^#/, ""));
-    else if (facet.type === "mention") pushUnique(mentions, parseNonEmptyString(facet.original)?.replace(/^@/, ""));
-    else if (facet.type === "url") pushUnique(urls, parseNonEmptyString(facet.replacement) ?? parseNonEmptyString(facet.original));
+    const facetType = parseProviderFacetType(facet.type);
+    if (facetType === ProviderFacetType.Hashtag) {
+      pushUnique(hashtags, parseNonEmptyString(facet.original)?.replace(/^#/, ""));
+    } else if (facetType === ProviderFacetType.Mention) {
+      pushUnique(mentions, parseNonEmptyString(facet.original)?.replace(/^@/, ""));
+    } else if (facetType === ProviderFacetType.Url) {
+      pushUnique(urls, parseNonEmptyString(facet.replacement) ?? parseNonEmptyString(facet.original));
+    }
   }
   return { hashtags, mentions, urls };
 }
 
 function reject(
   context: CandidateContext,
-  candidateId: string | null,
+  candidateId: TweetId | null,
   reasons: RejectionCode[],
   embedded: MappedCandidate[],
 ): RejectedCandidate {

@@ -2,11 +2,15 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import * as Effect from "effect/Effect";
 import {
-  FxTwitterClient,
+  makeFxTwitterClient,
+  FxTwitterError,
+  FxTwitterErrorKind,
   type FxTwitterJson,
   type TimelineClient,
   type TimelineRequest,
+  type TimelineResponse,
 } from "../src/acquisition/fxtwitter.ts";
 import { runTimelineProbe } from "../src/probe/run.ts";
 
@@ -26,7 +30,7 @@ describe("FxTwitter client", () => {
       if (calls === 1) return new Response("upstream failed", { status: 500 });
       return Response.json({ code: 200, results: [], cursor: { top: null, bottom: null } });
     };
-    const client = new FxTwitterClient({
+    const client = makeFxTwitterClient({
       fetchImpl: fetchImpl as typeof fetch,
       retries: 1,
       retryBaseDelayMs: 0,
@@ -63,14 +67,12 @@ describe("timeline probe", () => {
       ),
     ];
     const requests: TimelineRequest[] = [];
-    const client: TimelineClient = {
-      async fetchTimelinePage(request) {
-        requests.push(request);
-        const response = pages.shift();
-        if (response === undefined) throw new Error("unexpected request");
-        return response;
-      },
-    };
+    const client = timelineClientFromPromises(async (request) => {
+      requests.push(request);
+      const response = pages.shift();
+      if (response === undefined) throw new Error("unexpected request");
+      return response;
+    });
 
     const report = await runTimelineProbe(client, {
       handle: "NASA",
@@ -132,14 +134,43 @@ function fixedClient(responses: ReturnType<typeof timelineResponse>[]): {
   const requests: TimelineRequest[] = [];
   return {
     requests,
-    client: {
-      async fetchTimelinePage(request) {
-        requests.push(request);
-        const response = responses.shift();
-        if (response === undefined) throw new Error("unexpected request");
-        return response;
-      },
+    client: timelineClientFromPromises(async (request) => {
+      requests.push(request);
+      const response = responses.shift();
+      if (response === undefined) throw new Error("unexpected request");
+      return response;
+    }),
+  };
+}
+
+function timelineClientFromPromises(
+  fetchTimelinePage: (request: TimelineRequest) => Promise<TimelineResponse>,
+): TimelineClient {
+  const baseUrl = "https://api.fxtwitter.com";
+  return {
+    baseUrl,
+    timelineUrl: (request) => {
+      const url = new URL(`${baseUrl}/2/profile/${encodeURIComponent(request.handle)}/statuses`);
+      url.searchParams.set("count", String(request.count));
+      if (request.cursor !== null) url.searchParams.set("cursor", request.cursor);
+      if (request.withReplies) url.searchParams.set("with_replies", "true");
+      return url.toString();
     },
+    fetchTimelinePage,
+    fetchTimelinePageEffect: (request) =>
+      Effect.tryPromise({
+        try: () => fetchTimelinePage(request),
+        catch: (cause) =>
+          cause instanceof FxTwitterError
+            ? cause
+            : new FxTwitterError({
+              message: cause instanceof Error ? cause.message : String(cause),
+              status: null,
+              responseBody: null,
+              kind: FxTwitterErrorKind.Transport,
+              retryDelay: 0,
+            }),
+      }),
   };
 }
 

@@ -17,6 +17,7 @@
 //   4. Drop stopwords (shared/lexicons/stopwords.json).
 
 import stopwordsFile from "../../shared/lexicons/stopwords.json";
+import type { Term } from "../contracts/ids";
 
 export const TOKENIZER_VERSION = 1;
 
@@ -29,9 +30,9 @@ const WORD_RE = /[\p{L}\p{N}_]/u;
 
 export interface Tokenized {
   /** Index-order tokens, stopwords removed, duals expanded. */
-  tokens: string[];
+  tokens: Term[];
   /** term -> tf over `tokens`. */
-  counts: Map<string, number>;
+  counts: Map<Term, number>;
   hasLink: boolean;
 }
 
@@ -45,11 +46,12 @@ export function tokenize(raw: string, keepStopwords = false): Tokenized {
       return " ";
     });
 
-  const tokens: string[] = [];
+  const tokens: Term[] = [];
   const chars = Array.from(text); // code points, not UTF-16 units
   let i = 0;
   const push = (t: string) => {
-    if (t.length > 0 && (keepStopwords || !STOP.has(t))) tokens.push(t);
+    // The tokenizer is THE producer of the Term space: this cast seals it.
+    if (t.length > 0 && (keepStopwords || !STOP.has(t))) tokens.push(t as Term);
   };
 
   while (i < chars.length) {
@@ -85,7 +87,7 @@ export function tokenize(raw: string, keepStopwords = false): Tokenized {
     }
   }
 
-  const counts = new Map<string, number>();
+  const counts = new Map<Term, number>();
   for (const t of tokens) counts.set(t, (counts.get(t) ?? 0) + 1);
   return { tokens, counts, hasLink };
 }

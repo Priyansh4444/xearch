@@ -1,7 +1,10 @@
 // Phase-2 reranker + RRF fusion (DESIGN §6). Pure functions over hydrated rows.
 // All constants live in WEIGHTS so tuning is a diff, not a hunt (RISKS K4).
 
-import type { XQuery } from "./xquery";
+import { MediaType } from "../contracts/media";
+import type { Term, TweetId } from "../contracts/ids";
+import { LadderLevel } from "./plan";
+import { Intent, SortOrder, type XQuery } from "./xquery";
 
 export const WEIGHTS = {
   rel: 0.35,
@@ -24,9 +27,10 @@ export const WEIGHTS = {
 } as const;
 
 export interface Candidate {
+  /** Convex doc `_id` (postings denormalize it) — NOT the source tweet id. */
   tweetId: string;
-  tf: Map<string, number>; // per matched term, from postings
-  matchedVia: "L0" | "L1" | "L2" | "L3" | "L4";
+  tf: Map<Term, number>; // per matched term, from postings
+  matchedVia: Exclude<LadderLevel, "L5">;
   // hydrated at rerank time (live data — the two-phase split, §6.1):
   likeCount: number;
   replyCount: number;
@@ -40,9 +44,9 @@ export interface Candidate {
   feedbackVotes: number; // Σ votes for (queryKey, tweet), pre-clamped by caller? no — clamped here
   /** RT/quote chain edges for representative dedup (K5). Source-id space, so a
    * retweet collapses with its original via sourceTweetId. */
-  retweetOfTweetId?: string | undefined;
-  quotedTweetId?: string | undefined;
-  sourceTweetId?: string | undefined;
+  retweetOfTweetId?: TweetId | undefined;
+  quotedTweetId?: TweetId | undefined;
+  sourceTweetId?: TweetId | undefined;
 }
 
 export interface Scored {
@@ -69,11 +73,11 @@ export function bm25(
 export function rerank(
   xq: XQuery,
   candidates: Candidate[],
-  stats: { totalDocs: number; avgTokenCount: number; dfs: Map<string, number> },
+  stats: { totalDocs: number; avgTokenCount: number; dfs: Map<Term, number> },
   now: number,
 ): Scored[] {
   if (candidates.length === 0) return [];
-  const tau = xq.sort === "latest" ? WEIGHTS.recencyTauMsLatest : WEIGHTS.recencyTauMsTop;
+  const tau = xq.sort === SortOrder.Latest ? WEIGHTS.recencyTauMsLatest : WEIGHTS.recencyTauMsTop;
 
   // Raw per-signal values first; eng/auth/rel normalize over the candidate set
   // (max-normalization: cheap, stable, and immune to degenerate variance).
@@ -131,7 +135,7 @@ export function rerank(
   // Dedup quote/RT chains to the best representative (K5: one hop, no traversal).
   const byId = new Map(candidates.map((c) => [c.tweetId, c]));
   function compare(a: Scored, b: Scored): number {
-    if (xq.sort === "latest") {
+    if (xq.sort === SortOrder.Latest) {
       const time = byId.get(b.tweetId)!.createdAt - byId.get(a.tweetId)!.createdAt;
       if (time !== 0) return time;
     }
@@ -153,7 +157,7 @@ function fitBonus(xq: XQuery, c: Candidate): number {
   let fit = 0;
   if (
     (xq.filters.media !== null && c.mediaType === xq.filters.media) ||
-    (xq.intent === "media" && c.mediaType !== "none")
+    (xq.intent === Intent.Media && c.mediaType !== MediaType.None)
   ) {
     fit += 0.5;
   }

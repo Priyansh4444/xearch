@@ -1,9 +1,18 @@
 // On-disk run layout (docs/collection/01-pilot.md "Run layout"). Acquisition and
 // normalization communicate only through these files.
 
-import { createHash } from "node:crypto";
-import { mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
-import { dirname, join, relative } from "node:path";
+import * as Effect from "effect/Effect";
+import { join } from "node:path";
+import {
+  fileExistsEffect,
+  listFilesEffect,
+  moveDirectoryEffect,
+  readJsonEffect,
+  readJsonIfExistsEffect,
+  sha256FileEffect,
+  writeJsonAtomicEffect,
+  writeTextAtomicEffect,
+} from "../contracts/fs.ts";
 
 export interface RunPaths {
   root: string;
@@ -71,66 +80,35 @@ export function isValidRunId(runId: string): boolean {
 }
 
 export async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
-  await writeTextAtomic(path, `${JSON.stringify(value, null, 2)}\n`);
+  return Effect.runPromise(writeJsonAtomicEffect(path, value));
 }
 
 export async function writeTextAtomic(path: string, text: string): Promise<void> {
-  await mkdir(dirname(path), { recursive: true });
-  const temporaryPath = `${path}.tmp`;
-  await writeFile(temporaryPath, text, "utf8");
-  await rename(temporaryPath, path);
+  return Effect.runPromise(writeTextAtomicEffect(path, text));
 }
 
 export async function readJson<T = unknown>(path: string): Promise<T> {
-  return JSON.parse(await readFile(path, "utf8")) as T;
+  return Effect.runPromise(readJsonEffect(path)) as Promise<T>;
 }
 
 export async function readJsonIfExists<T = unknown>(path: string): Promise<T | null> {
-  try {
-    return await readJson<T>(path);
-  } catch (error) {
-    if (isNodeError(error) && error.code === "ENOENT") return null;
-    throw error;
-  }
+  return Effect.runPromise(readJsonIfExistsEffect(path)) as Promise<T | null>;
 }
 
 export async function fileExists(path: string): Promise<boolean> {
-  try {
-    await stat(path);
-    return true;
-  } catch (error) {
-    if (isNodeError(error) && error.code === "ENOENT") return false;
-    throw error;
-  }
+  return Effect.runPromise(fileExistsEffect(path));
 }
 
 export async function sha256File(path: string): Promise<{ bytes: number; sha256: string }> {
-  const buffer = await readFile(path);
-  return { bytes: buffer.byteLength, sha256: createHash("sha256").update(buffer).digest("hex") };
+  return Effect.runPromise(sha256FileEffect(path));
 }
 
 /** Every regular file under `root`, as sorted POSIX-style relative paths. */
 export async function listFiles(root: string): Promise<string[]> {
-  const out: string[] = [];
-  async function walk(directory: string): Promise<void> {
-    const entries = await readdir(directory, { withFileTypes: true });
-    for (const entry of entries) {
-      const full = join(directory, entry.name);
-      if (entry.isDirectory()) await walk(full);
-      else if (entry.isFile()) out.push(relative(root, full).split("\\").join("/"));
-    }
-  }
-  await walk(root);
-  return out.sort();
+  return Effect.runPromise(listFilesEffect(root));
 }
 
 /** Atomic directory move; both roots must live on the same filesystem. */
 export async function moveDirectory(from: string, to: string): Promise<void> {
-  await mkdir(dirname(to), { recursive: true });
-  if (await fileExists(to)) throw new Error(`destination already exists: ${to}`);
-  await rename(from, to);
-}
-
-function isNodeError(error: unknown): error is NodeJS.ErrnoException {
-  return error instanceof Error && "code" in error;
+  return Effect.runPromise(moveDirectoryEffect(from, to));
 }

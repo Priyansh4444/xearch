@@ -6,12 +6,17 @@ import { describe, expect, test } from "vitest";
 import { escalate, planL0, MIN_RESULTS, PER_TERM_CAP } from "../convex/engine/plan";
 import { rerank, type Candidate } from "../convex/engine/rank";
 import { emptyXQuery } from "../convex/engine/xquery";
+import type { AuthorId, Term, TweetId } from "../convex/contracts/ids";
 
-const dfs = new Map<string, number>([
-  ["linux", 500],
-  ["box", 2000],
-  ["~price", 8000],
-  ["cheap", 900],
+// Test fixtures are hand-written source strings; the cast asserts the Term space
+// the tokenizer would have produced for them.
+const t = (s: string): Term => s as Term;
+
+const dfs = new Map<Term, number>([
+  [t("linux"), 500],
+  [t("box"), 2000],
+  [t("~price"), 8000],
+  [t("cheap"), 900],
 ]);
 
 function xqWith(overrides: Partial<ReturnType<typeof emptyXQuery>>) {
@@ -20,7 +25,7 @@ function xqWith(overrides: Partial<ReturnType<typeof emptyXQuery>>) {
 
 describe("planL0", () => {
   test("gates are rarest-first with mandatory limits", () => {
-    const plan = planL0(xqWith({ must: ["box", "linux"], aspects: ["~price"] }), dfs);
+    const plan = planL0(xqWith({ must: [t("box"), t("linux")], aspects: [t("~price")] }), dfs);
     expect(plan.gates.map((g) => g.term)).toEqual(["linux", "box", "~price"]);
     for (const g of plan.gates) {
       expect(g.limit).toBe(PER_TERM_CAP);
@@ -30,32 +35,32 @@ describe("planL0", () => {
 
   test("filter shape picks the index", () => {
     const author = planL0(
-      xqWith({ must: ["linux"], filters: { ...emptyXQuery().filters, authorId: "a1" } }),
+      xqWith({ must: [t("linux")], filters: { ...emptyXQuery().filters, authorId: "a1" as AuthorId } }),
       dfs,
     );
     expect(author.gates[0]!.index).toBe("by_term_author_time");
     expect(author.gates[0]!.eq).toEqual({ authorId: "a1" });
 
     const media = planL0(
-      xqWith({ must: ["linux"], filters: { ...emptyXQuery().filters, media: "image" } }),
+      xqWith({ must: [t("linux")], filters: { ...emptyXQuery().filters, media: "image" } }),
       dfs,
     );
     expect(media.gates[0]!.index).toBe("by_term_media_score");
 
-    const latest = planL0(xqWith({ must: ["linux"], sort: "latest" }), dfs);
+    const latest = planL0(xqWith({ must: [t("linux")], sort: "latest" }), dfs);
     expect(latest.gates[0]!.index).toBe("by_term_time");
   });
 });
 
 describe("escalate", () => {
-  const xq = xqWith({ must: ["linux", "box"], should: ["cheap"], aspects: ["~price"] });
+  const xq = xqWith({ must: [t("linux"), t("box")], should: [t("cheap")], aspects: [t("~price")] });
 
   test("enough survivors stops the ladder", () => {
     expect(escalate(planL0(xq, dfs), MIN_RESULTS, xq, dfs)).toBeNull();
   });
 
   test("L1 protects phrase terms even when they also appear in must", () => {
-    const phrase = xqWith({ must: ["linux", "box"], phrases: [["box"]] });
+    const phrase = xqWith({ must: [t("linux"), t("box")], phrases: [[t("box")]] });
     const next = escalate(planL0(phrase, dfs), 0, phrase, dfs)!;
     expect(next.gates.map((gate) => gate.term)).toEqual(["box"]);
   });
@@ -75,9 +80,9 @@ describe("escalate", () => {
 
   test("filters and excludes never relax on the way down", () => {
     const filtered = xqWith({
-      must: ["linux", "box"],
-      exclude: ["iphone"],
-      filters: { ...emptyXQuery().filters, authorId: "a1", since: 123 },
+      must: [t("linux"), t("box")],
+      exclude: [t("iphone")],
+      filters: { ...emptyXQuery().filters, authorId: "a1" as AuthorId, since: 123 },
     });
     let plan: ReturnType<typeof escalate> = planL0(filtered, dfs);
     for (let i = 0; i < 4 && plan !== null; i++) {
@@ -87,25 +92,25 @@ describe("escalate", () => {
         expect(read.index).toBe("by_term_author_time");
         expect(read.eq).toEqual({ authorId: "a1" });
       }
-      plan = escalate(plan, 0, filtered, dfs, ["prf1"]);
+      plan = escalate(plan, 0, filtered, dfs, [t("prf1")]);
     }
   });
 
   test("L2 -> L3 only with mined PRF terms, then stops", () => {
-    const l2 = escalate(planL0(xqWith({ must: ["linux"] }), dfs), 0, xqWith({ must: ["linux"] }), dfs)!;
+    const l2 = escalate(planL0(xqWith({ must: [t("linux")] }), dfs), 0, xqWith({ must: [t("linux")] }), dfs)!;
     expect(l2.level).toBe("L2");
-    expect(escalate(l2, 0, xqWith({ must: ["linux"] }), dfs)).toBeNull();
-    const l3 = escalate(l2, 0, xqWith({ must: ["linux"] }), dfs, ["kernel"])!;
+    expect(escalate(l2, 0, xqWith({ must: [t("linux")] }), dfs)).toBeNull();
+    const l3 = escalate(l2, 0, xqWith({ must: [t("linux")] }), dfs, [t("kernel")])!;
     expect(l3.level).toBe("L3");
     expect(l3.unions.map((u) => u.term)).toContain("kernel");
-    expect(escalate(l3, 0, xqWith({ must: ["linux"] }), dfs, ["kernel"])).toBeNull();
+    expect(escalate(l3, 0, xqWith({ must: [t("linux")] }), dfs, [t("kernel")])).toBeNull();
   });
 });
 
 describe("rerank", () => {
   const base: Candidate = {
     tweetId: "t1",
-    tf: new Map([["linux", 1]]),
+    tf: new Map([[t("linux"), 1]]),
     matchedVia: "L0",
     likeCount: 0,
     replyCount: 0,
@@ -145,7 +150,7 @@ describe("rerank", () => {
       emptyXQuery(),
       [
         { ...base, tweetId: "original", likeCount: 10 },
-        { ...base, tweetId: "rt", retweetOfTweetId: "original", likeCount: 0 },
+        { ...base, tweetId: "rt", retweetOfTweetId: "original" as TweetId, likeCount: 0 },
       ],
       stats,
       NOW,
@@ -154,11 +159,11 @@ describe("rerank", () => {
   });
 
   test("should-term and media fits add score", () => {
-    const xq = xqWith({ should: ["cheap"], filters: { ...emptyXQuery().filters, media: "image" } });
+    const xq = xqWith({ should: [t("cheap")], filters: { ...emptyXQuery().filters, media: "image" } });
     const plain = rerank(xq, [base], stats, NOW)[0]!;
     const fit = rerank(
       xq,
-      [{ ...base, tf: new Map([["linux", 1], ["cheap", 1]]), mediaType: "image" }],
+      [{ ...base, tf: new Map([[t("linux"), 1], [t("cheap"), 1]]), mediaType: "image" }],
       stats,
       NOW,
     )[0]!;

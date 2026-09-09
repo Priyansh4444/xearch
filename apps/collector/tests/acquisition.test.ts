@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vitest";
-import { FxTwitterClient, type TimelineRequest } from "../src/acquisition/fxtwitter.ts";
+import { makeFxTwitterClient, type TimelineRequest } from "../src/acquisition/fxtwitter.ts";
 
 const request: TimelineRequest = {
   handle: "NASA", count: 20, cursor: null, withReplies: false,
@@ -12,7 +12,7 @@ describe("Effect acquisition", () => {
   it("honors Retry-After and resets attempts when reusing an Effect", async () => {
     let calls = 0;
     const delays: number[] = [];
-    const client = new FxTwitterClient({
+    const client = makeFxTwitterClient({
       retries: 1,
       fetchImpl: async () => ++calls % 2 === 1
         ? new Response("limited", { status: 429, headers: { "retry-after": "2" } })
@@ -27,7 +27,7 @@ describe("Effect acquisition", () => {
 
   it.each([400, 401, 403])("does not retry permanent HTTP %i failures", async (status) => {
     let calls = 0;
-    const client = new FxTwitterClient({
+    const client = makeFxTwitterClient({
       fetchImpl: async () => { calls += 1; return new Response("denied", { status }); },
     });
     await expect(client.fetchTimelinePage(request)).rejects.toMatchObject({
@@ -39,7 +39,7 @@ describe("Effect acquisition", () => {
   it("exhausts transport retries with a typed error", async () => {
     let calls = 0;
     const delays: number[] = [];
-    const client = new FxTwitterClient({
+    const client = makeFxTwitterClient({
       retries: 2, retryBaseDelayMs: 10,
       fetchImpl: async () => { calls += 1; throw new Error("connection closed"); },
       sleep: async (ms) => { delays.push(ms); },
@@ -54,7 +54,7 @@ describe("Effect acquisition", () => {
   it("does not retry malformed JSON or envelopes", async () => {
     for (const body of ["not json", '{"code":"200","results":[],"cursor":{}}']) {
       let calls = 0;
-      const client = new FxTwitterClient({
+      const client = makeFxTwitterClient({
         fetchImpl: async () => { calls += 1; return new Response(body); },
       });
       await expect(client.fetchTimelinePage(request)).rejects.toMatchObject({ kind: "decode" });
@@ -66,7 +66,7 @@ describe("Effect acquisition", () => {
     const controller = new AbortController();
     let calls = 0;
     let aborted = false;
-    const client = new FxTwitterClient({
+    const client = makeFxTwitterClient({
       fetchImpl: async (_url, init) => {
         calls += 1;
         return new Promise<Response>((_resolve, reject) => {
@@ -87,7 +87,7 @@ describe("Effect acquisition", () => {
   });
 
   it("preserves profile-not-found and empty-timeline outcomes", async () => {
-    const client = new FxTwitterClient({
+    const client = makeFxTwitterClient({
       fetchImpl: async (url) => String(url).includes("/statuses")
         ? new Response(null, { status: 204 })
         : new Response("missing", { status: 404 }),
@@ -109,7 +109,7 @@ describe("Effect acquisition", () => {
     try {
       const address = server.address();
       if (address === null || typeof address === "string") throw new Error("Expected TCP address");
-      const client = new FxTwitterClient({
+      const client = makeFxTwitterClient({
         baseUrl: `http://127.0.0.1:${address.port}`, retryBaseDelayMs: 0, retries: 1,
       });
       expect((await client.fetchTimelinePage(request)).attempts).toBe(2);

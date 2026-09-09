@@ -1,11 +1,16 @@
 import { describe, expect, it } from "vitest";
 import fixture from "./fixtures/fxtwitter/pages.json" with { type: "json" };
-import type { PilotClient, ProfileResponse } from "../src/acquisition/fxtwitter.ts";
+import { pilotClientFromPromises, type ProfileResponse } from "../src/acquisition/fxtwitter.ts";
 import type { PilotConfig } from "../src/config/pilot.ts";
 import { discoverFromPages, proposeConfig, renderMarkdown, resolveCandidates } from "../src/pilot/discover.ts";
 import type { RawPageInput } from "../src/normalization/normalize.ts";
+import type { AuthorId } from "../src/contracts/ids.ts";
 
-const pages: RawPageInput[] = fixture.pages.map((page) => ({ ...page, rawFile: "raw/x.json" }));
+const pages: RawPageInput[] = fixture.pages.map((page) => ({
+  ...page,
+  accountUserId: page.accountUserId as AuthorId,
+  rawFile: "raw/x.json",
+}));
 const seeds = fixture.accounts;
 
 describe("gate-2 discovery", () => {
@@ -45,7 +50,7 @@ describe("gate-2 discovery", () => {
   it("resolves handle-only candidates through the profile endpoint and reports not-found ones", async () => {
     const candidates = discoverFromPages(pages, { seeds, configuredIds: new Set(), configuredHandles: new Set(), minSeeds: 1 });
     const requested: string[] = [];
-    const client: PilotClient = {
+    const client = pilotClientFromPromises({
       async fetchProfile(handle) {
         requested.push(handle);
         if (handle === "friend") return profile("777", "Friend", 42, 900);
@@ -54,7 +59,7 @@ describe("gate-2 discovery", () => {
       async fetchTimelinePage() {
         throw new Error("not used");
       },
-    };
+    });
     await resolveCandidates(candidates, client, async () => undefined);
     expect(requested).toEqual(["friend"]);
     const friend = candidates.find((candidate) => candidate.handle === "friend");

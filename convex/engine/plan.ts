@@ -3,18 +3,27 @@
 // Why: ladder logic stays unit-testable, and "bounded reads" is enforced by the
 // type: a PostingsRead without a `limit` does not compile.
 
-import type { XQuery } from "./xquery";
+import { SortOrder, type XQuery } from "./xquery";
+import type { AuthorId, Term } from "../contracts/ids";
 import { tokenize } from "./tokenize";
 
 export const PER_TERM_CAP = 500; // 12 query terms + 5 PRF terms, cached across levels
 export const MIN_RESULTS = 10; // ladder escalation threshold (§5.2)
 export const RERANK_CANDIDATES = 200;
 
-export type LadderLevel = "L0" | "L1" | "L2" | "L3" | "L4" | "L5";
+export const LadderLevel = {
+  L0: "L0",
+  L1: "L1",
+  L2: "L2",
+  L3: "L3",
+  L4: "L4",
+  L5: "L5",
+} as const;
+export type LadderLevel = (typeof LadderLevel)[keyof typeof LadderLevel];
 
 /** One bounded index read against `postings`. Maps 1:1 onto a withIndex call. */
 export interface PostingsRead {
-  term: string;
+  term: Term;
   /** Which compound index serves this read — mirrors schema.ts index names. */
   index:
     | "by_term_score"
@@ -22,7 +31,7 @@ export interface PostingsRead {
     | "by_term_author_time"
     | "by_term_media_score";
   /** Equality prefix beyond `term` (authorId or mediaType), when the index has one. */
-  eq?: { authorId?: string | undefined; mediaType?: string | undefined } | undefined;
+  eq?: { authorId?: AuthorId | undefined; mediaType?: string | undefined } | undefined;
   /** createdAt range for time-ordered indexes; postFilter for score-ordered ones. */
   timeRange?: { since?: number | undefined; until?: number | undefined } | undefined;
   order: "desc";
@@ -36,7 +45,7 @@ export interface ReadPlan {
   /** Union reads (L2+): fused by RRF, never gate. */
   unions: PostingsRead[];
   /** Terms whose postings must NOT contain a candidate (exclude). Bounded probe. */
-  excludes: string[];
+  excludes: Term[];
   /** Post-intersection predicates the executor applies in memory. */
   postFilters: {
     since?: number | undefined;
@@ -53,13 +62,13 @@ export interface ReadPlan {
  * sort latest OR date-window -> by_term_time; else by_term_score.
  * Terms are ordered rarest-first by caller-provided dfs (planner stays pure).
  */
-export function planL0(xq: XQuery, dfs: Map<string, number>): ReadPlan {
+export function planL0(xq: XQuery, dfs: Map<Term, number>): ReadPlan {
   const gateTerms = rarestFirst(
     [...new Set([...xq.must, ...xq.aspects, ...phraseTerms(xq)])],
     dfs,
   );
   return {
-    level: "L0",
+    level: LadderLevel.L0,
     gates: gateTerms.map((term) => readFor(term, xq)),
     unions: [],
     excludes: [...xq.exclude],
@@ -67,7 +76,7 @@ export function planL0(xq: XQuery, dfs: Map<string, number>): ReadPlan {
   };
 }
 
-function rarestFirst(terms: string[], dfs: Map<string, number>): string[] {
+function rarestFirst(terms: Term[], dfs: Map<Term, number>): Term[] {
   // Unknown df = 0 = rarest; ties break lexicographically for determinism.
   return [...terms].sort((a, b) => {
     const d = (dfs.get(a) ?? 0) - (dfs.get(b) ?? 0);
@@ -75,7 +84,7 @@ function rarestFirst(terms: string[], dfs: Map<string, number>): string[] {
   });
 }
 
-function readFor(term: string, xq: XQuery): PostingsRead {
+function readFor(term: Term, xq: XQuery): PostingsRead {
   const f = xq.filters;
   const timeRange =
     f.since !== null || f.until !== null
@@ -94,7 +103,7 @@ function readFor(term: string, xq: XQuery): PostingsRead {
       limit: PER_TERM_CAP,
     };
   }
-  if (f.media !== null && xq.sort !== "latest" && timeRange === undefined) {
+  if (f.media !== null && xq.sort !== SortOrder.Latest && timeRange === undefined) {
     return {
       term,
       index: "by_term_media_score",
@@ -103,7 +112,7 @@ function readFor(term: string, xq: XQuery): PostingsRead {
       limit: PER_TERM_CAP,
     };
   }
-  if (xq.sort === "latest" || timeRange !== undefined) {
+  if (xq.sort === SortOrder.Latest || timeRange !== undefined) {
     return {
       term,
       index: "by_term_time",
@@ -137,14 +146,14 @@ export function escalate(
   executed: ReadPlan,
   survivors: number,
   xq: XQuery,
-  dfs: Map<string, number>,
-  prfTerms?: string[],
+  dfs: Map<Term, number>,
+  prfTerms?: Term[],
 ): ReadPlan | null {
   if (survivors >= MIN_RESULTS) return null;
 
   // L0/L1 -> L1: drop the lowest-idf (= highest-df) gate, at most twice, and only
   // while more than one gate remains. Filters ride along untouched (invariant 2).
-  if (executed.level === "L0" || executed.level === "L1") {
+  if (executed.level === LadderLevel.L0 || executed.level === LadderLevel.L1) {
     const fullGateCount = new Set([...xq.must, ...xq.aspects, ...phraseTerms(xq)]).size;
     const drops = fullGateCount - executed.gates.length;
     const protectedTerms = new Set([...xq.aspects, ...phraseTerms(xq)]);
@@ -155,7 +164,7 @@ export function escalate(
     if (executed.gates.length > 1 && drops < 2 && toDrop !== undefined) {
       return {
         ...executed,
-        level: "L1",
+        level: LadderLevel.L1,
         gates: executed.gates.filter((gate) => gate.term !== toDrop.term),
       };
     }
@@ -164,7 +173,7 @@ export function escalate(
 
   // L2 -> L3: PRF terms (mined by the caller from the docs found so far) join the
   // union. Without terms to add there is nothing left to relax in a query.
-  if (executed.level === "L2" && prfTerms !== undefined && prfTerms.length > 0) {
+  if (executed.level === LadderLevel.L2 && prfTerms !== undefined && prfTerms.length > 0) {
     const known = new Set(executed.unions.map((u) => u.term));
     const extra = rarestFirst(
       prfTerms.filter((t) => !known.has(t)),
@@ -173,7 +182,7 @@ export function escalate(
     if (extra.length === 0) return null;
     return {
       ...executed,
-      level: "L3",
+      level: LadderLevel.L3,
       unions: [...executed.unions, ...extra.map((t) => readFor(t, xq))],
     };
   }
@@ -181,14 +190,14 @@ export function escalate(
   return null; // L4 (vectors) is an action, not a plan
 }
 
-function escalateToL2(xq: XQuery, dfs: Map<string, number>): ReadPlan | null {
+function escalateToL2(xq: XQuery, dfs: Map<Term, number>): ReadPlan | null {
   const unionTerms = rarestFirst(
     [...new Set([...xq.must, ...xq.should, ...xq.aspects, ...phraseTerms(xq)])],
     dfs,
   );
   if (unionTerms.length === 0) return null;
   return {
-    level: "L2",
+    level: LadderLevel.L2,
     gates: [],
     unions: unionTerms.map((t) => readFor(t, xq)),
     excludes: [...xq.exclude],
@@ -197,6 +206,6 @@ function escalateToL2(xq: XQuery, dfs: Map<string, number>): ReadPlan | null {
 }
 
 /** Stopwords stay in phrase verification, but have no index postings. */
-export function phraseTerms(xq: XQuery): string[] {
+export function phraseTerms(xq: XQuery): Term[] {
   return xq.phrases.flatMap((phrase) => tokenize(phrase.join(" ")).tokens);
 }

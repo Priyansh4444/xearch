@@ -1,6 +1,11 @@
 import { resolve } from "node:path";
-import { FxTwitterClient } from "../acquisition/fxtwitter.ts";
-import { runTimelineProbe, type ProbeOptions, type ProbeReport } from "../probe/run.ts";
+import * as Effect from "effect/Effect";
+import { makeFxTwitterClient } from "../acquisition/fxtwitter.ts";
+import {
+  runTimelineProbeEffect,
+  type ProbeOptions,
+  type ProbeReport,
+} from "../probe/run.ts";
 
 const DEFAULT_BASE_URL = "https://api.fxtwitter.com";
 const ProbeFlag = {
@@ -14,16 +19,16 @@ const ProbeFlag = {
   baseUrl: "--base-url",
 } as const;
 
-async function main(): Promise<void> {
+const main = Effect.fn("cli.probe")(function* () {
   const options = parseArguments(process.argv.slice(2));
-  const client = new FxTwitterClient({
+  const client = makeFxTwitterClient({
     baseUrl: options.baseUrl,
     timeoutMs: options.timeoutMs,
     retries: options.retries,
   });
-  const report = await runTimelineProbe(client, options);
+  const report = yield* runTimelineProbeEffect(client, options);
   printSummary(report, options.outputDirectory);
-}
+});
 
 interface CliOptions extends ProbeOptions {
   timeoutMs: number;
@@ -116,7 +121,7 @@ function usage(message: string): never {
   process.exit(2);
 }
 
-main().catch((error: unknown) => {
+Effect.runPromise(main()).catch((error: unknown) => {
   console.error(error instanceof Error ? error.message : error);
   process.exitCode = 1;
 });

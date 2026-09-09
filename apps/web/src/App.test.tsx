@@ -3,6 +3,8 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { getFunctionName } from "convex/server";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { MediaType } from "../../../convex/contracts/media";
+import { LadderLevel } from "../../../convex/engine/plan";
 import { emptyXQuery } from "../../../convex/engine/xquery";
 import { App } from "./App";
 
@@ -22,13 +24,13 @@ let canVote: boolean;
 
 function response(error: string | null = null) {
   return {
-    error, queryKey: "0000000000000001", ladder: "L0",
+    error, queryKey: "0000000000000001", ladder: LadderLevel.L0,
     appliedQuery: emptyXQuery(), trace: { consumed: {} },
     results: error === null ? [{
       _id: "tweet-1", tweetId: "123", authorHandle: "theo",
       author: null, text: "apple result", createdAt: 1,
       likeCount: 0, retweetCount: 0, replyCount: 0, quoteCount: 0,
-      mediaType: "none", mediaUrls: [],
+      mediaType: MediaType.None, mediaUrls: [],
     }] : [],
   };
 }
