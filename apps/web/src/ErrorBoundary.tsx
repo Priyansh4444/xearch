@@ -4,9 +4,27 @@ interface State {
   error: Error | null;
 }
 
+function SearchErrorFallback({
+  error,
+  onRetry,
+}: {
+  error: Error;
+  onRetry: () => void;
+}): ReactNode {
+  return (
+    <div className="error-state" role="alert">
+      <p className="error-title">Search is unreachable.</p>
+      <p className="error-detail">{error.message}</p>
+      <button type="button" onClick={onRetry}>
+        Try again
+      </button>
+    </div>
+  );
+}
+
 /**
- * Catches errors thrown by useQuery (deployment unreachable, server error) and
- * turns them into a recoverable state instead of a blank page.
+ * React still requires a class component for error boundaries.
+ * The fallback UI is a functional component; this shell only owns error state.
  */
 export class SearchErrorBoundary extends Component<{ children: ReactNode }, State> {
   override state: State = { error: null };
@@ -18,13 +36,10 @@ export class SearchErrorBoundary extends Component<{ children: ReactNode }, Stat
   override render() {
     if (this.state.error === null) return this.props.children;
     return (
-      <div className="error-state" role="alert">
-        <p className="error-title">Search is unreachable.</p>
-        <p className="error-detail">{this.state.error.message}</p>
-        <button type="button" onClick={() => this.setState({ error: null })}>
-          Try again
-        </button>
-      </div>
+      <SearchErrorFallback
+        error={this.state.error}
+        onRetry={() => this.setState({ error: null })}
+      />
     );
   }
 }

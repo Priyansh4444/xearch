@@ -29,7 +29,23 @@ interface Env {
 }
 
 // Shapes mirrored from apps/collector/src/pilot/manifest.ts and report.ts (only fields used here).
-export type AccountState = "pending" | "active" | "paused" | "completed" | "abandoned";
+// Values mirror apps/collector/src/contracts/run-state.ts (Effect-free copies; dashboard cannot import collector).
+export const AccountState = {
+  Pending: "pending",
+  Active: "active",
+  Paused: "paused",
+  Completed: "completed",
+  Abandoned: "abandoned",
+} as const;
+export type AccountState = (typeof AccountState)[keyof typeof AccountState];
+export const AcquisitionStatus = {
+  InProgress: "in_progress",
+  Completed: "completed",
+  Partial: "partial",
+  Abandoned: "abandoned",
+  Failed: "failed",
+} as const;
+export type AcquisitionStatus = (typeof AcquisitionStatus)[keyof typeof AcquisitionStatus];
 export interface ManifestAccount {
   requestedHandle: string;
   resolvedHandle: string | null;
@@ -263,11 +279,11 @@ async function loadRun(bucket: R2Bucket, runId: string, kind: "live" | "archived
     status: manifest.acquisition.status ?? null,
     accounts: {
       total: accounts.length,
-      completed: count("completed"),
-      paused: count("paused"),
-      active: count("active"),
-      pending: count("pending"),
-      abandoned: count("abandoned"),
+      completed: count(AccountState.Completed),
+      paused: count(AccountState.Paused),
+      active: count(AccountState.Active),
+      pending: count(AccountState.Pending),
+      abandoned: count(AccountState.Abandoned),
     },
     requests: sum((account) => account.requests),
     retries: sum((account) => account.retries),
@@ -358,11 +374,11 @@ function timeCell(ms: number | null, now: number): string {
 
 function statusClass(status: string | null): string {
   switch (status) {
-    case "completed": return "ok";
-    case "in_progress": return "live";
-    case "partial": return "warn";
-    case "abandoned":
-    case "failed": return "bad";
+    case AcquisitionStatus.Completed: return "ok";
+    case AcquisitionStatus.InProgress: return "live";
+    case AcquisitionStatus.Partial: return "warn";
+    case AcquisitionStatus.Abandoned:
+    case AcquisitionStatus.Failed: return "bad";
     default: return "";
   }
 }
@@ -393,7 +409,7 @@ function renderRun(run: RunSummary, now: number): string {
 
   let elapsed = "–";
   if (run.acquisitionStartedAt !== null) {
-    const end = run.acquisitionCompletedAt ?? (run.status === "in_progress" ? now : run.updatedAt ?? now);
+    const end = run.acquisitionCompletedAt ?? (run.status === AcquisitionStatus.InProgress ? now : run.updatedAt ?? now);
     elapsed = fmtDuration(end - run.acquisitionStartedAt);
   }
 
@@ -445,7 +461,7 @@ function renderRun(run: RunSummary, now: number): string {
     const handle = account.resolvedHandle && account.resolvedHandle !== account.requestedHandle
       ? `${esc(account.requestedHandle)} <small class="dim">→ ${esc(account.resolvedHandle)}</small>`
       : esc(account.requestedHandle);
-    const stateClass = account.state === "completed" ? "ok-text" : account.state === "abandoned" ? "bad-text" : account.state === "paused" ? "warn-text" : account.state === "active" ? "live-text" : "dim";
+    const stateClass = account.state === AccountState.Completed ? "ok-text" : account.state === AccountState.Abandoned ? "bad-text" : account.state === AccountState.Paused ? "warn-text" : account.state === AccountState.Active ? "live-text" : "dim";
     return `<tr><td>${handle}</td><td>${esc(account.cohort)}</td><td class="${stateClass}">${esc(account.state)}</td><td>${fmtInt(account.pagesCompleted)}</td><td>${fmtInt(account.rowsReturned)}</td><td class="small">${esc(reason)}${account.lastError ? ` <span class="dim" title="${esc(account.lastError)}">(error)</span>` : ""}</td></tr>`;
   }).join("")}
   </tbody></table></div></details>`;
