@@ -11,6 +11,25 @@ export const PER_TERM_CAP = 500; // 12 query terms + 5 PRF terms, cached across 
 export const MIN_RESULTS = 10; // ladder escalation threshold (§5.2)
 export const RERANK_CANDIDATES = 200;
 
+/**
+ * Deduped union of term lists in first-seen order. One Set, one output array —
+ * the `[...new Set([...a, ...b, ...c])]` chain it replaces builds a temporary
+ * array per list plus one more for the spread. Same elements, same order.
+ */
+export function uniqueTerms(...lists: Term[][]): Term[] {
+  const seen = new Set<Term>();
+  const out: Term[] = [];
+  for (const list of lists) {
+    for (const term of list) {
+      if (!seen.has(term)) {
+        seen.add(term);
+        out.push(term);
+      }
+    }
+  }
+  return out;
+}
+
 export const LadderLevel = {
   L0: "L0",
   L1: "L1",
@@ -64,7 +83,7 @@ export interface ReadPlan {
  */
 export function planL0(xq: XQuery, dfs: Map<Term, number>): ReadPlan {
   const gateTerms = rarestFirst(
-    [...new Set([...xq.must, ...xq.aspects, ...phraseTerms(xq)])],
+    uniqueTerms(xq.must, xq.aspects, phraseTerms(xq)),
     dfs,
   );
   return {
@@ -154,7 +173,7 @@ export function escalate(
   // L0/L1 -> L1: drop the lowest-idf (= highest-df) gate, at most twice, and only
   // while more than one gate remains. Filters ride along untouched (invariant 2).
   if (executed.level === LadderLevel.L0 || executed.level === LadderLevel.L1) {
-    const fullGateCount = new Set([...xq.must, ...xq.aspects, ...phraseTerms(xq)]).size;
+    const fullGateCount = uniqueTerms(xq.must, xq.aspects, phraseTerms(xq)).length;
     const drops = fullGateCount - executed.gates.length;
     const protectedTerms = new Set([...xq.aspects, ...phraseTerms(xq)]);
     const droppable = executed.gates.filter((gate) =>
@@ -192,7 +211,7 @@ export function escalate(
 
 function escalateToL2(xq: XQuery, dfs: Map<Term, number>): ReadPlan | null {
   const unionTerms = rarestFirst(
-    [...new Set([...xq.must, ...xq.should, ...xq.aspects, ...phraseTerms(xq)])],
+    uniqueTerms(xq.must, xq.should, xq.aspects, phraseTerms(xq)),
     dfs,
   );
   if (unionTerms.length === 0) return null;

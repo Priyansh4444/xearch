@@ -102,9 +102,9 @@ export function rerank(
     return { rel, eng, auth: Math.max(0, c.authorAuthority) };
   });
   const z = {
-    rel: Math.max(...raw.map((r) => r.rel), 1e-9),
-    eng: Math.max(...raw.map((r) => r.eng), 1e-9),
-    auth: Math.max(...raw.map((r) => r.auth), 1e-9),
+    rel: maxSignal(raw, (r) => r.rel),
+    eng: maxSignal(raw, (r) => r.eng),
+    auth: maxSignal(raw, (r) => r.auth),
   };
 
   const scored: Scored[] = candidates.map((c, i) => {
@@ -150,6 +150,18 @@ export function rerank(
   }
 
   return [...best.values()].sort(compare);
+}
+
+/** Max of one signal over the candidate set, floored. A loop, not
+ * `Math.max(...rows.map(pick))` — the spread form allocates a throwaway array
+ * per signal on every rerank. */
+function maxSignal<T>(rows: T[], pick: (row: T) => number): number {
+  let best = 1e-9;
+  for (const row of rows) {
+    const value = pick(row);
+    if (value > best) best = value;
+  }
+  return best;
 }
 
 /** Intent bonuses (§4.6): media match, phrase coverage, should-polarity hits. */

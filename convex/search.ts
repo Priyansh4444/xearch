@@ -17,6 +17,7 @@ import {
   PER_TERM_CAP,
   RERANK_CANDIDATES,
   phraseTerms,
+  uniqueTerms,
 } from "./engine/plan";
 import { rerank, rrfFuse, type Candidate } from "./engine/rank";
 import { queryKey, emptyXQuery, SortOrder, type XQuery } from "./engine/xquery";
@@ -72,9 +73,7 @@ export const search = query({
     const key = queryKey(xq);
 
     // 2. df point reads for every term the planner or reranker will touch.
-    const allTerms = [
-      ...new Set([...xq.must, ...xq.should, ...xq.aspects, ...phraseTerms(xq)]),
-    ];
+    const allTerms = uniqueTerms(xq.must, xq.should, xq.aspects, phraseTerms(xq));
     if (allTerms.length > MAX_QUERY_TERMS) return invalidSearch("Use at most 12 search terms and aspects.");
     const dfs = new Map<Term, number>();
     for (const term of allTerms) {
