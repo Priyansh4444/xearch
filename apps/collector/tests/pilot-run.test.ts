@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   FxTwitterError,
+  pilotClientFromPromises,
   type FxTwitterJson,
   type PilotClient,
   type ProfileResponse,
@@ -142,7 +143,7 @@ describe("pilot acquisition", () => {
           message: "FxTwitter returned HTTP 500",
           status: 500,
           responseBody: "boom",
-          kind: "decode",
+          kind: "http",
           retryDelay: 0,
         })],
         "200": [page([row("20", "200", NOW - DAY)], null)],
@@ -331,9 +332,7 @@ interface FakeScript {
 function fakeClient(script: FakeScript): PilotClient & { profileRequests: string[]; timelineRequests: TimelineRequest[] } {
   const profileRequests: string[] = [];
   const timelineRequests: TimelineRequest[] = [];
-  return {
-    profileRequests,
-    timelineRequests,
+  const client = pilotClientFromPromises({
     async fetchProfile(handle) {
       profileRequests.push(handle);
       const response = script.profiles[handle];
@@ -348,7 +347,8 @@ function fakeClient(script: FakeScript): PilotClient & { profileRequests: string
       if (next instanceof Error) throw next;
       return next;
     },
-  };
+  });
+  return Object.assign(client, { profileRequests, timelineRequests });
 }
 
 function profile(id: string, screenName: string): ProfileResponse {

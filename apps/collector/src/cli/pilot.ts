@@ -1,12 +1,27 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { FxTwitterClient } from "../acquisition/fxtwitter.ts";
-import { loadPilotConfig, selectAccounts, type PilotConfig } from "../config/pilot.ts";
-import { readRunPages, type RawPageInput } from "../normalization/normalize.ts";
-import { acquire, createRun } from "../pilot/acquire.ts";
-import { discoverFromPages, proposeConfig, renderMarkdown, resolveCandidates } from "../pilot/discover.ts";
-import { createRunId, fileExists, isValidRunId, readJson, runPaths, writeJsonAtomic, writeTextAtomic, type RunPaths } from "../pilot/layout.ts";
+import * as Data from "effect/Data";
+import * as Effect from "effect/Effect";
+import { FxTwitterError, makeFxTwitterClient } from "../acquisition/fxtwitter.ts";
+import {
+  loadPilotConfigEffect,
+  selectAccountsEffect,
+  type PilotConfig,
+  PilotConfigError,
+} from "../config/pilot.ts";
+import {
+  fileExistsEffect,
+  readJsonEffect,
+  writeJsonAtomicEffect,
+  writeTextAtomicEffect,
+  type FsError,
+} from "../contracts/fs.ts";
+import { AccountState, DiscoveryResolution } from "../contracts/run-state.ts";
+import { readRunPagesEffect, type RawPageInput } from "../normalization/normalize.ts";
+import { acquireEffect, createRunEffect } from "../pilot/acquire.ts";
+import { discoverFromPages, proposeConfig, renderMarkdown, resolveCandidatesEffect } from "../pilot/discover.ts";
+import { createRunId, isValidRunId, runPaths, type RunPaths } from "../pilot/layout.ts";
 import {
   abandonAccount,
   abandonRun,
@@ -21,6 +36,16 @@ import type { PilotReport } from "../pilot/report.ts";
 
 const DEFAULT_CONFIG = "config/collection/pilot.json";
 const DEFAULT_DATA_DIR = "data";
+const USAGE = `Usage:
+  pnpm collect:pilot acquire [--run <id>] [--accounts a,b] [--label smoke] [--config ${DEFAULT_CONFIG}] [--data-dir ${DEFAULT_DATA_DIR}] [--max-requests n]
+  pnpm collect:pilot normalize <run-id>
+  pnpm collect:pilot verify <run-id>
+  pnpm collect:pilot status <run-id>
+  pnpm collect:pilot discover <run-id> [<run-id>...] [--min-seeds 3] [--resolve] [--out dir]
+  pnpm collect:pilot abandon-account <run-id> <handle> --reason "..."
+  pnpm collect:pilot reopen-account <run-id> <handle> --reason "..."
+  pnpm collect:pilot abandon <run-id> --reason "..."`;
+
 const PilotCommand = {
   acquire: "acquire",
   normalize: "normalize",
@@ -32,173 +57,228 @@ const PilotCommand = {
   discover: "discover",
 } as const;
 
+export class PilotCliError extends Data.TaggedError("PilotCliError")<{
+  readonly message: string;
+  readonly exitCode: number;
+}> {}
+
 interface Flags {
   positional: string[];
   options: Map<string, string>;
 }
 
-async function main(): Promise<void> {
+type CliError = PilotCliError | PilotConfigError | FsError | FxTwitterError | Error;
+
+const main = Effect.fn("pilot.main")(function* (): Effect.fn.Return<void, CliError> {
   const [command, ...rest] = process.argv.slice(2);
-  const flags = parseFlags(rest);
+  const flags = yield* parseFlagsEffect(rest);
   const dataDir = resolve(flags.options.get("data-dir") ?? DEFAULT_DATA_DIR);
 
   switch (command) {
     case PilotCommand.acquire:
-      return acquireCommand(flags, dataDir);
+      return yield* acquireCommand(flags, dataDir);
     case PilotCommand.normalize:
-      return normalizeCommand(flags, dataDir);
+      return yield* normalizeCommand(flags, dataDir);
     case PilotCommand.verify:
-      return verifyCommand(flags, dataDir);
+      return yield* verifyCommand(flags, dataDir);
     case PilotCommand.abandonAccount:
-      return abandonAccountCommand(flags, dataDir);
+      return yield* abandonAccountCommand(flags, dataDir);
     case PilotCommand.reopenAccount:
-      return reopenAccountCommand(flags, dataDir);
+      return yield* reopenAccountCommand(flags, dataDir);
     case PilotCommand.abandon:
-      return abandonRunCommand(flags, dataDir);
+      return yield* abandonRunCommand(flags, dataDir);
     case PilotCommand.status:
-      return statusCommand(flags, dataDir);
+      return yield* statusCommand(flags, dataDir);
     case PilotCommand.discover:
-      return discoverCommand(flags, dataDir);
+      return yield* discoverCommand(flags, dataDir);
     default:
-      usage(command === undefined ? "A command is required." : `Unknown command: ${command}`);
+      return yield* usageFail(command === undefined ? "A command is required." : `Unknown command: ${command}`);
   }
-}
+});
 
-async function acquireCommand(flags: Flags, dataDir: string): Promise<void> {
+const acquireCommand = Effect.fn("pilot.acquire")(function* (
+  flags: Flags,
+  dataDir: string,
+): Effect.fn.Return<void, CliError> {
   const requestedRunId = flags.options.get("run") ?? null;
   let paths: RunPaths;
   let config: PilotConfig;
 
-  if (requestedRunId !== null && (await fileExists(runPaths(dataDir, "runs", requestedRunId).manifest))) {
+  if (requestedRunId !== null && (yield* fileExistsEffect(runPaths(dataDir, "runs", requestedRunId).manifest))) {
     if (flags.options.has("accounts") || flags.options.has("config")) {
-      usage("--accounts and --config cannot change an existing run; start a new run instead.");
+      return yield* usageFail("--accounts and --config cannot change an existing run; start a new run instead.");
     }
     paths = runPaths(dataDir, "runs", requestedRunId);
-    const snapshot = await loadRunConfig(paths);
-    if (snapshot === null) throw new Error(`run ${requestedRunId} has no config snapshot`);
+    const snapshot = yield* tryPromise(loadRunConfig(paths));
+    if (snapshot === null) {
+      return yield* cliFail(`run ${requestedRunId} has no config snapshot`);
+    }
     config = snapshot;
     console.log(`resuming run ${requestedRunId}`);
   } else {
-    if (requestedRunId !== null && !isValidRunId(requestedRunId)) usage(`Invalid run id: ${requestedRunId}`);
-    if (requestedRunId !== null && (await locateRun(dataDir, requestedRunId)) !== null) {
-      throw new Error(`run ${requestedRunId} is archived and cannot be resumed`);
+    if (requestedRunId !== null && !isValidRunId(requestedRunId)) {
+      return yield* usageFail(`Invalid run id: ${requestedRunId}`);
     }
-    const loaded = await loadPilotConfig(resolve(flags.options.get("config") ?? DEFAULT_CONFIG));
+    if (requestedRunId !== null) {
+      const located = yield* tryPromise(locateRun(dataDir, requestedRunId));
+      if (located !== null) {
+        return yield* cliFail(`run ${requestedRunId} is archived and cannot be resumed`);
+      }
+    }
+    const loaded = yield* loadPilotConfigEffect(resolve(flags.options.get("config") ?? DEFAULT_CONFIG));
     const accounts = flags.options.get("accounts")?.split(",").map((handle) => handle.trim()).filter(Boolean) ?? null;
-    config = selectAccounts(loaded, accounts);
+    config = yield* selectAccountsEffect(loaded, accounts);
     const runId = requestedRunId ?? createRunId(new Date(), flags.options.get("label") ?? "pilot");
     paths = runPaths(dataDir, "runs", runId);
-    await createRun(paths, config, runId, Date.now());
+    yield* createRunEffect(paths, config, runId, Date.now());
     console.log(`created run ${runId} with ${config.accounts.length} account(s)`);
   }
 
-  const client = new FxTwitterClient({
+  const client = makeFxTwitterClient({
     baseUrl: config.apiBaseUrl,
-    timeoutMs: integerOption(flags, "timeout-ms", 15_000),
-    retries: integerOption(flags, "retries", 3),
+    timeoutMs: yield* integerOptionEffect(flags, "timeout-ms", 15_000),
+    retries: yield* integerOptionEffect(flags, "retries", 3),
   });
-  const maxRequests = flags.options.has("max-requests") ? integerOption(flags, "max-requests", 0) : undefined;
-  const manifest = await acquire({ paths, config, client, log: (line) => console.log(line), maxRequests });
+  const maxRequests = flags.options.has("max-requests")
+    ? yield* integerOptionEffect(flags, "max-requests", 0)
+    : undefined;
+  const manifest = yield* acquireEffect({
+    paths,
+    config,
+    client,
+    log: (line) => console.log(line),
+    maxRequests,
+  });
   printAcquisition(manifest, paths);
-}
+});
 
-async function normalizeCommand(flags: Flags, dataDir: string): Promise<void> {
-  const runId = requireRunId(flags);
-  const located = await locateRun(dataDir, runId);
-  if (located === null) throw new Error(`run ${runId} not found under ${dataDir}`);
-  if (located.archived) throw new Error(`run ${runId} is already archived; use verify`);
-  const config = await loadRunConfig(located.paths);
-  if (config === null) throw new Error(`run ${runId} has no config snapshot`);
+const normalizeCommand = Effect.fn("pilot.normalize")(function* (
+  flags: Flags,
+  dataDir: string,
+): Effect.fn.Return<void, CliError> {
+  const runId = yield* requireRunId(flags);
+  const located = yield* tryPromise(locateRun(dataDir, runId));
+  if (located === null) return yield* cliFail(`run ${runId} not found under ${dataDir}`);
+  if (located.archived) return yield* cliFail(`run ${runId} is already archived; use verify`);
+  const config = yield* tryPromise(loadRunConfig(located.paths));
+  if (config === null) return yield* cliFail(`run ${runId} has no config snapshot`);
 
-  const result = await normalizeAndArchive({ dataDir, paths: located.paths, config, log: (line) => console.log(line) });
-  const report = await readJson<PilotReport>(result.archivedPaths.report);
+  const result = yield* tryPromise(
+    normalizeAndArchive({ dataDir, paths: located.paths, config, log: (line) => console.log(line) }),
+  );
+  const report = (yield* readJsonEffect(result.archivedPaths.report)) as PilotReport;
   printReport(report);
   console.log(`manifest: ${result.archivedPaths.manifest}`);
   console.log(`acceptance: ${result.manifest.acceptance.passed ? "passed" : `not passed (${result.manifest.acceptance.reasons.join("; ")})`}`);
-}
+});
 
-async function verifyCommand(flags: Flags, dataDir: string): Promise<void> {
-  const runId = requireRunId(flags);
-  const located = await locateRun(dataDir, runId);
-  if (located === null) throw new Error(`run ${runId} not found under ${dataDir}`);
-  if (!located.archived) throw new Error(`run ${runId} is not archived yet; normalize it first`);
-  const config = await loadRunConfig(located.paths);
-  if (config === null) throw new Error(`run ${runId} has no config snapshot`);
+const verifyCommand = Effect.fn("pilot.verify")(function* (
+  flags: Flags,
+  dataDir: string,
+): Effect.fn.Return<void, CliError> {
+  const runId = yield* requireRunId(flags);
+  const located = yield* tryPromise(locateRun(dataDir, runId));
+  if (located === null) return yield* cliFail(`run ${runId} not found under ${dataDir}`);
+  if (!located.archived) return yield* cliFail(`run ${runId} is not archived yet; normalize it first`);
+  const config = yield* tryPromise(loadRunConfig(located.paths));
+  if (config === null) return yield* cliFail(`run ${runId} has no config snapshot`);
 
-  const scratch = await mkdtemp(join(tmpdir(), "xearch-verify-"));
-  try {
-    const result = await verifyArchive(located.paths, scratch, config);
-    console.log(`verify ${runId}: ${result.hashesChecked} file hash(es) checked, ${result.hashMismatches.length} mismatch(es)`);
-    console.log(`verify ${runId}: ${result.outputsCompared.length} output file(s) re-normalized, ${result.outputsDiffering.length} differ`);
-    for (const path of result.hashMismatches) console.log(`  hash mismatch: ${path}`);
-    for (const path of result.outputsDiffering) console.log(`  bytes differ: ${path}`);
-    console.log(`verify ${runId}: ${result.passed ? "PASSED" : "FAILED"}`);
-    if (!result.passed) process.exitCode = 1;
-  } finally {
-    await rm(scratch, { recursive: true, force: true });
-  }
-}
+  const scratch = yield* tryPromise(mkdtemp(join(tmpdir(), "xearch-verify-")));
+  const result = yield* tryPromise(verifyArchive(located.paths, scratch, config)).pipe(
+    Effect.ensuring(
+      tryPromise(rm(scratch, { recursive: true, force: true })).pipe(Effect.orDie),
+    ),
+  );
+  console.log(`verify ${runId}: ${result.hashesChecked} file hash(es) checked, ${result.hashMismatches.length} mismatch(es)`);
+  console.log(`verify ${runId}: ${result.outputsCompared.length} output file(s) re-normalized, ${result.outputsDiffering.length} differ`);
+  for (const path of result.hashMismatches) console.log(`  hash mismatch: ${path}`);
+  for (const path of result.outputsDiffering) console.log(`  bytes differ: ${path}`);
+  console.log(`verify ${runId}: ${result.passed ? "PASSED" : "FAILED"}`);
+  if (!result.passed) process.exitCode = 1;
+});
 
-async function abandonAccountCommand(flags: Flags, dataDir: string): Promise<void> {
-  const runId = requireRunId(flags);
+const abandonAccountCommand = Effect.fn("pilot.abandonAccount")(function* (
+  flags: Flags,
+  dataDir: string,
+): Effect.fn.Return<void, CliError> {
+  const runId = yield* requireRunId(flags);
   const handle = flags.positional[1];
   const reason = flags.options.get("reason");
-  if (handle === undefined) usage("A handle is required.");
-  if (reason === undefined || reason.trim().length === 0) usage("--reason is required.");
-  const { paths, config } = await activeRun(dataDir, runId);
-  const manifest = await abandonAccount({ dataDir, paths, config }, handle, reason);
+  if (handle === undefined) return yield* usageFail("A handle is required.");
+  if (reason === undefined || reason.trim().length === 0) return yield* usageFail("--reason is required.");
+  const { paths, config } = yield* activeRun(dataDir, runId);
+  const manifest = yield* tryPromise(abandonAccount({ dataDir, paths, config }, handle, reason));
   console.log(`abandoned @${handle} in run ${runId}; acquisition is now ${manifest.acquisition.status}`);
-}
+});
 
-async function reopenAccountCommand(flags: Flags, dataDir: string): Promise<void> {
-  const runId = requireRunId(flags);
+const reopenAccountCommand = Effect.fn("pilot.reopenAccount")(function* (
+  flags: Flags,
+  dataDir: string,
+): Effect.fn.Return<void, CliError> {
+  const runId = yield* requireRunId(flags);
   const handle = flags.positional[1];
   const reason = flags.options.get("reason");
-  if (handle === undefined) usage("A handle is required.");
-  if (reason === undefined || reason.trim().length === 0) usage("--reason is required.");
-  const { paths, config } = await activeRun(dataDir, runId);
-  const manifest = await reopenAccount({ dataDir, paths, config }, handle, reason);
+  if (handle === undefined) return yield* usageFail("A handle is required.");
+  if (reason === undefined || reason.trim().length === 0) return yield* usageFail("--reason is required.");
+  const { paths, config } = yield* activeRun(dataDir, runId);
+  const manifest = yield* tryPromise(reopenAccount({ dataDir, paths, config }, handle, reason));
   console.log(`reopened @${handle} in run ${runId}; acquisition is now ${manifest.acquisition.status}`);
-}
+});
 
-async function abandonRunCommand(flags: Flags, dataDir: string): Promise<void> {
-  const runId = requireRunId(flags);
+const abandonRunCommand = Effect.fn("pilot.abandon")(function* (
+  flags: Flags,
+  dataDir: string,
+): Effect.fn.Return<void, CliError> {
+  const runId = yield* requireRunId(flags);
   const reason = flags.options.get("reason");
-  if (reason === undefined || reason.trim().length === 0) usage("--reason is required.");
-  const { paths, config } = await activeRun(dataDir, runId);
-  const archived = await abandonRun({ dataDir, paths, config }, reason);
+  if (reason === undefined || reason.trim().length === 0) return yield* usageFail("--reason is required.");
+  const { paths, config } = yield* activeRun(dataDir, runId);
+  const archived = yield* tryPromise(abandonRun({ dataDir, paths, config }, reason));
   console.log(`run ${runId} abandoned and archived at ${archived.root}`);
-}
+});
 
-async function statusCommand(flags: Flags, dataDir: string): Promise<void> {
-  const runId = requireRunId(flags);
-  const located = await locateRun(dataDir, runId);
-  if (located === null) throw new Error(`run ${runId} not found under ${dataDir}`);
-  const manifest = await readJson<Manifest>(located.paths.manifest);
+const statusCommand = Effect.fn("pilot.status")(function* (
+  flags: Flags,
+  dataDir: string,
+): Effect.fn.Return<void, CliError> {
+  const runId = yield* requireRunId(flags);
+  const located = yield* tryPromise(locateRun(dataDir, runId));
+  if (located === null) return yield* cliFail(`run ${runId} not found under ${dataDir}`);
+  const manifest = (yield* readJsonEffect(located.paths.manifest)) as Manifest;
   printAcquisition(manifest, located.paths);
-  if (await fileExists(located.paths.report)) printReport(await readJson<PilotReport>(located.paths.report));
-}
+  if (yield* fileExistsEffect(located.paths.report)) {
+    printReport((yield* readJsonEffect(located.paths.report)) as PilotReport);
+  }
+});
 
-async function discoverCommand(flags: Flags, dataDir: string): Promise<void> {
-  if (flags.positional.length === 0) usage("At least one run id is required.");
-  const minSeeds = integerOption(flags, "min-seeds", 3);
+const discoverCommand = Effect.fn("pilot.discover")(function* (
+  flags: Flags,
+  dataDir: string,
+): Effect.fn.Return<void, CliError> {
+  if (flags.positional.length === 0) return yield* usageFail("At least one run id is required.");
+  const minSeeds = yield* integerOptionEffect(flags, "min-seeds", 3);
   const pages: RawPageInput[] = [];
   const seeds = new Map<string, { userId: string; handle: string }>();
   let baseConfig: PilotConfig | null = null;
   for (const runId of flags.positional) {
-    const located = await locateRun(dataDir, runId);
-    if (located === null) throw new Error(`run ${runId} not found under ${dataDir}`);
-    const config = await loadRunConfig(located.paths);
-    if (config === null) throw new Error(`run ${runId} has no config snapshot`);
+    const located = yield* tryPromise(locateRun(dataDir, runId));
+    if (located === null) return yield* cliFail(`run ${runId} not found under ${dataDir}`);
+    const config = yield* tryPromise(loadRunConfig(located.paths));
+    if (config === null) return yield* cliFail(`run ${runId} has no config snapshot`);
     baseConfig ??= config;
-    const manifest = await readJson<Manifest>(located.paths.manifest);
+    const manifest = (yield* readJsonEffect(located.paths.manifest)) as Manifest;
     for (const account of manifest.acquisition.accounts) {
-      if (account.userId !== null) seeds.set(account.userId, { userId: account.userId, handle: (account.resolvedHandle ?? account.requestedHandle).toLowerCase() });
+      if (account.userId !== null) {
+        seeds.set(account.userId, {
+          userId: account.userId,
+          handle: (account.resolvedHandle ?? account.requestedHandle).toLowerCase(),
+        });
+      }
     }
-    pages.push(...(await readRunPages(located.paths, manifest)));
+    pages.push(...(yield* readRunPagesEffect(located.paths, manifest)));
     console.log(`${runId}: ${pages.length} page(s) loaded so far`);
   }
-  const configured = await loadPilotConfig(resolve(flags.options.get("config") ?? DEFAULT_CONFIG));
+  const configured = yield* loadPilotConfigEffect(resolve(flags.options.get("config") ?? DEFAULT_CONFIG));
   const candidates = discoverFromPages(pages, {
     seeds: [...seeds.values()],
     configuredIds: new Set(configured.accounts.map((account) => account.expectedUserId)),
@@ -208,58 +288,67 @@ async function discoverCommand(flags: Flags, dataDir: string): Promise<void> {
   console.log(`${candidates.length} candidate(s) with >= ${minSeeds} distinct seeds`);
 
   if (flags.options.has("resolve")) {
-    const client = new FxTwitterClient({ baseUrl: configured.apiBaseUrl });
+    const client = makeFxTwitterClient({ baseUrl: configured.apiBaseUrl });
     let first = true;
-    const pace = async (): Promise<void> => {
-      if (!first) await new Promise((done) => setTimeout(done, configured.delayMs));
+    const pace = Effect.fn("pilot.discover.pace")(function* (): Effect.fn.Return<void> {
+      if (!first) yield* Effect.sleep(configured.delayMs);
       first = false;
-    };
-    const unresolved = candidates.filter((candidate) => candidate.resolution === "unresolved").length;
+    });
+    const unresolved = candidates.filter((candidate) => candidate.resolution === DiscoveryResolution.Unresolved).length;
     console.log(`resolving ${unresolved} handle-only candidate(s) at ${configured.delayMs} ms pacing`);
-    await resolveCandidates(candidates, client, pace, (line) => console.log(line));
+    // resolveCandidatesEffect still takes a Promise pace; adapt.
+    yield* resolveCandidatesEffect(
+      candidates,
+      client,
+      () => Effect.runPromise(pace()),
+      (line) => console.log(line),
+    );
   }
 
   const outDir = resolve(flags.options.get("out") ?? join(dataDir, "discovery", flags.positional.join("+")));
-  await writeJsonAtomic(join(outDir, "report.json"), {
+  yield* writeJsonAtomicEffect(join(outDir, "report.json"), {
     generatedAt: Date.now(),
     sourceRuns: flags.positional,
     minSeeds,
     seeds: [...seeds.values()],
     candidates,
   });
-  await writeTextAtomic(join(outDir, "report.md"), renderMarkdown(candidates, minSeeds, flags.positional));
+  yield* writeTextAtomicEffect(join(outDir, "report.md"), renderMarkdown(candidates, minSeeds, flags.positional));
   const proposed = proposeConfig({ ...(baseConfig as PilotConfig), selectedOn: new Date().toISOString().slice(0, 10) }, candidates);
-  await writeJsonAtomic(join(outDir, "proposed-config.json"), proposed);
+  yield* writeJsonAtomicEffect(join(outDir, "proposed-config.json"), proposed);
   console.log(`report: ${join(outDir, "report.md")}`);
   console.log(`proposed gate-2 config with ${proposed.accounts.length} guest account(s): ${join(outDir, "proposed-config.json")}`);
-  console.log(`unresolved (need --resolve): ${candidates.filter((candidate) => candidate.resolution === "unresolved").length}`);
-}
+  console.log(`unresolved (need --resolve): ${candidates.filter((candidate) => candidate.resolution === DiscoveryResolution.Unresolved).length}`);
+});
 
-async function activeRun(dataDir: string, runId: string): Promise<{ paths: RunPaths; config: PilotConfig }> {
-  const located = await locateRun(dataDir, runId);
-  if (located === null) throw new Error(`run ${runId} not found under ${dataDir}`);
-  if (located.archived) throw new Error(`run ${runId} is archived and immutable`);
-  const config = await loadRunConfig(located.paths);
-  if (config === null) throw new Error(`run ${runId} has no config snapshot`);
+const activeRun = Effect.fn("pilot.activeRun")(function* (
+  dataDir: string,
+  runId: string,
+): Effect.fn.Return<{ paths: RunPaths; config: PilotConfig }, CliError> {
+  const located = yield* tryPromise(locateRun(dataDir, runId));
+  if (located === null) return yield* cliFail(`run ${runId} not found under ${dataDir}`);
+  if (located.archived) return yield* cliFail(`run ${runId} is archived and immutable`);
+  const config = yield* tryPromise(loadRunConfig(located.paths));
+  if (config === null) return yield* cliFail(`run ${runId} has no config snapshot`);
   return { paths: located.paths, config };
-}
+});
 
 function printAcquisition(manifest: Manifest, paths: RunPaths): void {
   console.log(`run ${manifest.runId}: acquisition ${manifest.acquisition.status}${manifest.archive ? " (archived)" : ""}`);
   for (const account of manifest.acquisition.accounts) {
     const detail =
-      account.state === "completed"
+      account.state === AccountState.Completed
         ? account.stopReason
-        : account.state === "paused"
+        : account.state === AccountState.Paused
           ? `${account.pauseReason}: ${account.lastError ?? ""}`
-          : account.state === "abandoned"
+          : account.state === AccountState.Abandoned
             ? account.abandonReason
             : "";
     console.log(
       `  @${account.requestedHandle.padEnd(16)} ${account.state.padEnd(9)} pages=${String(account.pagesCompleted).padStart(4)} rows=${String(account.rowsReturned).padStart(6)} ${detail ?? ""}`,
     );
   }
-  const paused = manifest.acquisition.accounts.filter((account) => account.state === "paused");
+  const paused = manifest.acquisition.accounts.filter((account) => account.state === AccountState.Paused);
   if (paused.length > 0) {
     console.log(`${paused.length} account(s) paused; re-run acquire to retry or abandon-account to give up`);
   }
@@ -293,21 +382,31 @@ function fmt(value: number | null): string {
   return value === null ? "n/a" : String(Math.round(value * 10) / 10);
 }
 
-function requireRunId(flags: Flags): string {
+const requireRunId = Effect.fn("pilot.requireRunId")(function* (
+  flags: Flags,
+): Effect.fn.Return<string, PilotCliError> {
   const runId = flags.positional[0];
-  if (runId === undefined) usage("A run id is required.");
+  if (runId === undefined) return yield* usageFail("A run id is required.");
   return runId;
-}
+});
 
-function integerOption(flags: Flags, name: string, fallback: number): number {
+const integerOptionEffect = Effect.fn("pilot.integerOption")(function* (
+  flags: Flags,
+  name: string,
+  fallback: number,
+): Effect.fn.Return<number, PilotCliError> {
   const value = flags.options.get(name);
   if (value === undefined) return fallback;
   const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < 0) usage(`--${name} must be a non-negative integer.`);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    return yield* usageFail(`--${name} must be a non-negative integer.`);
+  }
   return parsed;
-}
+});
 
-function parseFlags(args: string[]): Flags {
+const parseFlagsEffect = Effect.fn("pilot.parseFlags")(function* (
+  args: string[],
+): Effect.fn.Return<Flags, PilotCliError> {
   const positional: string[] = [];
   const options = new Map<string, string>();
   for (let index = 0; index < args.length; index += 1) {
@@ -317,30 +416,43 @@ function parseFlags(args: string[]): Flags {
       if (inline !== undefined) options.set(key as string, inline);
       else {
         const next = args[index + 1];
-        if (next === undefined || next.startsWith("--")) usage(`Missing value for --${key}.`);
+        if (next === undefined || next.startsWith("--")) {
+          return yield* usageFail(`Missing value for --${key}.`);
+        }
         options.set(key as string, next);
         index += 1;
       }
     } else positional.push(arg);
   }
   return { positional, options };
+});
+
+function usageFail(message: string): PilotCliError {
+  return new PilotCliError({ message: `${message}\n${USAGE}`, exitCode: 2 });
 }
 
-function usage(message: string): never {
-  console.error(message);
-  console.error(`Usage:
-  pnpm collect:pilot acquire [--run <id>] [--accounts a,b] [--label smoke] [--config ${DEFAULT_CONFIG}] [--data-dir ${DEFAULT_DATA_DIR}] [--max-requests n]
-  pnpm collect:pilot normalize <run-id>
-  pnpm collect:pilot verify <run-id>
-  pnpm collect:pilot status <run-id>
-  pnpm collect:pilot discover <run-id> [<run-id>...] [--min-seeds 3] [--resolve] [--out dir]
-  pnpm collect:pilot abandon-account <run-id> <handle> --reason "..."
-  pnpm collect:pilot reopen-account <run-id> <handle> --reason "..."
-  pnpm collect:pilot abandon <run-id> --reason "..."`);
-  process.exit(2);
+function cliFail(message: string): PilotCliError {
+  return new PilotCliError({ message, exitCode: 1 });
 }
 
-main().catch((error: unknown) => {
+function tryPromise<A>(promise: Promise<A>): Effect.Effect<A, Error> {
+  return Effect.tryPromise({
+    try: () => promise,
+    catch: (cause) => (cause instanceof Error ? cause : new Error(String(cause))),
+  });
+}
+
+Effect.runPromise(main()).catch((error: unknown) => {
+  if (error instanceof PilotCliError) {
+    console.error(error.message);
+    process.exitCode = error.exitCode;
+    return;
+  }
+  if (error instanceof PilotConfigError || (error instanceof Error && "_tag" in error && (error as { _tag: string })._tag === "FsError")) {
+    console.error(error instanceof Error ? error.message : error);
+    process.exitCode = 1;
+    return;
+  }
   console.error(error instanceof Error ? error.message : error);
   process.exitCode = 1;
 });

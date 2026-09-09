@@ -3,22 +3,23 @@
 // `*Run` helpers wrap it with filesystem access to the run layout.
 
 import { join } from "node:path";
+import * as Effect from "effect/Effect";
 import type { FxTwitterJson } from "../acquisition/fxtwitter.ts";
-import { parseTimelinePage } from "../acquisition/fxtwitter.ts";
+import { FxTwitterError, FxTwitterErrorKind, parseTimelinePage } from "../acquisition/fxtwitter.ts";
 import type { PilotConfig } from "../config/pilot.ts";
+import { readJsonEffect, writeTextAtomicEffect, type FsError } from "../contracts/fs.ts";
+import type { AuthorId, Handle, TweetId } from "../contracts/ids.ts";
+import { CandidateOrigin, SkipReason } from "../contracts/normalize-kinds.ts";
 import type { Manifest } from "../pilot/manifest.ts";
 import {
   accountRawDirectory,
   pageFileName,
   pageMetaFileName,
-  readJson,
-  writeTextAtomic,
   type RunPaths,
 } from "../pilot/layout.ts";
 import {
   mapStatus,
   REJECTION_CODES,
-  type CandidateOrigin,
   type IngressAuthor,
   type IngressTweet,
   type MappedCandidate,
@@ -27,7 +28,7 @@ import {
 } from "./mapping.ts";
 
 export interface RawPageInput {
-  accountUserId: string;
+  accountUserId: AuthorId;
   page: number;
   rawFile: string;
   receivedAt: number;
@@ -35,8 +36,8 @@ export interface RawPageInput {
 }
 
 export interface NormalizeAccount {
-  userId: string;
-  handle: string;
+  userId: AuthorId;
+  handle: Handle;
 }
 
 export interface NormalizeOptions {
@@ -48,17 +49,17 @@ export interface NormalizeOptions {
 
 export interface DuplicateRecord {
   kind: "duplicate";
-  tweetId: string;
-  firstSeen: { accountUserId: string; page: number; origin: CandidateOrigin };
-  again: { accountUserId: string; page: number; origin: CandidateOrigin };
+  tweetId: TweetId;
+  firstSeen: { accountUserId: AuthorId; page: number; origin: CandidateOrigin };
+  again: { accountUserId: AuthorId; page: number; origin: CandidateOrigin };
   metricsRefreshed: boolean;
 }
 
 export interface SkipRecord {
   kind: "skip";
-  reason: "outside_history_window";
-  tweetId: string;
-  accountUserId: string;
+  reason: SkipReason;
+  tweetId: TweetId;
+  accountUserId: AuthorId;
   page: number;
   createdAt: number;
   cutoffAt: number;
@@ -83,13 +84,13 @@ export interface NormalizationCounts {
   oldestCreatedAt: number | null;
   newestCreatedAt: number | null;
   perAccount: {
-    userId: string;
-    handle: string;
+    userId: AuthorId;
+    handle: Handle;
     authoredAccepted: number;
     coverageFloor: number;
     coverageFloorReached: boolean;
   }[];
-  perAuthor: { authorId: string; handle: string; accepted: number; share: number }[];
+  perAuthor: { authorId: AuthorId; handle: Handle; accepted: number; share: number }[];
 }
 
 export interface NormalizationResult {
@@ -103,7 +104,7 @@ export interface NormalizationResult {
 interface Occurrence {
   tweet: IngressTweet;
   origin: CandidateOrigin;
-  accountUserId: string;
+  accountUserId: AuthorId;
   page: number;
   receivedAt: number;
 }
@@ -146,12 +147,15 @@ export function normalizePages(pages: RawPageInput[], options: NormalizeOptions)
       recordRejection(candidate.rejection);
     } else {
       if (candidate.quoteTombstone) counts.tombstoneQuotes += 1;
-      const subjectToWindow = candidate.context.origin === "timeline" && candidate.authoredByAccount && !candidate.reposted;
+      const subjectToWindow =
+        candidate.context.origin === CandidateOrigin.Timeline &&
+        candidate.authoredByAccount &&
+        !candidate.reposted;
       if (subjectToWindow && candidate.tweet.createdAt < options.cutoffAt) {
         counts.skippedOutsideWindow += 1;
         skips.push({
           kind: "skip",
-          reason: "outside_history_window",
+          reason: SkipReason.OutsideHistoryWindow,
           tweetId: candidate.tweet.id,
           accountUserId: candidate.context.accountUserId,
           page: candidate.context.page,
@@ -232,7 +236,7 @@ export function normalizePages(pages: RawPageInput[], options: NormalizeOptions)
         page: page.page,
         rawFile: page.rawFile,
         receivedAt: page.receivedAt,
-        origin: "timeline",
+        origin: CandidateOrigin.Timeline,
         index,
         parentId: null,
       });
@@ -247,7 +251,7 @@ export function normalizePages(pages: RawPageInput[], options: NormalizeOptions)
   // Emit: author before the first tweet that references it, tweets in first-seen order.
   const ingressLines: string[] = [];
   const emittedAuthors = new Set<string>();
-  const perAuthor = new Map<string, number>();
+  const perAuthor = new Map<AuthorId, number>();
   for (const id of order) {
     const occurrence = occurrences.get(id);
     if (occurrence === undefined) continue;
@@ -281,7 +285,7 @@ export function normalizePages(pages: RawPageInput[], options: NormalizeOptions)
   counts.perAuthor = [...perAuthor.entries()]
     .map(([authorId, accepted]) => ({
       authorId,
-      handle: authors.get(authorId)?.author.handle ?? "",
+      handle: authors.get(authorId)?.author.handle ?? ("" as Handle),
       accepted,
       share: counts.accepted.total === 0 ? 0 : accepted / counts.accepted.total,
     }))
@@ -314,17 +318,37 @@ export interface PageMeta {
 
 /** Read every completed page named by the manifest, in manifest account order. */
 export async function readRunPages(paths: RunPaths, manifest: Manifest): Promise<RawPageInput[]> {
+  return Effect.runPromise(readRunPagesEffect(paths, manifest));
+}
+
+export const readRunPagesEffect = Effect.fn("readRunPages")(function* (
+  paths: RunPaths,
+  manifest: Manifest,
+): Effect.fn.Return<RawPageInput[], FsError | FxTwitterError> {
   const pages: RawPageInput[] = [];
   for (const account of manifest.acquisition.accounts) {
     if (account.userId === null) continue;
     const directory = accountRawDirectory(paths, account.userId);
     for (let page = 1; page <= account.pagesCompleted; page += 1) {
-      const body = parseTimelinePage(await readJson<unknown>(
-        join(directory, pageFileName(page)),
-      ));
-      const meta = await readJson<PageMeta>(join(directory, pageMetaFileName(page)));
+      const raw = yield* readJsonEffect(join(directory, pageFileName(page)));
+      const body = yield* Effect.try({
+        try: () => parseTimelinePage(raw),
+        catch: (cause) =>
+          cause instanceof FxTwitterError
+            ? cause
+            : new FxTwitterError({
+              message: `FxTwitter timeline decode failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+              status: 200,
+              responseBody: null,
+              kind: FxTwitterErrorKind.Decode,
+              retryDelay: 0,
+            }),
+      });
+      const meta = (yield* readJsonEffect(join(directory, pageMetaFileName(page)))) as PageMeta;
       pages.push({
-        accountUserId: account.userId,
+        // Manifest userIds arrive as plain strings; the per-row provider ids
+        // are re-validated by mapping, so this asserts the space, not the value.
+        accountUserId: account.userId as AuthorId,
         page,
         rawFile: `raw/${account.userId}/${pageFileName(page)}`,
         receivedAt: meta.receivedAt,
@@ -333,7 +357,7 @@ export async function readRunPages(paths: RunPaths, manifest: Manifest): Promise
     }
   }
   return pages;
-}
+});
 
 export function normalizeOptionsFor(manifest: Manifest, config: PilotConfig): NormalizeOptions {
   return {
@@ -341,17 +365,28 @@ export function normalizeOptionsFor(manifest: Manifest, config: PilotConfig): No
     coverageFloor: config.coverageFloor,
     accounts: manifest.acquisition.accounts
       .filter((account) => account.userId !== null)
-      .map((account) => ({ userId: account.userId as string, handle: account.resolvedHandle ?? account.requestedHandle })),
+      // Config handles are HandleSchema-validated at load; userIds are provider
+      // ids re-validated per row by mapping — both casts assert space only.
+      .map((account) => ({
+        userId: account.userId as string as AuthorId,
+        handle: (account.resolvedHandle ?? account.requestedHandle) as Handle,
+      })),
   };
 }
 
 export async function writeNormalizationOutput(paths: RunPaths, result: NormalizationResult): Promise<void> {
-  await writeTextAtomic(paths.ingress, result.ingress);
-  await writeTextAtomic(paths.rejections, result.rejections);
-  await writeTextAtomic(paths.duplicates, result.duplicates);
-  await writeTextAtomic(paths.skips, result.skips);
+  return Effect.runPromise(writeNormalizationOutputEffect(paths, result));
 }
 
+export const writeNormalizationOutputEffect = Effect.fn("writeNormalizationOutput")(function* (
+  paths: RunPaths,
+  result: NormalizationResult,
+): Effect.fn.Return<void, FsError> {
+  yield* writeTextAtomicEffect(paths.ingress, result.ingress);
+  yield* writeTextAtomicEffect(paths.rejections, result.rejections);
+  yield* writeTextAtomicEffect(paths.duplicates, result.duplicates);
+  yield* writeTextAtomicEffect(paths.skips, result.skips);
+});
 function toJsonl(lines: string[]): string {
   return lines.length === 0 ? "" : `${lines.join("\n")}\n`;
 }

@@ -52,7 +52,7 @@ describe("collection pilot configuration", () => {
   it("rejects numeric ids, unknown cohorts, and duplicates", () => {
     const base = { ...pilotJson, accounts: [{ handle: "theo", expectedUserId: "1", cohort: "core" }] };
     expect(() => parsePilotConfig({ ...base, accounts: [{ handle: "theo", expectedUserId: 1, cohort: "core" }] })).toThrow(/numeric string/);
-    expect(() => parsePilotConfig({ ...base, accounts: [{ handle: "theo", expectedUserId: "1", cohort: "hub" }] })).toThrow(/cohort/);
+    expect(() => parsePilotConfig({ ...base, accounts: [{ handle: "theo", expectedUserId: "1", cohort: "hub" }] })).toThrow(/invalid shape/);
     expect(() =>
       parsePilotConfig({
         ...base,

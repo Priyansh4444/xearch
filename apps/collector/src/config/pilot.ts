@@ -38,25 +38,35 @@ export interface PilotConfig {
   accounts: PilotAccount[];
 }
 
+const CohortSchema = Schema.Literals([...COHORTS]);
+const NonEmptyTrimmedString = Schema.String.check(Schema.isMinLength(1));
+const NumericUserIdSchema = Schema.String.check(Schema.isPattern(/^[0-9]+$/));
+const HandleSchema = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_]{1,15}$/));
+const HistoryDaysSchema = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)).check(Schema.isLessThanOrEqualTo(3_650));
+const PageSizeSchema = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)).check(Schema.isLessThanOrEqualTo(100));
+const DelayMsSchema = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)).check(Schema.isLessThanOrEqualTo(60_000));
+const CoverageFloorSchema = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)).check(Schema.isLessThanOrEqualTo(1_000_000));
+
 const PilotAccountSchema = Schema.Struct({
   handle: Schema.String,
+  /** Accept number only so the error can explain why string ids are required. */
   expectedUserId: Schema.Union([Schema.String, Schema.Number]),
-  cohort: Schema.String,
+  cohort: CohortSchema,
 });
 
 const PilotConfigSchema = Schema.Struct({
   version: Schema.Literal(PILOT_CONFIG_VERSION),
   source: Schema.Literal("fxtwitter"),
-  apiBaseUrl: Schema.String,
-  apiVersion: Schema.String,
-  specificationUrl: Schema.String,
-  historyDays: Schema.Number,
+  apiBaseUrl: NonEmptyTrimmedString,
+  apiVersion: NonEmptyTrimmedString,
+  specificationUrl: NonEmptyTrimmedString,
+  historyDays: HistoryDaysSchema,
   withReplies: Schema.Boolean,
-  requestedPageSize: Schema.Number,
-  delayMs: Schema.Number,
-  coverageFloor: Schema.Number,
-  selectedOn: Schema.String,
-  accounts: Schema.Array(PilotAccountSchema),
+  requestedPageSize: PageSizeSchema,
+  delayMs: DelayMsSchema,
+  coverageFloor: CoverageFloorSchema,
+  selectedOn: NonEmptyTrimmedString,
+  accounts: Schema.Array(PilotAccountSchema).check(Schema.isMinLength(1)),
 });
 
 export class PilotConfigError extends Data.TaggedError("PilotConfigError")<{
@@ -66,68 +76,84 @@ export class PilotConfigError extends Data.TaggedError("PilotConfigError")<{
 }> {}
 
 export function parsePilotConfig(value: unknown): PilotConfig {
-  const parsed = Schema.decodeUnknownOption(PilotConfigSchema)(value);
-  if (Option.isNone(parsed)) throw new Error("pilot config has an invalid shape");
-  const config = parsed.value;
-  if (config.apiBaseUrl.trim().length === 0) throw new Error("pilot config apiBaseUrl must be a non-empty string");
-  if (config.apiVersion.trim().length === 0) throw new Error("pilot config apiVersion must be a non-empty string");
-  if (config.specificationUrl.trim().length === 0) throw new Error("pilot config specificationUrl must be a non-empty string");
-  if (config.selectedOn.trim().length === 0) throw new Error("pilot config selectedOn must be a non-empty string");
-  if (!Number.isInteger(config.historyDays) || config.historyDays < 1 || config.historyDays > 3_650) {
-    throw new Error("pilot config historyDays must be an integer from 1 to 3650");
-  }
-  if (!Number.isInteger(config.requestedPageSize) || config.requestedPageSize < 1 || config.requestedPageSize > 100) {
-    throw new Error("pilot config requestedPageSize must be an integer from 1 to 100");
-  }
-  if (!Number.isInteger(config.delayMs) || config.delayMs < 0 || config.delayMs > 60_000) {
-    throw new Error("pilot config delayMs must be an integer from 0 to 60000");
-  }
-  if (!Number.isInteger(config.coverageFloor) || config.coverageFloor < 0 || config.coverageFloor > 1_000_000) {
-    throw new Error("pilot config coverageFloor must be an integer from 0 to 1000000");
-  }
-  if (config.accounts.length === 0) {
-    throw new Error("pilot config accounts must be a non-empty array");
-  }
+  return Effect.runSync(parsePilotConfigEffect(value));
+}
 
-  const accounts: PilotAccount[] = [];
-  const seenHandles = new Set<string>();
-  const seenIds = new Set<string>();
-  config.accounts.forEach((entry, index) => {
-    const handle = entry.handle.replace(/^@/, "");
-    if (!/^[A-Za-z0-9_]{1,15}$/.test(handle)) {
-      throw new Error(`accounts[${index}].handle is not a valid X handle: ${handle}`);
+export const parsePilotConfigEffect = Effect.fn("parsePilotConfigEffect")(
+  function* (
+    value: unknown,
+    path = "<memory>",
+  ): Effect.fn.Return<PilotConfig, PilotConfigError> {
+    const parsed = Schema.decodeUnknownOption(PilotConfigSchema)(value);
+    if (Option.isNone(parsed)) {
+      return yield* configFail(path, "pilot config has an invalid shape");
     }
-    if (typeof entry.expectedUserId !== "string") {
-      throw new Error(`accounts[${index}].expectedUserId must be a numeric string (ids exceed 2^53)`);
+    const config = parsed.value;
+    if (config.apiBaseUrl.trim().length === 0) {
+      return yield* configFail(path, "pilot config apiBaseUrl must be a non-empty string");
     }
-    const expectedUserId = entry.expectedUserId;
-    if (!/^[0-9]+$/.test(expectedUserId)) {
-      throw new Error(`accounts[${index}].expectedUserId must be a numeric string (ids exceed 2^53)`);
+    if (config.apiVersion.trim().length === 0) {
+      return yield* configFail(path, "pilot config apiVersion must be a non-empty string");
     }
-    const cohort = COHORTS.find((candidate) => candidate === entry.cohort);
-    if (cohort === undefined) throw new Error(`accounts[${index}].cohort must be one of ${COHORTS.join(", ")}`);
-    const key = handle.toLowerCase();
-    if (seenHandles.has(key)) throw new Error(`duplicate handle in pilot config: ${handle}`);
-    if (seenIds.has(expectedUserId)) throw new Error(`duplicate expectedUserId in pilot config: ${expectedUserId}`);
-    seenHandles.add(key);
-    seenIds.add(expectedUserId);
-    accounts.push({ handle, expectedUserId, cohort });
-  });
+    if (config.specificationUrl.trim().length === 0) {
+      return yield* configFail(path, "pilot config specificationUrl must be a non-empty string");
+    }
+    if (config.selectedOn.trim().length === 0) {
+      return yield* configFail(path, "pilot config selectedOn must be a non-empty string");
+    }
 
-  return {
-    version: config.version,
-    source: config.source,
-    apiBaseUrl: config.apiBaseUrl.replace(/\/+$/, ""),
-    apiVersion: config.apiVersion,
-    specificationUrl: config.specificationUrl,
-    historyDays: config.historyDays,
-    withReplies: config.withReplies,
-    requestedPageSize: config.requestedPageSize,
-    delayMs: config.delayMs,
-    coverageFloor: config.coverageFloor,
-    selectedOn: config.selectedOn,
-    accounts,
-  };
+    const accounts: PilotAccount[] = [];
+    const seenHandles = new Set<string>();
+    const seenIds = new Set<string>();
+    for (const [index, entry] of config.accounts.entries()) {
+      const handle = entry.handle.replace(/^@/, "");
+      if (Option.isNone(Schema.decodeUnknownOption(HandleSchema)(handle))) {
+        return yield* configFail(path, `accounts[${index}].handle is not a valid X handle: ${handle}`);
+      }
+      if (typeof entry.expectedUserId !== "string") {
+        return yield* configFail(
+          path,
+          `accounts[${index}].expectedUserId must be a numeric string (ids exceed 2^53)`,
+        );
+      }
+      const expectedUserId = entry.expectedUserId;
+      if (Option.isNone(Schema.decodeUnknownOption(NumericUserIdSchema)(expectedUserId))) {
+        return yield* configFail(
+          path,
+          `accounts[${index}].expectedUserId must be a numeric string (ids exceed 2^53)`,
+        );
+      }
+      const key = handle.toLowerCase();
+      if (seenHandles.has(key)) {
+        return yield* configFail(path, `duplicate handle in pilot config: ${handle}`);
+      }
+      if (seenIds.has(expectedUserId)) {
+        return yield* configFail(path, `duplicate expectedUserId in pilot config: ${expectedUserId}`);
+      }
+      seenHandles.add(key);
+      seenIds.add(expectedUserId);
+      accounts.push({ handle, expectedUserId, cohort: entry.cohort });
+    }
+
+    return {
+      version: config.version,
+      source: config.source,
+      apiBaseUrl: config.apiBaseUrl.trim().replace(/\/+$/, ""),
+      apiVersion: config.apiVersion.trim(),
+      specificationUrl: config.specificationUrl.trim(),
+      historyDays: config.historyDays,
+      withReplies: config.withReplies,
+      requestedPageSize: config.requestedPageSize,
+      delayMs: config.delayMs,
+      coverageFloor: config.coverageFloor,
+      selectedOn: config.selectedOn.trim(),
+      accounts,
+    };
+  },
+);
+
+function configFail(path: string, message: string): PilotConfigError {
+  return new PilotConfigError({ message, path, cause: new Error(message) });
 }
 
 export async function loadPilotConfig(path: string): Promise<PilotConfig> {
@@ -140,42 +166,49 @@ export async function loadPilotConfig(path: string): Promise<PilotConfig> {
  * should compose this Effect so file and JSON/configuration failures stay
  * distinguishable and can be retried or reported at their boundary.
  */
-export function loadPilotConfigEffect(path: string): Effect.Effect<PilotConfig, PilotConfigError> {
-  const read = Effect.tryPromise({
-    try: () => readFile(path, "utf8"),
-    catch: (cause) =>
-      new PilotConfigError({
-        message: `failed to load pilot config ${path}`,
-        path,
-        cause,
-      }),
-  });
-  return Effect.flatMap(read, (text) =>
-    Effect.try({
-      try: () => {
-        const parsed: unknown = JSON.parse(text);
-        return parsePilotConfig(parsed);
-      },
+export const loadPilotConfigEffect = Effect.fn("loadPilotConfigEffect")(
+  function* (path: string): Effect.fn.Return<PilotConfig, PilotConfigError> {
+    const text = yield* Effect.tryPromise({
+      try: () => readFile(path, "utf8"),
+      catch: (cause) =>
+        new PilotConfigError({
+          message: `failed to load pilot config ${path}`,
+          path,
+          cause,
+        }),
+    });
+    const parsed: unknown = yield* Effect.try({
+      try: () => JSON.parse(text) as unknown,
       catch: (cause) =>
         new PilotConfigError({
           message: `failed to parse pilot config ${path}`,
           path,
           cause,
         }),
-    }),
-  );
-}
+    });
+    return yield* parsePilotConfigEffect(parsed, path);
+  },
+);
 
 /** Restrict a config to the named handles (case-insensitive), preserving config order. */
 export function selectAccounts(config: PilotConfig, handles: string[] | null): PilotConfig {
+  return Effect.runSync(selectAccountsEffect(config, handles));
+}
+
+export const selectAccountsEffect = Effect.fn("selectAccounts")(function* (
+  config: PilotConfig,
+  handles: string[] | null,
+): Effect.fn.Return<PilotConfig, PilotConfigError> {
   if (handles === null || handles.length === 0) return config;
   const wanted = new Set(handles.map((handle) => handle.replace(/^@/, "").toLowerCase()));
   const accounts = config.accounts.filter((account) => wanted.has(account.handle.toLowerCase()));
   const found = new Set(accounts.map((account) => account.handle.toLowerCase()));
   const unknown = [...wanted].filter((handle) => !found.has(handle));
-  if (unknown.length > 0) throw new Error(`handles not in pilot config: ${unknown.join(", ")}`);
+  if (unknown.length > 0) {
+    return yield* configFail("<selectAccounts>", `handles not in pilot config: ${unknown.join(", ")}`);
+  }
   return { ...config, accounts };
-}
+});
 
 /** Canonical JSON (sorted keys) so the same config always hashes identically. */
 export function canonicalJson(value: unknown): string {

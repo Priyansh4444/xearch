@@ -1,16 +1,31 @@
 import { Option } from "effect";
 import * as Schema from "effect/Schema";
 
+export const ProviderMediaType = {
+  Photo: "photo",
+  MosaicPhoto: "mosaic_photo",
+  Video: "video",
+  Gif: "gif",
+} as const;
+export type ProviderMediaType = (typeof ProviderMediaType)[keyof typeof ProviderMediaType];
 export const ProviderMediaTypeSchema = Schema.Literals([
-  "photo",
-  "mosaic_photo",
-  "video",
-  "gif",
+  ProviderMediaType.Photo,
+  ProviderMediaType.MosaicPhoto,
+  ProviderMediaType.Video,
+  ProviderMediaType.Gif,
 ]);
-export type ProviderMediaType = Schema.Schema.Type<typeof ProviderMediaTypeSchema>;
 
-export const IngressMediaTypeSchema = Schema.Literals(["image", "video", "gif"]);
-export type IngressMediaType = Schema.Schema.Type<typeof IngressMediaTypeSchema>;
+export const IngressMediaType = {
+  Image: "image",
+  Video: "video",
+  Gif: "gif",
+} as const;
+export type IngressMediaType = (typeof IngressMediaType)[keyof typeof IngressMediaType];
+export const IngressMediaTypeSchema = Schema.Literals([
+  IngressMediaType.Image,
+  IngressMediaType.Video,
+  IngressMediaType.Gif,
+]);
 
 export function parseProviderMediaType(value: unknown): ProviderMediaType | null {
   const parsed = Schema.decodeUnknownOption(ProviderMediaTypeSchema)(value);
@@ -19,12 +34,16 @@ export function parseProviderMediaType(value: unknown): ProviderMediaType | null
 
 export function toIngressMediaType(type: ProviderMediaType): IngressMediaType {
   switch (type) {
-    case "photo":
-    case "mosaic_photo":
-      return "image";
-    case "video":
-      return "video";
-    case "gif":
-      return "gif";
+    case ProviderMediaType.Photo:
+    case ProviderMediaType.MosaicPhoto:
+      return IngressMediaType.Image;
+    case ProviderMediaType.Video:
+      return IngressMediaType.Video;
+    case ProviderMediaType.Gif:
+      return IngressMediaType.Gif;
   }
+}
+
+export function isImageProviderMedia(type: ProviderMediaType): boolean {
+  return type === ProviderMediaType.Photo || type === ProviderMediaType.MosaicPhoto;
 }

@@ -2,10 +2,10 @@
 // documented response envelopes. It never interprets a response into ingress
 // records; that is normalization's job (apps/collector/src/normalization).
 
-import * as Effect from "effect/Effect";
-import * as Schema from "effect/Schema";
 import * as Data from "effect/Data";
+import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 
 const DEFAULT_BASE_URL = "https://api.fxtwitter.com";
 const USER_AGENT = "xearch-collection-pilot/0.2";
@@ -120,26 +120,6 @@ export interface ProfileResponse {
   profile: FxTwitterProfile | null;
 }
 
-export interface TimelineClient {
-  fetchTimelinePage(request: TimelineRequest): Promise<TimelineResponse>;
-}
-
-export interface ProfileClient {
-  fetchProfile(handle: string): Promise<ProfileResponse>;
-}
-
-export type PilotClient = TimelineClient & ProfileClient;
-
-export interface FxTwitterClientOptions {
-  baseUrl?: string;
-  timeoutMs?: number;
-  retries?: number;
-  retryBaseDelayMs?: number;
-  fetchImpl?: typeof fetch;
-  sleep?: (delayMs: number) => Promise<void>;
-  now?: () => number;
-}
-
 export const FxTwitterErrorKind = {
   Transport: "transport",
   Http: "http",
@@ -154,6 +134,49 @@ export class FxTwitterError extends Data.TaggedError("FxTwitterError")<{
   readonly kind: FxTwitterErrorKind;
   readonly retryDelay: number;
 }> {}
+
+export interface TimelineClient {
+  readonly baseUrl: string;
+  timelineUrl(request: TimelineRequest): string;
+  fetchTimelinePage(request: TimelineRequest): Promise<TimelineResponse>;
+  fetchTimelinePageEffect(request: TimelineRequest): Effect.Effect<TimelineResponse, FxTwitterError>;
+}
+
+export interface ProfileClient {
+  profileUrl(handle: string): string;
+  fetchProfile(handle: string): Promise<ProfileResponse>;
+  fetchProfileEffect(handle: string): Effect.Effect<ProfileResponse, FxTwitterError>;
+}
+
+export type PilotClient = TimelineClient & ProfileClient;
+
+export interface FxTwitterClientOptions {
+  baseUrl?: string;
+  timeoutMs?: number;
+  retries?: number;
+  retryBaseDelayMs?: number;
+  fetchImpl?: typeof fetch;
+  sleep?: (delayMs: number) => Promise<void>;
+  now?: () => number;
+}
+
+interface FxTwitterConfig {
+  readonly baseUrl: string;
+  readonly timeoutMs: number;
+  readonly retries: number;
+  readonly retryBaseDelayMs: number;
+  readonly fetchImpl: typeof fetch;
+  readonly sleep: ((delayMs: number) => Promise<void>) | undefined;
+  readonly now: () => number;
+}
+
+interface RawResponse {
+  httpStatus: number;
+  latencyMs: number;
+  attempts: number;
+  receivedAt: number;
+  bodyText: string | null;
+}
 
 const TimelinePageSchema = Schema.Struct({
   code: Schema.Number,
@@ -176,71 +199,36 @@ export const FxTwitterProfileEnvelopeSchema = Schema.Struct({
 });
 export type FxTwitterProfileEnvelope = Schema.Schema.Type<typeof FxTwitterProfileEnvelopeSchema>;
 
-interface RawResponse {
-  httpStatus: number;
-  latencyMs: number;
-  attempts: number;
-  receivedAt: number;
-  bodyText: string | null;
-}
+/** Build a PilotClient from closed-over config. No class instance state. */
+export function makeFxTwitterClient(options: FxTwitterClientOptions = {}): PilotClient {
+  const config = normalizeOptions(options);
 
-export class FxTwitterClient implements PilotClient {
-  readonly baseUrl: string;
-  private readonly timeoutMs: number;
-  private readonly retries: number;
-  private readonly retryBaseDelayMs: number;
-  private readonly fetchImpl: typeof fetch;
-  private readonly sleep: ((delayMs: number) => Promise<void>) | undefined;
-  private readonly now: () => number;
-
-  constructor(options: FxTwitterClientOptions = {}) {
-    this.baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
-    this.timeoutMs = options.timeoutMs ?? 15_000;
-    this.retries = options.retries ?? 3;
-    this.retryBaseDelayMs = options.retryBaseDelayMs ?? 500;
-    this.fetchImpl = options.fetchImpl ?? fetch;
-    this.sleep = options.sleep;
-    this.now = options.now ?? Date.now;
-  }
-
-  timelineUrl(request: TimelineRequest): string {
-    const url = new URL(`${this.baseUrl}/2/profile/${encodeURIComponent(request.handle)}/statuses`);
-    url.searchParams.set("count", String(request.count));
-    if (request.cursor !== null) url.searchParams.set("cursor", request.cursor);
-    if (request.withReplies) url.searchParams.set("with_replies", "true");
-    return url.toString();
-  }
-
-  profileUrl(handle: string): string {
-    return `${this.baseUrl}/2/profile/${encodeURIComponent(handle)}`;
-  }
-
-  async fetchTimelinePage(request: TimelineRequest): Promise<TimelineResponse> {
-    return Effect.runPromise(this.fetchTimelinePageEffect(request));
-  }
-
-  fetchTimelinePageEffect(request: TimelineRequest): Effect.Effect<TimelineResponse, FxTwitterError> {
-    return Effect.flatMap(
-      this.request(this.timelineUrl(request), { allowNoContent: true, allowNotFound: false }),
-      (response) => Effect.try({
+  const fetchTimelinePageEffect = Effect.fn("FxTwitter.fetchTimelinePage")(
+    function* (request: TimelineRequest): Effect.fn.Return<TimelineResponse, FxTwitterError> {
+      const response = yield* requestRaw(
+        config,
+        timelineUrl(config.baseUrl, request),
+        { allowNoContent: true, allowNotFound: false },
+      );
+      return yield* Effect.try({
         try: () => {
           if (response.bodyText === null) return { ...response, raw: null, page: null };
           const parsed = parseJson(response.bodyText);
           return { ...response, raw: parsed, page: parseTimelinePage(parsed) };
         },
         catch: decodeError,
-      }),
-    );
-  }
+      });
+    },
+  );
 
-  async fetchProfile(handle: string): Promise<ProfileResponse> {
-    return Effect.runPromise(this.fetchProfileEffect(handle));
-  }
-
-  fetchProfileEffect(handle: string): Effect.Effect<ProfileResponse, FxTwitterError> {
-    return Effect.flatMap(
-      this.request(this.profileUrl(handle), { allowNoContent: false, allowNotFound: true }),
-      (response) => Effect.try({
+  const fetchProfileEffect = Effect.fn("FxTwitter.fetchProfile")(
+    function* (handle: string): Effect.fn.Return<ProfileResponse, FxTwitterError> {
+      const response = yield* requestRaw(
+        config,
+        profileUrl(config.baseUrl, handle),
+        { allowNoContent: false, allowNotFound: true },
+      );
+      return yield* Effect.try({
         try: () => {
           if (response.httpStatus === 404) {
             const raw = response.bodyText === null ? null : tryParseJson(response.bodyText);
@@ -250,95 +238,68 @@ export class FxTwitterClient implements PilotClient {
           return { ...response, raw: parsed, profile: parseProfile(parsed) };
         },
         catch: decodeError,
-      }),
-    );
-  }
+      });
+    },
+  );
 
-  private request(
-    url: string,
-    options: { allowNoContent: boolean; allowNotFound: boolean },
-  ): Effect.Effect<RawResponse, FxTwitterError> {
-    // Mutable attempt state belongs to one execution, not to the reusable Effect.
-    return Effect.suspend(() => {
-      const startedAt = performance.now();
-      let attempt = 0;
-      const once = Effect.tryPromise({
-        try: async (signal): Promise<RawResponse> => {
-        attempt += 1;
-        const response = await this.fetchImpl(url, {
-          headers: { accept: "application/json", "user-agent": USER_AGENT },
-          signal: AbortSignal.any([signal, AbortSignal.timeout(this.timeoutMs)]),
+  return {
+    baseUrl: config.baseUrl,
+    timelineUrl: (request) => timelineUrl(config.baseUrl, request),
+    profileUrl: (handle) => profileUrl(config.baseUrl, handle),
+    fetchTimelinePageEffect,
+    fetchProfileEffect,
+    fetchTimelinePage: (request) => Effect.runPromise(fetchTimelinePageEffect(request)),
+    fetchProfile: (handle) => Effect.runPromise(fetchProfileEffect(handle)),
+  };
+}
+
+/** @deprecated Prefer `makeFxTwitterClient`. Kept as a thin alias for call-site churn. */
+export function FxTwitterClient(options: FxTwitterClientOptions = {}): PilotClient {
+  return makeFxTwitterClient(options);
+}
+
+/** Wrap Promise-only fakes so acquisition can consume the Effect surface. */
+export function pilotClientFromPromises(impl: {
+  fetchProfile(handle: string): Promise<ProfileResponse>;
+  fetchTimelinePage(request: TimelineRequest): Promise<TimelineResponse>;
+  baseUrl?: string;
+}): PilotClient {
+  const baseUrl = (impl.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
+  return {
+    baseUrl,
+    timelineUrl: (request) => timelineUrl(baseUrl, request),
+    profileUrl: (handle) => profileUrl(baseUrl, handle),
+    fetchProfile: (handle) => impl.fetchProfile(handle),
+    fetchTimelinePage: (request) => impl.fetchTimelinePage(request),
+    fetchProfileEffect: Effect.fn("pilotClientFromPromises.fetchProfile")(
+      function* (handle: string): Effect.fn.Return<ProfileResponse, FxTwitterError> {
+        return yield* Effect.tryPromise({
+          try: () => impl.fetchProfile(handle),
+          catch: toFxTwitterError,
         });
-        const receivedAt = this.now();
+      },
+    ),
+    fetchTimelinePageEffect: Effect.fn("pilotClientFromPromises.fetchTimelinePage")(
+      function* (request: TimelineRequest): Effect.fn.Return<TimelineResponse, FxTwitterError> {
+        return yield* Effect.tryPromise({
+          try: () => impl.fetchTimelinePage(request),
+          catch: toFxTwitterError,
+        });
+      },
+    ),
+  };
+}
 
-        if (response.status === 204 && options.allowNoContent) {
-          return {
-            httpStatus: 204,
-            latencyMs: performance.now() - startedAt,
-            attempts: attempt,
-            receivedAt,
-            bodyText: null,
-          };
-        }
+export function timelineUrl(baseUrl: string, request: TimelineRequest): string {
+  const url = new URL(`${baseUrl.replace(/\/+$/, "")}/2/profile/${encodeURIComponent(request.handle)}/statuses`);
+  url.searchParams.set("count", String(request.count));
+  if (request.cursor !== null) url.searchParams.set("cursor", request.cursor);
+  if (request.withReplies) url.searchParams.set("with_replies", "true");
+  return url.toString();
+}
 
-        const bodyText = await response.text();
-        if (response.status === 404 && options.allowNotFound) {
-          return {
-            httpStatus: 404,
-            latencyMs: performance.now() - startedAt,
-            attempts: attempt,
-            receivedAt,
-            bodyText,
-          };
-        }
-        if (!response.ok) {
-          throw new FxTwitterError({
-            message: `FxTwitter returned HTTP ${response.status}`,
-            status: response.status,
-            responseBody: bodyText,
-            kind: FxTwitterErrorKind.Http,
-            retryDelay: retryDelayMs(response, attempt, this.retryBaseDelayMs),
-          });
-        }
-        return {
-          httpStatus: response.status,
-          latencyMs: performance.now() - startedAt,
-          attempts: attempt,
-          receivedAt,
-          bodyText,
-        };
-        },
-        catch: (cause) => cause instanceof FxTwitterError ? cause : new FxTwitterError({
-          message: `FxTwitter request failed on attempt ${attempt}: ${errorMessage(cause)}`,
-          status: null,
-          responseBody: null,
-          kind: FxTwitterErrorKind.Transport,
-          retryDelay: exponentialDelayMs(attempt, this.retryBaseDelayMs),
-        }),
-      });
-      return Effect.retry(once, {
-        while: (error) => {
-          const retryable = error.kind === FxTwitterErrorKind.Transport
-            || (error.kind === FxTwitterErrorKind.Http
-              && error.status !== null
-              && isRetryableStatus(error.status));
-          if (!retryable || attempt > this.retries) return Effect.succeed(false);
-          const sleep = this.sleep;
-          if (sleep === undefined) return Effect.as(Effect.sleep(error.retryDelay), true);
-          return Effect.as(Effect.tryPromise({
-            try: () => sleep(error.retryDelay),
-            catch: (cause) => new FxTwitterError({
-              message: `Retry wait failed: ${errorMessage(cause)}`,
-              status: null,
-              responseBody: null,
-              kind: FxTwitterErrorKind.Transport,
-              retryDelay: 0,
-            }),
-          }), true);
-        },
-      });
-    });
-  }
+export function profileUrl(baseUrl: string, handle: string): string {
+  return `${baseUrl.replace(/\/+$/, "")}/2/profile/${encodeURIComponent(handle)}`;
 }
 
 export function parseTimelinePage(value: unknown): FxTwitterTimelinePage {
@@ -364,6 +325,126 @@ export function parseProfile(value: unknown): FxTwitterProfile {
   } catch (cause) {
     throw decodeError(cause, "profile");
   }
+}
+
+function normalizeOptions(options: FxTwitterClientOptions): FxTwitterConfig {
+  return {
+    baseUrl: (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, ""),
+    timeoutMs: options.timeoutMs ?? 15_000,
+    retries: options.retries ?? 3,
+    retryBaseDelayMs: options.retryBaseDelayMs ?? 500,
+    fetchImpl: options.fetchImpl ?? fetch,
+    sleep: options.sleep,
+    now: options.now ?? Date.now,
+  };
+}
+
+const requestRaw = Effect.fn("FxTwitter.requestRaw")(
+  function* (
+    config: FxTwitterConfig,
+    url: string,
+    options: { allowNoContent: boolean; allowNotFound: boolean },
+  ): Effect.fn.Return<RawResponse, FxTwitterError> {
+    // Mutable attempt state belongs to one execution, not to the reusable Effect.
+    return yield* Effect.suspend(() => {
+      const startedAt = performance.now();
+      let attempt = 0;
+      const once = Effect.tryPromise({
+        try: async (signal): Promise<RawResponse> => {
+          attempt += 1;
+          const response = await config.fetchImpl(url, {
+            headers: { accept: "application/json", "user-agent": USER_AGENT },
+            signal: AbortSignal.any([signal, AbortSignal.timeout(config.timeoutMs)]),
+          });
+          const receivedAt = config.now();
+
+          if (response.status === 204 && options.allowNoContent) {
+            return {
+              httpStatus: 204,
+              latencyMs: performance.now() - startedAt,
+              attempts: attempt,
+              receivedAt,
+              bodyText: null,
+            };
+          }
+
+          const bodyText = await response.text();
+          if (response.status === 404 && options.allowNotFound) {
+            return {
+              httpStatus: 404,
+              latencyMs: performance.now() - startedAt,
+              attempts: attempt,
+              receivedAt,
+              bodyText,
+            };
+          }
+          if (!response.ok) {
+            throw new FxTwitterError({
+              message: `FxTwitter returned HTTP ${response.status}`,
+              status: response.status,
+              responseBody: bodyText,
+              kind: FxTwitterErrorKind.Http,
+              retryDelay: retryDelayMs(response, attempt, config.retryBaseDelayMs),
+            });
+          }
+          return {
+            httpStatus: response.status,
+            latencyMs: performance.now() - startedAt,
+            attempts: attempt,
+            receivedAt,
+            bodyText,
+          };
+        },
+        catch: (cause) =>
+          cause instanceof FxTwitterError
+            ? cause
+            : new FxTwitterError({
+              message: `FxTwitter request failed on attempt ${attempt}: ${errorMessage(cause)}`,
+              status: null,
+              responseBody: null,
+              kind: FxTwitterErrorKind.Transport,
+              retryDelay: exponentialDelayMs(attempt, config.retryBaseDelayMs),
+            }),
+      });
+      return Effect.retry(once, {
+        while: (error) => {
+          const retryable = error.kind === FxTwitterErrorKind.Transport
+            || (error.kind === FxTwitterErrorKind.Http
+              && error.status !== null
+              && isRetryableStatus(error.status));
+          if (!retryable || attempt > config.retries) return Effect.succeed(false);
+          const sleep = config.sleep;
+          if (sleep === undefined) return Effect.as(Effect.sleep(error.retryDelay), true);
+          return Effect.as(
+            Effect.tryPromise({
+              try: () => sleep(error.retryDelay),
+              catch: (cause) =>
+                new FxTwitterError({
+                  message: `Retry wait failed: ${errorMessage(cause)}`,
+                  status: null,
+                  responseBody: null,
+                  kind: FxTwitterErrorKind.Transport,
+                  retryDelay: 0,
+                }),
+            }),
+            true,
+          );
+        },
+      });
+    });
+  },
+);
+
+function toFxTwitterError(cause: unknown): FxTwitterError {
+  return cause instanceof FxTwitterError
+    ? cause
+    : new FxTwitterError({
+      message: errorMessage(cause),
+      status: null,
+      responseBody: null,
+      kind: FxTwitterErrorKind.Transport,
+      retryDelay: 0,
+    });
 }
 
 function parseJson(body: string): FxTwitterJson {

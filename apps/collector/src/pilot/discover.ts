@@ -3,6 +3,9 @@
 // Output is a ranked report for human approval; admission is never automatic.
 
 import { Option } from "effect";
+import * as Cause from "effect/Cause";
+import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
 import {
   FxTwitterProfileEnvelopeSchema,
@@ -23,8 +26,18 @@ import {
   parseFiniteNumber,
   parseNonEmptyString,
 } from "../contracts/primitives.ts";
+import { InteractionKind } from "../contracts/normalize-kinds.ts";
+import {
+  isStatusRow,
+  parseProviderFacetType,
+  ProviderFacetType,
+} from "../contracts/provider.ts";
+import {
+  DiscoveryResolution,
+  isAdmissibleDiscoveryResolution,
+} from "../contracts/run-state.ts";
 
-export type InteractionKind = "reply" | "quote" | "repost" | "mention";
+export type { InteractionKind };
 
 export interface DiscoveryCandidate {
   /** Numeric id when any evidence carried one; otherwise null until resolved. */
@@ -40,9 +53,8 @@ export interface DiscoveryCandidate {
   interactions: Record<InteractionKind, number>;
   /** Present when the account is already part of the seed configuration. */
   configured: boolean;
-  resolution: "embedded" | "resolved" | "unresolved" | "not_found" | "mismatch";
+  resolution: DiscoveryResolution;
 }
-
 export interface DiscoveryOptions {
   seeds: { userId: string; handle: string }[];
   /** Handles (lowercase) and ids already configured; they are reported but never proposed. */
@@ -125,7 +137,7 @@ export function discoverFromPages(pages: RawPageInput[], options: DiscoveryOptio
       learn(quote?.author);
       learn(parseProviderAuthor(status.reposted_by));
       for (const facet of facets(status)) {
-        if (facet.type === "mention") {
+        if (parseProviderFacetType(facet.type) === ProviderFacetType.Mention) {
           const id = parseNonEmptyString(facet.id);
           const handle = normalizeHandle(parseNonEmptyString(facet.original));
           if (id !== null && handle !== null) handleToId.set(handle, id);
@@ -148,7 +160,7 @@ export function discoverFromPages(pages: RawPageInput[], options: DiscoveryOptio
         record(
           bucketFor(authorId, normalizeHandle(parseNonEmptyString(author.screen_name))),
           seed,
-          "repost",
+          InteractionKind.Repost,
           author,
         );
         continue;
@@ -157,10 +169,10 @@ export function discoverFromPages(pages: RawPageInput[], options: DiscoveryOptio
 
       if (status.replying_to !== undefined && status.replying_to !== null) {
         const handle = normalizeHandle(parseNonEmptyString(status.replying_to.screen_name));
-        record(bucketFor(null, handle), seed, "reply");
+        record(bucketFor(null, handle), seed, InteractionKind.Reply);
       }
       const quote = parseProviderStatus(status.quote);
-      if (quote?.type === "status" && quote.author !== undefined && quote.author !== null) {
+      if (quote !== null && isStatusRow(quote.type) && quote.author !== undefined && quote.author !== null) {
         const quoteAuthor = parseProviderAuthor(quote.author);
         record(
           bucketFor(
@@ -168,7 +180,7 @@ export function discoverFromPages(pages: RawPageInput[], options: DiscoveryOptio
             normalizeHandle(parseNonEmptyString(quoteAuthor?.screen_name)),
           ),
           seed,
-          "quote",
+          InteractionKind.Quote,
           quoteAuthor,
         );
       }
@@ -177,10 +189,10 @@ export function discoverFromPages(pages: RawPageInput[], options: DiscoveryOptio
           ? null
           : normalizeHandle(parseNonEmptyString(status.replying_to.screen_name));
       for (const facet of facets(status)) {
-        if (facet.type !== "mention") continue;
+        if (parseProviderFacetType(facet.type) !== ProviderFacetType.Mention) continue;
         const handle = normalizeHandle(parseNonEmptyString(facet.original));
         if (handle === null || handle === replyTarget) continue;
-        record(bucketFor(parseNonEmptyString(facet.id), handle), seed, "mention");
+        record(bucketFor(parseNonEmptyString(facet.id), handle), seed, InteractionKind.Mention);
       }
     }
   }
@@ -201,7 +213,7 @@ export function discoverFromPages(pages: RawPageInput[], options: DiscoveryOptio
       seeds: [...bucket.seeds].sort(),
       interactions: { ...bucket.interactions },
       configured,
-      resolution: bucket.userId === null ? "unresolved" : "embedded",
+      resolution: bucket.userId === null ? DiscoveryResolution.Unresolved : DiscoveryResolution.Embedded,
     });
   }
   return candidates.sort(
@@ -219,13 +231,32 @@ export async function resolveCandidates(
   pace: () => Promise<void>,
   log: (line: string) => void = () => undefined,
 ): Promise<void> {
-  for (const candidate of candidates) {
-    if (candidate.resolution !== "unresolved" || candidate.handle === null) continue;
-    await pace();
-    try {
-      const response = await client.fetchProfile(candidate.handle);
+  return Effect.runPromise(resolveCandidatesEffect(candidates, client, pace, log));
+}
+
+export const resolveCandidatesEffect = Effect.fn("resolveCandidatesEffect")(
+  function* (
+    candidates: DiscoveryCandidate[],
+    client: PilotClient,
+    pace: () => Promise<void>,
+    log: (line: string) => void = () => undefined,
+  ): Effect.fn.Return<void> {
+    for (const candidate of candidates) {
+      if (candidate.resolution !== DiscoveryResolution.Unresolved || candidate.handle === null) continue;
+      yield* Effect.tryPromise({
+        try: () => pace(),
+        catch: (cause) => new Error(String(cause)),
+      }).pipe(Effect.orDie);
+      const exit = yield* Effect.exit(client.fetchProfileEffect(candidate.handle));
+      if (Exit.isFailure(exit)) {
+        candidate.resolution = DiscoveryResolution.Unresolved;
+        const error = Cause.squash(exit.cause);
+        log(`@${candidate.handle}: resolution failed: ${error instanceof Error ? error.message : String(error)}`);
+        continue;
+      }
+      const response = exit.value;
       if (response.profile === null) {
-        candidate.resolution = "not_found";
+        candidate.resolution = DiscoveryResolution.NotFound;
         continue;
       }
       candidate.userId = response.profile.id;
@@ -239,13 +270,10 @@ export async function resolveCandidates(
         candidate.followers = envelope.value.user.followers ?? candidate.followers;
         candidate.statuses = envelope.value.user.statuses ?? candidate.statuses;
       }
-      candidate.resolution = "resolved";
-    } catch (error) {
-      candidate.resolution = "unresolved";
-      log(`@${candidate.handle}: resolution failed: ${error instanceof Error ? error.message : String(error)}`);
+      candidate.resolution = DiscoveryResolution.Resolved;
     }
-  }
-}
+  },
+);
 
 /** Candidates that can go straight into a gate-2 config: resolved, public, not already configured. */
 export function proposeConfig(base: PilotConfig, candidates: DiscoveryCandidate[]): PilotConfig {
@@ -253,7 +281,7 @@ export function proposeConfig(base: PilotConfig, candidates: DiscoveryCandidate[
   for (const candidate of candidates) {
     if (candidate.configured || candidate.userId === null || candidate.handle === null) continue;
     if (candidate.protected === true) continue;
-    if (candidate.resolution !== "embedded" && candidate.resolution !== "resolved") continue;
+    if (!isAdmissibleDiscoveryResolution(candidate.resolution)) continue;
     accounts.push({ handle: candidate.handle, expectedUserId: candidate.userId, cohort: "guest" });
   }
   return { ...base, accounts };
@@ -274,8 +302,8 @@ export function renderMarkdown(candidates: DiscoveryCandidate[], minSeeds: numbe
     const flags = [
       candidate.configured ? "configured" : "",
       candidate.protected ? "protected" : "",
-      candidate.resolution === "unresolved" ? "unresolved" : "",
-      candidate.resolution === "not_found" ? "not found" : "",
+      candidate.resolution === DiscoveryResolution.Unresolved ? "unresolved" : "",
+      candidate.resolution === DiscoveryResolution.NotFound ? "not found" : "",
       candidate.statuses !== null && candidate.statuses < 250 ? "<250 posts" : "",
     ].filter(Boolean);
     lines.push(
@@ -294,7 +322,12 @@ function newBucket(userId: string | null, handle: string | null): Bucket {
     statuses: null,
     protected: null,
     seeds: new Set(),
-    interactions: { reply: 0, quote: 0, repost: 0, mention: 0 },
+    interactions: {
+      [InteractionKind.Reply]: 0,
+      [InteractionKind.Quote]: 0,
+      [InteractionKind.Repost]: 0,
+      [InteractionKind.Mention]: 0,
+    },
   };
 }
 
