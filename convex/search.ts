@@ -526,6 +526,11 @@ export const searchBaseline = query({
  * bounded full-text page. Users may request subsequent pages without making any
  * single Convex query unbounded. Post-filtering can make a page shorter than 20;
  * `isDone` alone says whether another candidate page exists.
+ *
+ * The all-stopword fallback is the exception: its tokens match almost every post,
+ * so a 20-candidate page is mostly rejects and can verify to zero rows. It reads
+ * one 100-candidate window (the same cap as `searchBaseline`) and reports itself
+ * as done, because there is no relevance ladder worth paging through.
  */
 export const searchBaselinePage = query({
   args: {
@@ -539,20 +544,27 @@ export const searchBaselinePage = query({
       return { page: [], isDone: true, continueCursor: "" };
     }
     const { xq, searchText, verifyTokens } = prepared;
-    const candidates = await ctx.db
-      .query("tweets")
-      .withSearchIndex("search_text", (q) => {
-        let search = q.search("text", searchText);
-        if (xq.filters.authorId !== null) search = search.eq("authorId", xq.filters.authorId);
-        if (xq.filters.media !== null) search = search.eq("mediaType", xq.filters.media);
-        return search;
-      })
-      .paginate({
-        cursor: paginationOpts.cursor,
-        // Fixed server-side page size: callers cannot turn one request into an
-        // unbounded read, and no candidate is discarded between cursors.
-        numItems: SEARCH_RESULT_LIMIT,
-      });
+    const search = ctx.db.query("tweets").withSearchIndex("search_text", (q) => {
+      let query = q.search("text", searchText);
+      if (xq.filters.authorId !== null) query = query.eq("authorId", xq.filters.authorId);
+      if (xq.filters.media !== null) query = query.eq("mediaType", xq.filters.media);
+      return query;
+    });
+    const termless = xq.must.length === 0 && phraseTerms(xq).length === 0;
+    if (termless) {
+      const candidates = await search.take(BASELINE_CANDIDATE_CAP);
+      return {
+        page: await finishBaselinePage(ctx, xq, candidates, verifyTokens, SEARCH_RESULT_LIMIT),
+        isDone: true,
+        continueCursor: "",
+      };
+    }
+    const candidates = await search.paginate({
+      cursor: paginationOpts.cursor,
+      // Fixed server-side page size: callers cannot turn one request into an
+      // unbounded read, and no candidate is discarded between cursors.
+      numItems: SEARCH_RESULT_LIMIT,
+    });
     return {
       ...candidates,
       page: await finishBaselinePage(ctx, xq, candidates.page, verifyTokens),

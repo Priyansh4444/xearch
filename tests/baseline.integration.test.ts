@@ -183,6 +183,21 @@ describe("literal baseline search", () => {
     expect(rows).toEqual([]);
   });
 
+  test("the stopword window does not verify to an empty page of rejects", async () => {
+    const tc = await seed([
+      ...Array.from({ length: 20 }, (_, i) => tweet(`reject-${i}`, "and then the compiler")),
+      tweet("match", "and so is the compiler"),
+    ]);
+    const page = await tc.query(api.search.searchBaselinePage, {
+      raw: "and so is",
+      paginationOpts: { cursor: null, numItems: 20 },
+    });
+    // A 20-candidate page would be all rejects; the fallback reads one
+    // 100-candidate window and reports itself done.
+    expect(page.page.map((row) => row.tweetId)).toEqual(["match"]);
+    expect(page.isDone).toBe(true);
+  });
+
   test("paginated baseline makes later candidates reachable without an unbounded read", async () => {
     const tc = await seed(
       Array.from({ length: 25 }, (_, i) => tweet(`page-${i}`, "react compiler")),
