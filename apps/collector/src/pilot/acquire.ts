@@ -2,9 +2,12 @@
 // Every provider page is retained with a .meta.json sidecar before the checkpoint
 // advances. Failures pause one account; they never masquerade as completion.
 
-import { join } from "node:path";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import { dual } from "effect/Function";
+import { posixPath } from "../contracts/posixPath.ts";
+import { CollectorRuntime } from "../contracts/runtime.ts";
+import * as FileSystem from "effect/FileSystem";
 import * as Exit from "effect/Exit";
 import {
   FxTwitterError,
@@ -55,7 +58,8 @@ export interface AcquireOptions {
   config: PilotConfig;
   client: PilotClient;
   now?: () => number;
-  sleep?: (delayMs: number) => Promise<void>;
+  /** Pacing seam: sync or async, normalized with `Promise.resolve` at the call site. */
+  sleep?: (delayMs: number) => void | Promise<void>;
   log?: (line: string) => void;
   /** Stop after this many HTTP requests (tests simulate an interruption with it). */
   maxRequests?: number | undefined;
@@ -63,28 +67,26 @@ export interface AcquireOptions {
 
 type AcquireError = FsError | UnsupportedCheckpointVersionError;
 
-export async function createRun(
-  paths: RunPaths,
-  config: PilotConfig,
-  runId: string,
-  now: number,
-): Promise<Manifest> {
-  return Effect.runPromise(createRunEffect(paths, config, runId, now));
-}
+export const createRun: {
+  (paths: RunPaths, config: PilotConfig, runId: string, now: number): Promise<Manifest>;
+  (config: PilotConfig, runId: string, now: number): (paths: RunPaths) => Promise<Manifest>;
+} = dual(4, (paths: RunPaths, config: PilotConfig, runId: string, now: number): Promise<Manifest> =>
+  CollectorRuntime.runPromise(createRunEffect(paths, config, runId, now)),
+);
 
 export const createRunEffect = Effect.fn("createRunEffect")(function* (
   paths: RunPaths,
   config: PilotConfig,
   runId: string,
   now: number,
-): Effect.fn.Return<Manifest, AcquireError> {
+): Effect.fn.Return<Manifest, AcquireError, FileSystem.FileSystem> {
   yield* writeJsonAtomicEffect(paths.config, config);
   const checkpoint = newCheckpoint(config, runId, now);
   return yield* saveStateEffect(paths, checkpoint, config, now);
 });
 
-export async function acquire(options: AcquireOptions): Promise<Manifest> {
-  return Effect.runPromise(acquireEffect(options));
+export function acquire(options: AcquireOptions): Promise<Manifest> {
+  return CollectorRuntime.runPromise(acquireEffect(options));
 }
 
 /** Default pacing sleep, hoisted so every acquire call doesn't mint a closure. */
@@ -94,7 +96,7 @@ function defaultSleep(delayMs: number): Promise<void> {
 
 export const acquireEffect = Effect.fn("acquireEffect")(function* (
   options: AcquireOptions,
-): Effect.fn.Return<Manifest, AcquireError> {
+): Effect.fn.Return<Manifest, AcquireError, FileSystem.FileSystem> {
   const now = options.now ?? Date.now;
   const sleep = options.sleep ?? defaultSleep;
   const log = options.log ?? (() => undefined);
@@ -114,7 +116,7 @@ export const acquireEffect = Effect.fn("acquireEffect")(function* (
   let firstRequest = true;
   const pace = Effect.fn("acquireEffect.pace")(function* (): Effect.fn.Return<void> {
     if (!firstRequest && config.delayMs > 0) {
-      yield* Effect.promise(() => sleep(config.delayMs));
+      yield* Effect.promise(() => Promise.resolve(sleep(config.delayMs)));
     }
     firstRequest = false;
     requests += 1;
@@ -167,7 +169,7 @@ const resolveIdentityEffect = Effect.fn("resolveIdentityEffect")(function* (
   paths: RunPaths,
   now: () => number,
   log: (line: string) => void,
-): Effect.fn.Return<boolean, AcquireError> {
+): Effect.fn.Return<boolean, AcquireError, FileSystem.FileSystem> {
   account.requests += 1;
   const profileExit = yield* Effect.exit(client.fetchProfileEffect(account.requestedHandle));
   if (Exit.isFailure(profileExit)) {
@@ -189,9 +191,13 @@ const resolveIdentityEffect = Effect.fn("resolveIdentityEffect")(function* (
   };
 
   if (response.profile === null) {
-    const directory = join(paths.raw, "_unresolved", account.requestedHandle.toLowerCase());
-    yield* writeJsonAtomicEffect(join(directory, PROFILE_FILE), response.raw);
-    yield* writeJsonAtomicEffect(join(directory, PROFILE_META_FILE), meta);
+    const directory = posixPath.join(
+      paths.raw,
+      "_unresolved",
+      account.requestedHandle.toLowerCase(),
+    );
+    yield* writeJsonAtomicEffect(posixPath.join(directory, PROFILE_FILE), response.raw);
+    yield* writeJsonAtomicEffect(posixPath.join(directory, PROFILE_META_FILE), meta);
     pause(account, PauseReason.ProfileNotFound, `HTTP ${response.httpStatus}`, now());
     log(`@${account.requestedHandle}: profile not found`);
     return false;
@@ -199,9 +205,13 @@ const resolveIdentityEffect = Effect.fn("resolveIdentityEffect")(function* (
 
   const profile = response.profile;
   if (profile.id !== account.expectedUserId) {
-    const directory = join(paths.raw, "_unresolved", account.requestedHandle.toLowerCase());
-    yield* writeJsonAtomicEffect(join(directory, PROFILE_FILE), response.raw);
-    yield* writeJsonAtomicEffect(join(directory, PROFILE_META_FILE), meta);
+    const directory = posixPath.join(
+      paths.raw,
+      "_unresolved",
+      account.requestedHandle.toLowerCase(),
+    );
+    yield* writeJsonAtomicEffect(posixPath.join(directory, PROFILE_FILE), response.raw);
+    yield* writeJsonAtomicEffect(posixPath.join(directory, PROFILE_META_FILE), meta);
     pause(
       account,
       PauseReason.IdentityMismatch,
@@ -215,8 +225,8 @@ const resolveIdentityEffect = Effect.fn("resolveIdentityEffect")(function* (
   }
 
   const directory = accountRawDirectory(paths, profile.id);
-  yield* writeJsonAtomicEffect(join(directory, PROFILE_FILE), response.raw);
-  yield* writeJsonAtomicEffect(join(directory, PROFILE_META_FILE), meta);
+  yield* writeJsonAtomicEffect(posixPath.join(directory, PROFILE_FILE), response.raw);
+  yield* writeJsonAtomicEffect(posixPath.join(directory, PROFILE_META_FILE), meta);
   account.userId = profile.id;
   account.resolvedHandle = profile.screenName;
 
@@ -237,7 +247,7 @@ const fetchOnePageEffect = Effect.fn("fetchOnePageEffect")(function* (
   config: PilotConfig,
   now: () => number,
   log: (line: string) => void,
-): Effect.fn.Return<PageOutcome, AcquireError> {
+): Effect.fn.Return<PageOutcome, AcquireError, FileSystem.FileSystem> {
   const userId = account.userId;
   if (userId === null) {
     return yield* Effect.die(
@@ -263,7 +273,7 @@ const fetchOnePageEffect = Effect.fn("fetchOnePageEffect")(function* (
       fxError?.kind === FxTwitterErrorKind.Decode
         ? PauseReason.InvalidResponse
         : PauseReason.ProviderError;
-    yield* writeJsonAtomicEffect(join(directory, pageErrorFileName(page)), {
+    yield* writeJsonAtomicEffect(posixPath.join(directory, pageErrorFileName(page)), {
       at: now(),
       page,
       request,
@@ -296,7 +306,10 @@ const fetchOnePageEffect = Effect.fn("fetchOnePageEffect")(function* (
 
   if (response.page === null) {
     yield* writeJsonAtomicEffect(
-      join(directory, pageMetaFileName(page).replace(".meta.json", ".no-content.meta.json")),
+      posixPath.join(
+        directory,
+        pageMetaFileName(page).replace(".meta.json", ".no-content.meta.json"),
+      ),
       meta,
     );
     complete(account, StopReason.CursorExhausted);
@@ -304,8 +317,8 @@ const fetchOnePageEffect = Effect.fn("fetchOnePageEffect")(function* (
     return PageOutcome.Stop;
   }
 
-  yield* writeJsonAtomicEffect(join(directory, pageFileName(page)), response.raw);
-  yield* writeJsonAtomicEffect(join(directory, pageMetaFileName(page)), meta);
+  yield* writeJsonAtomicEffect(posixPath.join(directory, pageFileName(page)), response.raw);
+  yield* writeJsonAtomicEffect(posixPath.join(directory, pageMetaFileName(page)), meta);
 
   const authored = authoredTimestamps(response.page.results, userId);
   account.pagesCompleted = page;
@@ -380,10 +393,10 @@ const fetchOnePageEffect = Effect.fn("fetchOnePageEffect")(function* (
 });
 
 /** Creation times of top-level rows authored by the seed and not reposted (Q20 stop rule). */
-export function authoredTimestamps(
-  results: ReadonlyArray<FxTwitterJson>,
-  userId: string,
-): number[] {
+export const authoredTimestamps: {
+  (results: ReadonlyArray<FxTwitterJson>, userId: string): number[];
+  (userId: string): (results: ReadonlyArray<FxTwitterJson>) => number[];
+} = dual(2, (results: ReadonlyArray<FxTwitterJson>, userId: string): number[] => {
   const out: number[] = [];
   for (const result of results) {
     const status = parseTimelineStatus(result);
@@ -393,7 +406,7 @@ export function authoredTimestamps(
     if (createdAt !== null) out.push(createdAt);
   }
   return out;
-}
+});
 
 function complete(account: AccountRecord, reason: AccountRecord["stopReason"]): void {
   account.state = AccountState.Completed;

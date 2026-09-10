@@ -338,10 +338,11 @@ async function loadRun(
     acquisitionCompletedAt: manifest.acquisition.completedAt ?? null,
     acceptance: manifest.acceptance ?? null,
     normalization: manifest.normalization ?? null,
-    archiveBytes: manifest.archive
-      ? manifest.archive.files.reduce((total, file) => total + (file.bytes || 0), 0)
-      : null,
-    archiveFiles: manifest.archive ? manifest.archive.files.length : null,
+    archiveBytes:
+      manifest.archive !== null
+        ? manifest.archive.files.reduce((total, file) => total + (file.bytes || 0), 0)
+        : null,
+    archiveFiles: manifest.archive !== null ? manifest.archive.files.length : null,
     archivedAt: manifest.archive?.archivedAt ?? null,
     report: reportValid ? { generatedAt: report.generatedAt, thresholds: report.thresholds } : null,
     reportError:
@@ -445,8 +446,8 @@ function renderRun(run: RunSummary, now: number): string {
   const head = `<div class="run-head">
     <h2>${esc(run.runId)}</h2>
     <span class="tag ${run.kind}">${run.kind}</span>
-    ${run.status ? `<span class="tag ${statusClass(run.status)}">${esc(run.status.replace("_", " "))}</span>` : ""}
-    ${run.acceptance ? `<span class="tag ${run.acceptance.passed ? "ok" : "warn"}">acceptance ${run.acceptance.passed ? "passed" : "not passed"}</span>` : ""}
+    ${run.status !== null && run.status !== "" ? `<span class="tag ${statusClass(run.status)}">${esc(run.status.replace("_", " "))}</span>` : ""}
+    ${run.acceptance !== null ? `<span class="tag ${run.acceptance.passed ? "ok" : "warn"}">acceptance ${run.acceptance.passed ? "passed" : "not passed"}</span>` : ""}
     ${run.updatedAt !== null ? `<span class="dim">updated ${esc(ago(run.updatedAt, now))}</span>` : ""}
   </div>`;
 
@@ -458,10 +459,10 @@ function renderRun(run: RunSummary, now: number): string {
   const done = a.completed + a.abandoned;
   const pct = a.total === 0 ? 0 : Math.round((done / a.total) * 100);
   const progress = `<div class="bar" title="${done}/${a.total} accounts finished">
-    <span class="seg ok" style="width:${a.total ? (a.completed / a.total) * 100 : 0}%"></span>
-    <span class="seg bad" style="width:${a.total ? (a.abandoned / a.total) * 100 : 0}%"></span>
-    <span class="seg warn" style="width:${a.total ? (a.paused / a.total) * 100 : 0}%"></span>
-    <span class="seg live" style="width:${a.total ? (a.active / a.total) * 100 : 0}%"></span>
+    <span class="seg ok" style="width:${a.total !== 0 ? (a.completed / a.total) * 100 : 0}%"></span>
+    <span class="seg bad" style="width:${a.total !== 0 ? (a.abandoned / a.total) * 100 : 0}%"></span>
+    <span class="seg warn" style="width:${a.total !== 0 ? (a.paused / a.total) * 100 : 0}%"></span>
+    <span class="seg live" style="width:${a.total !== 0 ? (a.active / a.total) * 100 : 0}%"></span>
   </div>
   <p class="dim small">${done}/${a.total} accounts finished (${pct}%) · completed ${a.completed} · paused ${a.paused} · active ${a.active} · pending ${a.pending} · abandoned ${a.abandoned}</p>`;
 
@@ -474,24 +475,25 @@ function renderRun(run: RunSummary, now: number): string {
   }
 
   const stats = `<dl class="stats">
-    <div><dt>Requests</dt><dd>${fmtInt(run.requests)}${run.retries ? ` <small class="dim">(${fmtInt(run.retries)} retries)</small>` : ""}</dd></div>
+    <div><dt>Requests</dt><dd>${fmtInt(run.requests)}${run.retries !== null && run.retries !== 0 ? ` <small class="dim">(${fmtInt(run.retries)} retries)</small>` : ""}</dd></div>
     <div><dt>Pages</dt><dd>${fmtInt(run.pages)}</dd></div>
     <div><dt>Rows returned</dt><dd>${fmtInt(run.rowsReturned)}</dd></div>
     <div><dt>Acquisition time</dt><dd>${esc(elapsed)}</dd></div>
     <div><dt>Cutoff</dt><dd>${esc(fmtDate(run.cutoffAt))}${run.historyDays !== null ? ` <small class="dim">(${run.historyDays} days)</small>` : ""}</dd></div>
     <div><dt>Created</dt><dd>${timeCell(run.createdAt, now)}</dd></div>
     <div><dt>Updated</dt><dd>${timeCell(run.updatedAt, now)}</dd></div>
-    <div><dt>Data in bucket</dt><dd>${run.archiveBytes !== null ? `${esc(fmtBytes(run.archiveBytes))} <small class="dim">(${fmtInt(run.archiveFiles)} files, archived ${esc(ago(run.archivedAt, now))})</small>` : `<span class="dim">not archived (manifest${run.report ? " + report" : ""} only)</span>`}</dd></div>
+    <div><dt>Data in bucket</dt><dd>${run.archiveBytes !== null ? `${esc(fmtBytes(run.archiveBytes))} <small class="dim">(${fmtInt(run.archiveFiles)} files, archived ${esc(ago(run.archivedAt, now))})</small>` : `<span class="dim">not archived (manifest${run.report !== null ? " + report" : ""} only)</span>`}</dd></div>
   </dl>`;
 
-  const acceptance = run.acceptance
-    ? run.acceptance.passed
-      ? `<p class="ok-text">Acceptance passed.</p>`
-      : `<details><summary>Acceptance not passed (${run.acceptance.reasons.length} reason${run.acceptance.reasons.length === 1 ? "" : "s"})</summary><ul>${run.acceptance.reasons.map((reason) => `<li>${esc(reason)}</li>`).join("")}</ul></details>`
-    : "";
+  const acceptance =
+    run.acceptance !== null
+      ? run.acceptance.passed
+        ? `<p class="ok-text">Acceptance passed.</p>`
+        : `<details><summary>Acceptance not passed (${run.acceptance.reasons.length} reason${run.acceptance.reasons.length === 1 ? "" : "s"})</summary><ul>${run.acceptance.reasons.map((reason) => `<li>${esc(reason)}</li>`).join("")}</ul></details>`
+      : "";
 
   let normalization = `<p class="dim small">Not normalized yet.</p>`;
-  if (run.normalization) {
+  if (run.normalization !== null) {
     const c = run.normalization.counts;
     normalization = `<h3>Normalization <small class="dim">${esc(ago(run.normalization.normalizedAt, now))}</small></h3>
     <dl class="stats">
@@ -504,13 +506,13 @@ function renderRun(run: RunSummary, now: number): string {
   }
 
   let thresholds = "";
-  if (run.report) {
+  if (run.report !== null) {
     const t = run.report.thresholds;
     thresholds = `<h3>Thresholds <span class="tag ${t.passed ? "ok" : "bad"}">${t.passed ? "pass" : "fail"}</span> <small class="dim">report ${esc(ago(run.report.generatedAt, now))}</small></h3>
     <table class="checks"><thead><tr><th>Check</th><th>Value</th><th>Bound</th><th>Result</th></tr></thead><tbody>
     ${t.checks.map((check) => `<tr><td>${esc(check.name)}</td><td>${esc(fmtCheckValue(check.value))}</td><td>${esc(check.bound)}</td><td class="${check.passed === null ? "dim" : check.passed ? "ok-text" : "bad-text"}">${check.passed === null ? "n/a" : check.passed ? "pass" : "FAIL"}</td></tr>`).join("")}
     </tbody></table>`;
-  } else if (run.reportError) {
+  } else if (run.reportError !== null && run.reportError !== "") {
     thresholds = `<p class="error">Report unreadable: ${esc(run.reportError)}</p>`;
   }
 
@@ -520,7 +522,9 @@ function renderRun(run: RunSummary, now: number): string {
     .map((account) => {
       const reason = account.abandonReason ?? account.pauseReason ?? account.stopReason ?? "";
       const handle =
-        account.resolvedHandle && account.resolvedHandle !== account.requestedHandle
+        account.resolvedHandle !== null &&
+        account.resolvedHandle !== "" &&
+        account.resolvedHandle !== account.requestedHandle
           ? `${esc(account.requestedHandle)} <small class="dim">→ ${esc(account.resolvedHandle)}</small>`
           : esc(account.requestedHandle);
       const stateClass =
@@ -533,7 +537,7 @@ function renderRun(run: RunSummary, now: number): string {
               : account.state === AccountState.Active
                 ? "live-text"
                 : "dim";
-      return `<tr><td>${handle}</td><td>${esc(account.cohort)}</td><td class="${stateClass}">${esc(account.state)}</td><td>${fmtInt(account.pagesCompleted)}</td><td>${fmtInt(account.rowsReturned)}</td><td class="small">${esc(reason)}${account.lastError ? ` <span class="dim" title="${esc(account.lastError)}">(error)</span>` : ""}</td></tr>`;
+      return `<tr><td>${handle}</td><td>${esc(account.cohort)}</td><td class="${stateClass}">${esc(account.state)}</td><td>${fmtInt(account.pagesCompleted)}</td><td>${fmtInt(account.rowsReturned)}</td><td class="small">${esc(reason)}${account.lastError !== null && account.lastError !== "" ? ` <span class="dim" title="${esc(account.lastError)}">(error)</span>` : ""}</td></tr>`;
     })
     .join("")}
   </tbody></table></div></details>`;
@@ -548,8 +552,8 @@ function renderNerdsHtml(snapshot: Snapshot): string {
   const body =
     snapshot.runs.length === 0
       ? `<p class="dim">The bucket has no runs yet. Archived runs appear after <code>pnpm collect:sync</code>; live runs after <code>pnpm collect:push-status</code>.</p>`
-      : `${live.length ? `<h1 class="group">Live</h1>${live.map((run) => renderRun(run, now)).join("")}` : `<p class="dim">No live runs pushed.</p>`}
-       ${archived.length ? `<h1 class="group">Archived</h1>${archived.map((run) => renderRun(run, now)).join("")}` : `<p class="dim">No archived runs.</p>`}`;
+      : `${live.length !== 0 ? `<h1 class="group">Live</h1>${live.map((run) => renderRun(run, now)).join("")}` : `<p class="dim">No live runs pushed.</p>`}
+       ${archived.length !== 0 ? `<h1 class="group">Archived</h1>${archived.map((run) => renderRun(run, now)).join("")}` : `<p class="dim">No archived runs.</p>`}`;
   return `<!doctype html>
 <html lang="en">
 <head>

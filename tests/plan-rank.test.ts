@@ -3,7 +3,14 @@
 // deterministic scoring.
 
 import { describe, expect, test, it } from "vitest";
-import { escalate, planL0, uniqueTerms, MIN_RESULTS, PER_TERM_CAP } from "../convex/engine/plan";
+import {
+  escalate,
+  planL0,
+  uniqueTerms,
+  MIN_RESULTS,
+  PER_TERM_CAP,
+  type ReadPlan,
+} from "../convex/engine/plan";
 import { rerank, WEIGHTS, type Candidate } from "../convex/engine/rank";
 import { emptyXQuery } from "../convex/engine/xquery";
 import { SortOrder, type MediaFilter, type XQueryFilters } from "../convex/engine/xquery";
@@ -145,7 +152,8 @@ describe("planL0 permutations", () => {
         for (const gate of plan.gates) {
           expect(gate.index).toBe(index);
           expect(gate.limit).toBe(PER_TERM_CAP);
-          if (eq !== undefined) expect(gate.eq).toEqual(eq);
+          // Rows without `eq` pin the absence of the filter, so assert it too.
+          expect(gate.eq).toEqual(eq);
         }
       }
     },
@@ -230,7 +238,7 @@ describe("escalate permutations", () => {
       exclude: exclude.map(t),
       filters: { ...emptyXQuery().filters, ...filters },
     });
-    let plan: ReturnType<typeof escalate> = planL0(xq, dfs);
+    let plan: ReadPlan | null = planL0(xq, dfs);
     let steps = 0;
     while (plan !== null && steps < 5) {
       expect([...plan.excludes].sort()).toEqual([...xq.exclude].sort());
@@ -238,7 +246,7 @@ describe("escalate permutations", () => {
       expect(plan.postFilters.until).toBe((filters as { until?: number }).until ?? undefined);
       for (const read of [...plan.gates, ...plan.unions]) {
         expect(read.index).toBe(index);
-        if (eq !== undefined) expect(read.eq).toEqual(eq);
+        expect(read.eq).toEqual(eq);
       }
       plan = escalate(plan, 0, xq, dfs, [t("prf1")]);
       steps++;
@@ -401,8 +409,10 @@ describe("rerank permutations", () => {
     const xq = xqWith({ phrases: [[t("linux"), t("box")]] });
     const covered = rerank(xq, [{ ...base, tf: new Map(tf) }], stats, NOW)[0]!;
     const bare = rerank(xq, [{ ...base, tf: new Map([[t("zzz"), 1]]) }], stats, NOW)[0]!;
-    if (covers) expect(covered.score).toBeGreaterThan(bare.score);
-    else expect(covered.score).toBe(bare.score);
+    // One unconditional assertion, with the comparison kept in the message.
+    const relation =
+      covered.score > bare.score ? "greater" : covered.score === bare.score ? "equal" : "less";
+    expect(relation).toBe(covers ? "greater" : "equal");
   });
 });
 
@@ -487,7 +497,7 @@ describe("plan/rerank strong permutations (seeded properties)", () => {
           filters: { ...emptyXQuery().filters, ...filters },
         });
         const levels: string[] = [];
-        let plan: ReturnType<typeof escalate> = planL0(xq, dfMap);
+        let plan: ReadPlan | null = planL0(xq, dfMap);
         levels.push(plan.level);
         for (let step = 0; step < 6 && plan !== null; step++) {
           expect([...plan.excludes].sort()).toEqual([...exclude].sort());

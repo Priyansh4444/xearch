@@ -5,6 +5,7 @@
 import { Option } from "effect";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import { dual } from "effect/Function";
 import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
 import { FxTwitterProfileEnvelopeSchema, type PilotClient } from "../acquisition/fxtwitter.ts";
@@ -65,10 +66,10 @@ interface Bucket {
 }
 
 /** Pure: raw pages in, ranked candidates out. */
-export function discoverFromPages(
-  pages: RawPageInput[],
-  options: DiscoveryOptions,
-): DiscoveryCandidate[] {
+export const discoverFromPages: {
+  (pages: RawPageInput[], options: DiscoveryOptions): DiscoveryCandidate[];
+  (options: DiscoveryOptions): (pages: RawPageInput[]) => DiscoveryCandidate[];
+} = dual(2, (pages: RawPageInput[], options: DiscoveryOptions): DiscoveryCandidate[] => {
   const handleToId = new Map<string, string>();
   const byId = new Map<string, Bucket>();
   const byHandle = new Map<string, Bucket>();
@@ -226,16 +227,55 @@ export function discoverFromPages(
       total(b) - total(a) ||
       (a.handle ?? "").localeCompare(b.handle ?? ""),
   );
-}
+});
 
 /** Resolve handle-only candidates through the profile endpoint, one request at a time. */
-export async function resolveCandidates(
+export function resolveCandidates(
   candidates: DiscoveryCandidate[],
   client: PilotClient,
-  pace: () => Promise<void>,
-  log: (line: string) => void = () => undefined,
-): Promise<void> {
-  return Effect.runPromise(resolveCandidatesEffect(candidates, client, Effect.promise(pace), log));
+  /** Pacing seam: sync or async, normalized with `Promise.resolve` at the call site. */
+  pace: () => void | Promise<void>,
+  log?: (line: string) => void,
+): Promise<void>;
+export function resolveCandidates(
+  client: PilotClient,
+  pace: () => void | Promise<void>,
+  log?: (line: string) => void,
+): (candidates: DiscoveryCandidate[]) => Promise<void>;
+export function resolveCandidates(
+  ...args: Array<unknown>
+): Promise<void> | ((candidates: DiscoveryCandidate[]) => Promise<void>) {
+  const first = args[0];
+  if (Array.isArray(first)) {
+    const [candidates, client, pace, log] = args as [
+      DiscoveryCandidate[],
+      PilotClient,
+      () => void | Promise<void>,
+      ((line: string) => void)?,
+    ];
+    return Effect.runPromise(
+      resolveCandidatesEffect(
+        candidates,
+        client,
+        Effect.promise(() => Promise.resolve(pace())),
+        log,
+      ),
+    );
+  }
+  const [client, pace, log] = args as [
+    PilotClient,
+    () => void | Promise<void>,
+    ((line: string) => void)?,
+  ];
+  return (candidates: DiscoveryCandidate[]) =>
+    Effect.runPromise(
+      resolveCandidatesEffect(
+        candidates,
+        client,
+        Effect.promise(() => Promise.resolve(pace())),
+        log,
+      ),
+    );
 }
 
 export const resolveCandidatesEffect = Effect.fn("resolveCandidatesEffect")(function* (
@@ -278,7 +318,10 @@ export const resolveCandidatesEffect = Effect.fn("resolveCandidatesEffect")(func
 });
 
 /** Candidates that can go straight into a gate-2 config: resolved, public, not already configured. */
-export function proposeConfig(base: PilotConfig, candidates: DiscoveryCandidate[]): PilotConfig {
+export const proposeConfig: {
+  (base: PilotConfig, candidates: DiscoveryCandidate[]): PilotConfig;
+  (candidates: DiscoveryCandidate[]): (base: PilotConfig) => PilotConfig;
+} = dual(2, (base: PilotConfig, candidates: DiscoveryCandidate[]): PilotConfig => {
   const accounts: PilotAccount[] = [];
   for (const candidate of candidates) {
     if (candidate.configured || candidate.userId === null || candidate.handle === null) continue;
@@ -287,13 +330,11 @@ export function proposeConfig(base: PilotConfig, candidates: DiscoveryCandidate[
     accounts.push({ handle: candidate.handle, expectedUserId: candidate.userId, cohort: "guest" });
   }
   return { ...base, accounts };
-}
-
-export function renderMarkdown(
-  candidates: DiscoveryCandidate[],
-  minSeeds: number,
-  sourceRuns: string[],
-): string {
+});
+export const renderMarkdown: {
+  (candidates: DiscoveryCandidate[], minSeeds: number, sourceRuns: string[]): string;
+  (minSeeds: number, sourceRuns: string[]): (candidates: DiscoveryCandidate[]) => string;
+} = dual(3, (candidates: DiscoveryCandidate[], minSeeds: number, sourceRuns: string[]): string => {
   const lines = [
     `# Discovery report`,
     ``,
@@ -307,17 +348,17 @@ export function renderMarkdown(
   candidates.forEach((candidate, index) => {
     const flags = [
       candidate.configured ? "configured" : "",
-      candidate.protected ? "protected" : "",
+      candidate.protected === true ? "protected" : "",
       candidate.resolution === DiscoveryResolution.Unresolved ? "unresolved" : "",
       candidate.resolution === DiscoveryResolution.NotFound ? "not found" : "",
       candidate.statuses !== null && candidate.statuses < 250 ? "<250 posts" : "",
     ].filter(Boolean);
     lines.push(
-      `| ${index + 1} | \`${candidate.handle ?? "?"}\` | ${candidate.userId ? `\`${candidate.userId}\`` : "—"} | ${candidate.seeds.length} | ${candidate.interactions.reply} | ${candidate.interactions.quote} | ${candidate.interactions.repost} | ${candidate.interactions.mention} | ${formatCount(candidate.followers)} | ${formatCount(candidate.statuses)} | ${flags.join(", ")} |`,
+      `| ${index + 1} | \`${candidate.handle ?? "?"}\` | ${candidate.userId !== null && candidate.userId !== "" ? `\`${candidate.userId}\`` : "—"} | ${candidate.seeds.length} | ${candidate.interactions.reply} | ${candidate.interactions.quote} | ${candidate.interactions.repost} | ${candidate.interactions.mention} | ${formatCount(candidate.followers)} | ${formatCount(candidate.statuses)} | ${flags.join(", ")} |`,
     );
   });
   return `${lines.join("\n")}\n`;
-}
+});
 
 function newBucket(userId: string | null, handle: string | null): Bucket {
   return {

@@ -1,7 +1,10 @@
-import { resolve } from "node:path";
 import * as Console from "effect/Console";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as ManagedRuntime from "effect/ManagedRuntime";
+import { CollectorLive } from "../contracts/liveLayers.ts";
+import { posixPath } from "../contracts/posixPath.ts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { FxTwitterLive } from "../acquisition/fxtwitter.ts";
@@ -19,16 +22,8 @@ const ProbeFlag = {
   baseUrl: "--base-url",
 } as const;
 
-const main = Effect.fn("cli.probe")(function* () {
-  const options = parseArguments(process.argv.slice(2));
-  const report = yield* Effect.provide(
-    runTimelineProbeEffect(options),
-    FxTwitterLive({
-      baseUrl: options.baseUrl,
-      timeoutMs: options.timeoutMs,
-      retries: options.retries,
-    }),
-  );
+const main = Effect.fn("cli.probe")(function* (options: CliOptions) {
+  const report = yield* runTimelineProbeEffect(options);
   yield* printSummary(report, options.outputDirectory);
 });
 
@@ -47,7 +42,9 @@ function parseArguments(args: string[]): CliOptions {
     pages: 10,
     count: 100,
     withReplies: true,
-    outputDirectory: resolve(`data/collection-probes/${handle.replace(/^@/, "").toLowerCase()}`),
+    outputDirectory: posixPath.resolve(
+      `data/collection-probes/${handle.replace(/^@/, "").toLowerCase()}`,
+    ),
     delayMs: 250,
     baseUrl: DEFAULT_BASE_URL,
     timeoutMs: 15_000,
@@ -71,7 +68,7 @@ function parseArguments(args: string[]): CliOptions {
         parsed.count = integer(value, flag);
         break;
       case ProbeFlag.output:
-        parsed.outputDirectory = resolve(value);
+        parsed.outputDirectory = posixPath.resolve(value);
         break;
       case ProbeFlag.delay:
         parsed.delayMs = integer(value, flag);
@@ -127,7 +124,7 @@ const printSummary = Effect.fn("cli.printSummary")(function* (
           Schema.fromJsonString(Schema.Record(Schema.String, Schema.Finite)),
         )(report.missingRequiredFields).pipe(Effect.orDie);
   yield* Console.log(`missing required fields: ${missingFields}`);
-  yield* Console.log(`report: ${resolve(outputDirectory, "report.json")}`);
+  yield* Console.log(`report: ${posixPath.resolve(outputDirectory, "report.json")}`);
 });
 
 function usage(message: string): never {
@@ -140,7 +137,20 @@ function usage(message: string): never {
   process.exit(2);
 }
 
-Effect.runPromise(main()).catch((error: unknown) => {
+const options = parseArguments(process.argv.slice(2));
+// The CLI owns the client layer: one runtime per invocation, built from flags.
+const runtime = ManagedRuntime.make(
+  Layer.merge(
+    FxTwitterLive({
+      baseUrl: options.baseUrl,
+      timeoutMs: options.timeoutMs,
+      retries: options.retries,
+    }),
+    CollectorLive,
+  ),
+);
+
+runtime.runPromise(main(options)).catch((error: unknown) => {
   Effect.runSync(Console.error(error instanceof Error ? error.message : error));
   process.exitCode = 1;
 });

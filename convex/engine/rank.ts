@@ -2,6 +2,7 @@
 // All constants live in WEIGHTS so tuning is a diff, not a hunt (RISKS K4).
 
 import { MediaType } from "../contracts/media";
+import { dual } from "effect/Function";
 import type { Term, TweetId } from "../contracts/ids";
 import { LadderLevel } from "./plan";
 import { Intent, SortOrder, type XQuery } from "./xquery";
@@ -57,109 +58,141 @@ export interface Scored {
 }
 
 /** BM25 with near-binary parameters; df/N from the terms table snapshot. */
-export function bm25(
-  tf: number,
-  df: number,
-  totalDocs: number,
-  tokenCount: number,
-  avgTokenCount: number,
-): number {
-  const idf = Math.log((totalDocs - df + 0.5) / (df + 0.5) + 1);
-  const { bm25_k1: k1, bm25_b: b } = WEIGHTS;
-  const denom = tf + k1 * (1 - b + (b * tokenCount) / avgTokenCount);
-  return idf * ((tf * (k1 + 1)) / (denom === 0 ? 1 : denom));
-}
+export const bm25: {
+  (tf: number, df: number, totalDocs: number, tokenCount: number, avgTokenCount: number): number;
+  (
+    df: number,
+    totalDocs: number,
+    tokenCount: number,
+    avgTokenCount: number,
+  ): (tf: number) => number;
+} = dual(
+  5,
+  (
+    tf: number,
+    df: number,
+    totalDocs: number,
+    tokenCount: number,
+    avgTokenCount: number,
+  ): number => {
+    const idf = Math.log((totalDocs - df + 0.5) / (df + 0.5) + 1);
+    const { bm25_k1: k1, bm25_b: b } = WEIGHTS;
+    const denom = tf + k1 * (1 - b + (b * tokenCount) / avgTokenCount);
+    return idf * ((tf * (k1 + 1)) / (denom === 0 ? 1 : denom));
+  },
+);
 
-export function rerank(
-  xq: XQuery,
-  candidates: Candidate[],
-  stats: { totalDocs: number; avgTokenCount: number; dfs: Map<Term, number> },
-  now: number,
-): Scored[] {
-  if (candidates.length === 0) return [];
-  const tau = xq.sort === SortOrder.Latest ? WEIGHTS.recencyTauMsLatest : WEIGHTS.recencyTauMsTop;
+export const rerank: {
+  (
+    xq: XQuery,
+    candidates: Candidate[],
+    stats: { totalDocs: number; avgTokenCount: number; dfs: Map<Term, number> },
+    now: number,
+  ): Scored[];
+  (
+    candidates: Candidate[],
+    stats: { totalDocs: number; avgTokenCount: number; dfs: Map<Term, number> },
+    now: number,
+  ): (xq: XQuery) => Scored[];
+} = dual(
+  4,
+  (
+    xq: XQuery,
+    candidates: Candidate[],
+    stats: { totalDocs: number; avgTokenCount: number; dfs: Map<Term, number> },
+    now: number,
+  ): Scored[] => {
+    if (candidates.length === 0) return [];
+    const tau = xq.sort === SortOrder.Latest ? WEIGHTS.recencyTauMsLatest : WEIGHTS.recencyTauMsTop;
 
-  // Raw per-signal values first; eng/auth/rel normalize over the candidate set
-  // (max-normalization: cheap, stable, and immune to degenerate variance).
-  // One fused pass: values AND their maxima, with no intermediate array of
-  // signal objects and no per-signal closures. The previous shape —
-  // `candidates.map(...)` plus 3× `Math.max(...rows.map(pick))` — allocated an
-  // object per candidate and four throwaway arrays per rerank (see bytecode).
-  const rels: number[] = Array.from({ length: candidates.length });
-  const engs: number[] = Array.from({ length: candidates.length });
-  const auths: number[] = Array.from({ length: candidates.length });
-  let zRel = 1e-9;
-  let zEng = 1e-9;
-  let zAuth = 1e-9;
-  for (let i = 0; i < candidates.length; i++) {
-    const c = candidates[i]!;
-    let rel = 0;
-    for (const [term, tf] of c.tf) {
-      rel += bm25(tf, stats.dfs.get(term) ?? 0, stats.totalDocs, c.tokenCount, stats.avgTokenCount);
+    // Raw per-signal values first; eng/auth/rel normalize over the candidate set
+    // (max-normalization: cheap, stable, and immune to degenerate variance).
+    // One fused pass: values AND their maxima, with no intermediate array of
+    // signal objects and no per-signal closures. The previous shape —
+    // `candidates.map(...)` plus 3× `Math.max(...rows.map(pick))` — allocated an
+    // object per candidate and four throwaway arrays per rerank (see bytecode).
+    const rels: number[] = Array.from({ length: candidates.length });
+    const engs: number[] = Array.from({ length: candidates.length });
+    const auths: number[] = Array.from({ length: candidates.length });
+    let zRel = 1e-9;
+    let zEng = 1e-9;
+    let zAuth = 1e-9;
+    for (let i = 0; i < candidates.length; i++) {
+      const c = candidates[i]!;
+      let rel = 0;
+      for (const [term, tf] of c.tf) {
+        rel += bm25(
+          tf,
+          stats.dfs.get(term) ?? 0,
+          stats.totalDocs,
+          c.tokenCount,
+          stats.avgTokenCount,
+        );
+      }
+      const eng = Math.log1p(
+        WEIGHTS.w_like * c.likeCount +
+          WEIGHTS.w_reply * c.replyCount +
+          WEIGHTS.w_rt * c.retweetCount +
+          WEIGHTS.w_quote * c.quoteCount +
+          Math.max(0, c.propagatedBoost),
+      );
+      const auth = Math.max(0, c.authorAuthority);
+      rels[i] = rel;
+      engs[i] = eng;
+      auths[i] = auth;
+      if (rel > zRel) zRel = rel;
+      if (eng > zEng) zEng = eng;
+      if (auth > zAuth) zAuth = auth;
     }
-    const eng = Math.log1p(
-      WEIGHTS.w_like * c.likeCount +
-        WEIGHTS.w_reply * c.replyCount +
-        WEIGHTS.w_rt * c.retweetCount +
-        WEIGHTS.w_quote * c.quoteCount +
-        Math.max(0, c.propagatedBoost),
-    );
-    const auth = Math.max(0, c.authorAuthority);
-    rels[i] = rel;
-    engs[i] = eng;
-    auths[i] = auth;
-    if (rel > zRel) zRel = rel;
-    if (eng > zEng) zEng = eng;
-    if (auth > zAuth) zAuth = auth;
-  }
-  const z = { rel: zRel, eng: zEng, auth: zAuth };
+    const z = { rel: zRel, eng: zEng, auth: zAuth };
 
-  const scored: Scored[] = [];
-  for (let i = 0; i < candidates.length; i++) {
-    const c = candidates[i]!;
-    const rel = rels[i]! / z.rel;
-    const eng = engs[i]! / z.eng;
-    const auth = auths[i]! / z.auth;
-    const rec = Math.exp(-Math.max(0, now - c.createdAt) / tau);
-    const fb =
-      Math.max(-WEIGHTS.fbClamp, Math.min(WEIGHTS.fbClamp, c.feedbackVotes)) / WEIGHTS.fbClamp;
-    const fit = fitBonus(xq, c);
-    const parts = {
-      rel: WEIGHTS.rel * rel,
-      eng: WEIGHTS.eng * eng,
-      auth: WEIGHTS.auth * auth,
-      rec: WEIGHTS.rec * rec,
-      fb: WEIGHTS.fb * fb,
-      fit: WEIGHTS.fit * fit,
-    };
-    scored.push({
-      tweetId: c.tweetId,
-      score: parts.rel + parts.eng + parts.auth + parts.rec + parts.fb + parts.fit,
-      matchedVia: c.matchedVia,
-      parts,
-    });
-  }
-
-  // Dedup quote/RT chains to the best representative (K5: one hop, no traversal).
-  const byId = new Map<string, Candidate>();
-  for (const c of candidates) byId.set(c.tweetId, c);
-  function compare(a: Scored, b: Scored): number {
-    if (xq.sort === SortOrder.Latest) {
-      const time = byId.get(b.tweetId)!.createdAt - byId.get(a.tweetId)!.createdAt;
-      if (time !== 0) return time;
+    const scored: Scored[] = [];
+    for (let i = 0; i < candidates.length; i++) {
+      const c = candidates[i]!;
+      const rel = rels[i]! / z.rel;
+      const eng = engs[i]! / z.eng;
+      const auth = auths[i]! / z.auth;
+      const rec = Math.exp(-Math.max(0, now - c.createdAt) / tau);
+      const fb =
+        Math.max(-WEIGHTS.fbClamp, Math.min(WEIGHTS.fbClamp, c.feedbackVotes)) / WEIGHTS.fbClamp;
+      const fit = fitBonus(xq, c);
+      const parts = {
+        rel: WEIGHTS.rel * rel,
+        eng: WEIGHTS.eng * eng,
+        auth: WEIGHTS.auth * auth,
+        rec: WEIGHTS.rec * rec,
+        fb: WEIGHTS.fb * fb,
+        fit: WEIGHTS.fit * fit,
+      };
+      scored.push({
+        tweetId: c.tweetId,
+        score: parts.rel + parts.eng + parts.auth + parts.rec + parts.fb + parts.fit,
+        matchedVia: c.matchedVia,
+        parts,
+      });
     }
-    return b.score - a.score || a.tweetId.localeCompare(b.tweetId);
-  }
-  const best = new Map<string, Scored>();
-  for (const s of scored) {
-    const c = byId.get(s.tweetId)!;
-    const key = c.retweetOfTweetId ?? c.quotedTweetId ?? c.sourceTweetId ?? s.tweetId;
-    const prior = best.get(key);
-    if (prior === undefined || compare(s, prior) < 0) best.set(key, s);
-  }
 
-  return [...best.values()].sort(compare);
-}
+    // Dedup quote/RT chains to the best representative (K5: one hop, no traversal).
+    const byId = new Map<string, Candidate>();
+    for (const c of candidates) byId.set(c.tweetId, c);
+    function compare(a: Scored, b: Scored): number {
+      if (xq.sort === SortOrder.Latest) {
+        const time = byId.get(b.tweetId)!.createdAt - byId.get(a.tweetId)!.createdAt;
+        if (time !== 0) return time;
+      }
+      return b.score - a.score || a.tweetId.localeCompare(b.tweetId);
+    }
+    const best = new Map<string, Scored>();
+    for (const s of scored) {
+      const c = byId.get(s.tweetId)!;
+      const key = c.retweetOfTweetId ?? c.quotedTweetId ?? c.sourceTweetId ?? s.tweetId;
+      const prior = best.get(key);
+      if (prior === undefined || compare(s, prior) < 0) best.set(key, s);
+    }
+
+    return [...best.values()].sort(compare);
+  },
+);
 
 /** Intent bonuses (§4.6): media match, phrase coverage, should-polarity hits. */
 function fitBonus(xq: XQuery, c: Candidate): number {
@@ -199,7 +232,20 @@ function hasAnyTerm(terms: Term[], tf: Map<Term, number>): boolean {
 }
 
 /** Reciprocal Rank Fusion across ranked lists (lexical, paraphrases, vectors). */
-export function rrfFuse(lists: string[][], k = 60): Map<string, number> {
+export function rrfFuse(lists: string[][], k?: number): Map<string, number>;
+export function rrfFuse(k?: number): (lists: string[][]) => Map<string, number>;
+export function rrfFuse(
+  ...args: Array<unknown>
+): Map<string, number> | ((lists: string[][]) => Map<string, number>) {
+  if (Array.isArray(args[0])) {
+    const [lists, k = 60] = args as [string[][], number?];
+    return fuseRrf(lists, k);
+  }
+  const [k = 60] = args as [number?];
+  return (lists: string[][]) => fuseRrf(lists, k);
+}
+
+function fuseRrf(lists: string[][], k = 60): Map<string, number> {
   const scores = new Map<string, number>();
   for (const list of lists) {
     list.forEach((id, rank) => {

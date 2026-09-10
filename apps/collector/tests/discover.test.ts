@@ -135,7 +135,7 @@ describe("gate-2 discovery", () => {
         throw new Error("not used");
       },
     });
-    await resolveCandidates(candidates, client, async () => undefined);
+    await resolveCandidates(candidates, client, () => undefined);
     expect(requested).toEqual(["friend"]);
     const friend = candidates.find((candidate) => candidate.handle === "friend");
     expect(friend).toMatchObject({

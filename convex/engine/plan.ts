@@ -4,6 +4,7 @@
 // type: a PostingsRead without a `limit` does not compile.
 
 import { SortOrder, type XQuery } from "./xquery";
+import { dual } from "effect/Function";
 import type { AuthorId, Term } from "../contracts/ids";
 import { tokenize } from "./tokenize";
 
@@ -77,7 +78,10 @@ export interface ReadPlan {
  * sort latest OR date-window -> by_term_time; else by_term_score.
  * Terms are ordered rarest-first by caller-provided dfs (planner stays pure).
  */
-export function planL0(xq: XQuery, dfs: Map<Term, number>): ReadPlan {
+export const planL0: {
+  (xq: XQuery, dfs: Map<Term, number>): ReadPlan;
+  (dfs: Map<Term, number>): (xq: XQuery) => ReadPlan;
+} = dual(2, (xq: XQuery, dfs: Map<Term, number>): ReadPlan => {
   const gateTerms = rarestFirst(uniqueTerms(xq.must, xq.aspects, phraseTerms(xq)), dfs);
   const gates: PostingsRead[] = [];
   for (const term of gateTerms) gates.push(readFor(term, xq));
@@ -88,7 +92,7 @@ export function planL0(xq: XQuery, dfs: Map<Term, number>): ReadPlan {
     excludes: [...xq.exclude],
     postFilters: postFiltersOf(xq),
   };
-}
+});
 
 function rarestFirst(terms: Term[], dfs: Map<Term, number>): Term[] {
   // Unknown df = 0 = rarest; ties break lexicographically for determinism.
@@ -157,6 +161,36 @@ function postFiltersOf(xq: XQuery): ReadPlan["postFilters"] {
  * INVARIANT: filters never relax — only terms do.
  */
 export function escalate(
+  executed: ReadPlan,
+  survivors: number,
+  xq: XQuery,
+  dfs: Map<Term, number>,
+  prfTerms?: Term[],
+): ReadPlan | null;
+export function escalate(
+  survivors: number,
+  xq: XQuery,
+  dfs: Map<Term, number>,
+  prfTerms?: Term[],
+): (executed: ReadPlan) => ReadPlan | null;
+export function escalate(
+  ...args: Array<unknown>
+): ReadPlan | null | ((executed: ReadPlan) => ReadPlan | null) {
+  if (args.length === 5 || (args.length === 4 && typeof args[0] !== "number")) {
+    const [executed, survivors, xq, dfs, prfTerms] = args as [
+      ReadPlan,
+      number,
+      XQuery,
+      Map<Term, number>,
+      Term[]?,
+    ];
+    return escalateImpl(executed, survivors, xq, dfs, prfTerms);
+  }
+  const [survivors, xq, dfs, prfTerms] = args as [number, XQuery, Map<Term, number>, Term[]?];
+  return (executed: ReadPlan) => escalateImpl(executed, survivors, xq, dfs, prfTerms);
+}
+
+function escalateImpl(
   executed: ReadPlan,
   survivors: number,
   xq: XQuery,

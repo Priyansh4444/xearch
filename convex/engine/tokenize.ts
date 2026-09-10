@@ -35,7 +35,18 @@ export interface Tokenized {
   hasLink: boolean;
 }
 
-export function tokenize(raw: string, keepStopwords = false): Tokenized {
+export function tokenize(raw: string, keepStopwords?: boolean): Tokenized;
+export function tokenize(keepStopwords?: boolean): (raw: string) => Tokenized;
+export function tokenize(...args: Array<unknown>): Tokenized | ((raw: string) => Tokenized) {
+  if (typeof args[0] === "string") {
+    const [raw, keepStopwords = false] = args as [string, boolean?];
+    return tokenizeImpl(raw, keepStopwords);
+  }
+  const [keepStopwords = false] = args as [boolean?];
+  return (raw: string) => tokenizeImpl(raw, keepStopwords);
+}
+
+function tokenizeImpl(raw: string, keepStopwords = false): Tokenized {
   const lowered = raw.normalize("NFKC").toLowerCase();
   // String replacement, not a replacer closure: one fewer function object per
   // call, and no captured `hasLink` cell. Every URL match is ≥4 chars

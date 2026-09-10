@@ -2,9 +2,12 @@
 // acquisition; the manifest is a projection of it plus normalization and
 // archive results (docs/collection/01-pilot.md "Run layout").
 
+// oxlint-disable-next-line effecttsgo/node-builtin-import -- git plumbing has no v4 platform provider; shelling out with a forgiving fallback is the entire contract of collectorRevision below.
 import { execFileSync } from "node:child_process";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
+import { dual } from "effect/Function";
+import { CollectorRuntime } from "../contracts/runtime.ts";
 import type { Cohort, PilotConfig } from "../config/pilot.ts";
 import { configHash } from "../config/pilot.ts";
 import { readJsonEffect, readJsonIfExistsEffect, writeJsonAtomicEffect } from "../contracts/fs.ts";
@@ -128,43 +131,44 @@ export interface Manifest {
   acceptance: { passed: boolean; reasons: string[] };
 }
 
-export function newCheckpoint(config: PilotConfig, runId: string, now: number): Checkpoint {
-  return {
-    version: RUN_FORMAT_VERSION,
-    runId,
-    createdAt: now,
-    updatedAt: now,
-    cutoffAt: now - config.historyDays * 86_400_000,
-    collector: { ...collectorRevision(), configHash: configHash(config) },
-    runOverride: null,
-    acquisitionStartedAt: null,
-    acquisitionCompletedAt: null,
-    accounts: config.accounts.map((account) => ({
-      requestedHandle: account.handle,
-      cohort: account.cohort,
-      expectedUserId: account.expectedUserId,
-      resolvedHandle: null,
-      userId: null,
-      state: AccountState.Pending,
-      pagesCompleted: 0,
-      requests: 0,
-      retries: 0,
-      rowsReturned: 0,
-      consecutiveEmptyPages: 0,
-      oldestAuthoredCreatedAt: null,
-      newestAuthoredCreatedAt: null,
-      stopReason: null,
-      pauseReason: null,
-      pausedAt: null,
-      lastError: null,
-      abandonReason: null,
-      abandonedAt: null,
-      nextPage: 1,
-      nextCursor: null,
-      seenCursors: [],
-    })),
-  };
-}
+export const newCheckpoint: {
+  (config: PilotConfig, runId: string, now: number): Checkpoint;
+  (runId: string, now: number): (config: PilotConfig) => Checkpoint;
+} = dual(3, (config: PilotConfig, runId: string, now: number): Checkpoint => ({
+  version: RUN_FORMAT_VERSION,
+  runId,
+  createdAt: now,
+  updatedAt: now,
+  cutoffAt: now - config.historyDays * 86_400_000,
+  collector: { ...collectorRevision(), configHash: configHash(config) },
+  runOverride: null,
+  acquisitionStartedAt: null,
+  acquisitionCompletedAt: null,
+  accounts: config.accounts.map((account) => ({
+    requestedHandle: account.handle,
+    cohort: account.cohort,
+    expectedUserId: account.expectedUserId,
+    resolvedHandle: null,
+    userId: null,
+    state: AccountState.Pending,
+    pagesCompleted: 0,
+    requests: 0,
+    retries: 0,
+    rowsReturned: 0,
+    consecutiveEmptyPages: 0,
+    oldestAuthoredCreatedAt: null,
+    newestAuthoredCreatedAt: null,
+    stopReason: null,
+    pauseReason: null,
+    pausedAt: null,
+    lastError: null,
+    abandonReason: null,
+    abandonedAt: null,
+    nextPage: 1,
+    nextCursor: null,
+    seenCursors: [],
+  })),
+}));
 
 export function acquisitionStatus(checkpoint: Checkpoint): AcquisitionStatus {
   if (checkpoint.runOverride !== null) return checkpoint.runOverride.status;
@@ -178,67 +182,93 @@ export function isTerminal(status: AcquisitionStatus): boolean {
   return status !== AcquisitionStatus.InProgress;
 }
 
-export function acceptance(
-  checkpoint: Checkpoint,
-  manifest: Pick<Manifest, "normalization" | "archive">,
-): Manifest["acceptance"] {
-  const reasons: string[] = [];
-  const status = acquisitionStatus(checkpoint);
-  if (status !== AcquisitionStatus.Completed) reasons.push(`acquisition status is ${status}`);
-  for (const account of checkpoint.accounts) {
-    if (account.state === AccountState.Abandoned) {
-      reasons.push(
-        `account ${account.requestedHandle} abandoned: ${account.abandonReason ?? "no reason recorded"}`,
-      );
-    } else if (account.state !== AccountState.Completed) {
-      reasons.push(
-        `account ${account.requestedHandle} is ${account.state}${account.pauseReason ? ` (${account.pauseReason})` : ""}`,
-      );
+export const acceptance: {
+  (
+    checkpoint: Checkpoint,
+    manifest: Pick<Manifest, "normalization" | "archive">,
+  ): Manifest["acceptance"];
+  (
+    manifest: Pick<Manifest, "normalization" | "archive">,
+  ): (checkpoint: Checkpoint) => Manifest["acceptance"];
+} = dual(
+  2,
+  (
+    checkpoint: Checkpoint,
+    manifest: Pick<Manifest, "normalization" | "archive">,
+  ): Manifest["acceptance"] => {
+    const reasons: string[] = [];
+    const status = acquisitionStatus(checkpoint);
+    if (status !== AcquisitionStatus.Completed) reasons.push(`acquisition status is ${status}`);
+    for (const account of checkpoint.accounts) {
+      if (account.state === AccountState.Abandoned) {
+        reasons.push(
+          `account ${account.requestedHandle} abandoned: ${account.abandonReason ?? "no reason recorded"}`,
+        );
+      } else if (account.state !== AccountState.Completed) {
+        reasons.push(
+          `account ${account.requestedHandle} is ${account.state}${account.pauseReason !== null ? ` (${account.pauseReason})` : ""}`,
+        );
+      }
     }
-  }
-  if (manifest.normalization === null) reasons.push("run has not been normalized");
-  if (manifest.archive === null) reasons.push("run has not been archived");
-  return { passed: reasons.length === 0, reasons };
-}
+    if (manifest.normalization === null) reasons.push("run has not been normalized");
+    if (manifest.archive === null) reasons.push("run has not been archived");
+    return { passed: reasons.length === 0, reasons };
+  },
+);
 
-export function projectManifest(
-  checkpoint: Checkpoint,
-  config: PilotConfig,
-  previous: Pick<Manifest, "normalization" | "archive"> | null,
-  now: number,
-): Manifest {
-  const partial = {
-    normalization: previous?.normalization ?? null,
-    archive: previous?.archive ?? null,
-  };
-  return {
-    version: RUN_FORMAT_VERSION,
-    runId: checkpoint.runId,
-    archiveNotice: ARCHIVE_NOTICE,
-    source: {
-      name: "fxtwitter",
-      apiBaseUrl: config.apiBaseUrl,
-      apiVersion: config.apiVersion,
-      specificationUrl: config.specificationUrl,
-    },
-    collector: checkpoint.collector,
-    createdAt: checkpoint.createdAt,
-    updatedAt: now,
-    historyDays: config.historyDays,
-    cutoffAt: checkpoint.cutoffAt,
-    coverageFloor: config.coverageFloor,
-    acquisition: {
-      status: acquisitionStatus(checkpoint),
-      startedAt: checkpoint.acquisitionStartedAt,
-      completedAt: checkpoint.acquisitionCompletedAt,
-      accounts: checkpoint.accounts.map(
-        ({ nextPage: _p, nextCursor: _c, seenCursors: _s, ...rest }) => rest,
-      ),
-    },
-    ...partial,
-    acceptance: acceptance(checkpoint, partial),
-  };
-}
+export const projectManifest: {
+  (
+    checkpoint: Checkpoint,
+    config: PilotConfig,
+    previous: Pick<Manifest, "normalization" | "archive"> | null,
+    now: number,
+  ): Manifest;
+  (
+    config: PilotConfig,
+    previous: Pick<Manifest, "normalization" | "archive"> | null,
+    now: number,
+  ): (checkpoint: Checkpoint) => Manifest;
+} = dual(
+  4,
+  (
+    checkpoint: Checkpoint,
+    config: PilotConfig,
+    previous: Pick<Manifest, "normalization" | "archive"> | null,
+    now: number,
+  ): Manifest => {
+    const partial = {
+      normalization: previous?.normalization ?? null,
+      archive: previous?.archive ?? null,
+    };
+    return {
+      version: RUN_FORMAT_VERSION,
+      runId: checkpoint.runId,
+      archiveNotice: ARCHIVE_NOTICE,
+      source: {
+        name: "fxtwitter",
+        apiBaseUrl: config.apiBaseUrl,
+        apiVersion: config.apiVersion,
+        specificationUrl: config.specificationUrl,
+      },
+      collector: checkpoint.collector,
+      createdAt: checkpoint.createdAt,
+      updatedAt: now,
+      historyDays: config.historyDays,
+      cutoffAt: checkpoint.cutoffAt,
+      coverageFloor: config.coverageFloor,
+      acquisition: {
+        status: acquisitionStatus(checkpoint),
+        startedAt: checkpoint.acquisitionStartedAt,
+        completedAt: checkpoint.acquisitionCompletedAt,
+        accounts: checkpoint.accounts.map(
+          ({ nextPage: _p, nextCursor: _c, seenCursors: _s, ...rest }) => rest,
+        ),
+      },
+      ...partial,
+      acceptance: acceptance(checkpoint, partial),
+    };
+  },
+);
 
 /** Persist checkpoint then re-render the manifest from it. */
 export const saveStateEffect = Effect.fn("saveStateEffect")(function* (
@@ -255,14 +285,18 @@ export const saveStateEffect = Effect.fn("saveStateEffect")(function* (
   return manifest;
 });
 
-export async function saveState(
-  paths: RunPaths,
-  checkpoint: Checkpoint,
-  config: PilotConfig,
-  now: number,
-): Promise<Manifest> {
-  return Effect.runPromise(saveStateEffect(paths, checkpoint, config, now));
-}
+export const saveState: {
+  (paths: RunPaths, checkpoint: Checkpoint, config: PilotConfig, now: number): Promise<Manifest>;
+  (
+    checkpoint: Checkpoint,
+    config: PilotConfig,
+    now: number,
+  ): (paths: RunPaths) => Promise<Manifest>;
+} = dual(
+  4,
+  (paths: RunPaths, checkpoint: Checkpoint, config: PilotConfig, now: number): Promise<Manifest> =>
+    CollectorRuntime.runPromise(saveStateEffect(paths, checkpoint, config, now)),
+);
 
 export const loadCheckpointEffect = Effect.fn("loadCheckpointEffect")(function* (paths: RunPaths) {
   const checkpoint = (yield* readJsonEffect(paths.checkpoint)) as Checkpoint;
@@ -277,8 +311,8 @@ export const loadCheckpointEffect = Effect.fn("loadCheckpointEffect")(function* 
   return checkpoint;
 });
 
-export async function loadCheckpoint(paths: RunPaths): Promise<Checkpoint> {
-  return Effect.runPromise(loadCheckpointEffect(paths));
+export function loadCheckpoint(paths: RunPaths): Promise<Checkpoint> {
+  return CollectorRuntime.runPromise(loadCheckpointEffect(paths));
 }
 
 export const findAccountEffect = Effect.fn("findAccountEffect")(function* (
@@ -296,9 +330,12 @@ export const findAccountEffect = Effect.fn("findAccountEffect")(function* (
   return account;
 });
 
-export function findAccount(checkpoint: Checkpoint, handle: string): AccountRecord {
-  return Effect.runSync(findAccountEffect(checkpoint, handle));
-}
+export const findAccount: {
+  (checkpoint: Checkpoint, handle: string): AccountRecord;
+  (handle: string): (checkpoint: Checkpoint) => AccountRecord;
+} = dual(2, (checkpoint: Checkpoint, handle: string): AccountRecord =>
+  Effect.runSync(findAccountEffect(checkpoint, handle)),
+);
 
 function collectorRevision(): { revision: string; dirty: boolean } {
   try {

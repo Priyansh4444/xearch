@@ -1,6 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { makeTempDirectory, posixPath, readText, removeRecursively } from "./support/fs.ts";
 import { afterEach, describe, expect, it } from "vitest";
 import * as Effect from "effect/Effect";
 import {
@@ -17,7 +15,7 @@ const temporaryDirectories: string[] = [];
 
 afterEach(async () => {
   await Promise.all(
-    temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true })),
+    temporaryDirectories.splice(0).map((directory) => removeRecursively(directory)),
   );
 });
 
@@ -40,7 +38,7 @@ describe("timeline probe", () => {
         ),
       ];
       const requests: TimelineRequest[] = [];
-      const client = timelineClientFromPromises(async (request) => {
+      const client = timelineClientFromPromises((request) => {
         requests.push(request);
         const response = pages.shift();
         if (response === undefined) throw new Error("unexpected request");
@@ -68,7 +66,7 @@ describe("timeline probe", () => {
       expect(report.missingRequiredFields).toEqual({});
       expect(report.pages[1]?.kinds).toMatchObject({ replies: 1, images: 1 });
       expect(
-        JSON.parse(await readFile(join(outputDirectory, "raw/000001.json"), "utf8")),
+        JSON.parse(await readText(posixPath.join(outputDirectory, "raw/000001.json"))),
       ).toHaveProperty("results");
     },
   );
@@ -106,7 +104,7 @@ function fixedClient(responses: ReturnType<typeof timelineResponse>[]): {
   const requests: TimelineRequest[] = [];
   return {
     requests,
-    client: timelineClientFromPromises(async (request) => {
+    client: timelineClientFromPromises((request) => {
       requests.push(request);
       const response = responses.shift();
       if (response === undefined) throw new Error("unexpected request");
@@ -116,7 +114,7 @@ function fixedClient(responses: ReturnType<typeof timelineResponse>[]): {
 }
 
 function timelineClientFromPromises(
-  fetchTimelinePage: (request: TimelineRequest) => Promise<TimelineResponse>,
+  fetchTimelinePage: (request: TimelineRequest) => TimelineResponse | Promise<TimelineResponse>,
 ): PilotClient {
   const baseUrl = "https://api.fxtwitter.com";
   return {
@@ -128,10 +126,10 @@ function timelineClientFromPromises(
       if (request.withReplies) url.searchParams.set("with_replies", "true");
       return url.toString();
     },
-    fetchTimelinePage,
+    fetchTimelinePage: (request) => Promise.resolve(fetchTimelinePage(request)),
     fetchTimelinePageEffect: (request) =>
       Effect.tryPromise({
-        try: () => fetchTimelinePage(request),
+        try: () => Promise.resolve(fetchTimelinePage(request)),
         catch: (cause) =>
           cause instanceof FxTwitterError
             ? cause
@@ -145,7 +143,7 @@ function timelineClientFromPromises(
       }),
     // Probe never resolves profiles; loud stubs keep the fake honest.
     profileUrl: (handle) => `${baseUrl}/2/profile/${encodeURIComponent(handle)}`,
-    fetchProfile: async () => {
+    fetchProfile: () => {
       throw new Error("profile lookup not used by probe tests");
     },
     fetchProfileEffect: () => Effect.die(new Error("profile lookup not used by probe tests")),
@@ -182,11 +180,14 @@ function status(
     reposts: 2,
     quotes: 3,
     replies: 4,
-    quote: options.quote ? { type: "status", id: "quoted" } : null,
-    replying_to: options.reply ? { status: "parent" } : null,
+    quote: options.quote === true ? { type: "status", id: "quoted" } : null,
+    replying_to: options.reply === true ? { status: "parent" } : null,
     reposted_by: null,
     media: {
-      all: options.mediaType ? [{ type: options.mediaType, url: "https://example.com/media" }] : [],
+      all:
+        options.mediaType !== undefined
+          ? [{ type: options.mediaType, url: "https://example.com/media" }]
+          : [],
     },
     author: {
       id: "author-1",
@@ -201,7 +202,7 @@ function status(
 }
 
 async function temporaryDirectory(): Promise<string> {
-  const directory = await mkdtemp(join(tmpdir(), "xearch-probe-"));
+  const directory = await makeTempDirectory("xearch-probe-");
   temporaryDirectories.push(directory);
   return directory;
 }

@@ -4,6 +4,7 @@
 // can back them with fixtures (per boundary-discipline).
 
 import { tokenize } from "./tokenize";
+import { dual } from "effect/Function";
 import type { AuthorId, Term } from "../contracts/ids";
 import { emptyXQuery, Intent, SortOrder, type MediaFilter, type XQuery } from "./xquery";
 import { VISUAL_MEDIA_TYPES } from "../contracts/media";
@@ -92,7 +93,7 @@ export function tierA(raw: string): { xq: XQuery; trace: ParseTrace } {
 
   rest = rest.replace(/(^|\s)([a-z_]+):(\S+)/gi, (m, pre: string, op: string, val: string) => {
     const handler = OPS[op.toLowerCase()];
-    if (handler && handler(val)) {
+    if (handler !== undefined && handler(val)) {
       trace.consumed[`${op}:${val}`] = op.toLowerCase();
       return pre;
     }
@@ -134,207 +135,217 @@ type XQueryWithPending = XQuery & {
  *   5. aspect mapping (strong patterns always; weak only with content co-occurrence, ASPECTS G5)
  *   6. spelling repair for df≈0 tokens (edit-distance-1 probes via deps.dfOf)
  */
-export async function tierB(
-  parsed: { xq: XQuery; trace: ParseTrace },
-  deps: TierBDeps,
-): Promise<{ xq: XQuery; trace: ParseTrace }> {
-  const px = parsed.xq as XQueryWithPending;
-  const xq = parsed.xq;
-  const trace = parsed.trace;
-  trace.tier = "B";
-  const rawRest = px.rawRest ?? "";
-  const consume = (fragment: string, slot: string) => {
-    trace.consumed[fragment] = slot;
-  };
+export const tierB: {
+  (
+    parsed: { xq: XQuery; trace: ParseTrace },
+    deps: TierBDeps,
+  ): Promise<{ xq: XQuery; trace: ParseTrace }>;
+  (
+    deps: TierBDeps,
+  ): (parsed: { xq: XQuery; trace: ParseTrace }) => Promise<{ xq: XQuery; trace: ParseTrace }>;
+} = dual(
+  2,
+  async (
+    parsed: { xq: XQuery; trace: ParseTrace },
+    deps: TierBDeps,
+  ): Promise<{ xq: XQuery; trace: ParseTrace }> => {
+    const px = parsed.xq as XQueryWithPending;
+    const xq = parsed.xq;
+    const trace = parsed.trace;
+    trace.tier = "B";
+    const rawRest = px.rawRest ?? "";
+    const consume = (fragment: string, slot: string) => {
+      trace.consumed[fragment] = slot;
+    };
 
-  // 1. from:-handle -> authorId. Hard filter: an unknown handle is surfaced in
-  //    leftover (the caller decides how to error), never soft-failed into a term.
-  if (px.pendingFromHandle != null) {
-    const hit = await deps.resolveHandle(px.pendingFromHandle);
-    if (hit !== null) {
-      xq.filters.authorId = hit.authorId;
-      consume(`from:${px.pendingFromHandle}`, "filters.authorId");
-    } else {
-      trace.leftover.push(`from:${px.pendingFromHandle}`);
-    }
-  }
-
-  // 2a. Operator dates recorded by Tier A (absolute or relative), now resolvable.
-  const now = deps.now();
-  if (px.pendingSince != null) {
-    const since = resolveDateValue(px.pendingSince, now);
-    if (since === null) trace.leftover.push(`since:${px.pendingSince}`);
-    else {
-      xq.filters.since = since;
-      consume(`since:${px.pendingSince}`, "filters.since");
-    }
-  }
-  if (px.pendingUntil != null) {
-    const until = resolveDateValue(px.pendingUntil, now);
-    if (until === null) trace.leftover.push(`until:${px.pendingUntil}`);
-    else {
-      xq.filters.until = until;
-      consume(`until:${px.pendingUntil}`, "filters.until");
-    }
-  }
-
-  // 2b. NL negation needs the raw residue ("not" is a stopword and never reaches
-  //     the token stream): "apple tweets not about the iphone" -> exclude iphone.
-  for (const m of rawRest.matchAll(
-    /(?:^|\s)not\s+(?:about\s+|having\s+)?(?:the\s+|a\s+|an\s+)?([\p{L}\p{N}_#@'-]+)/giu,
-  )) {
-    for (const tok of tokenize(m[1]!).tokens) {
-      if (!xq.exclude.includes(tok)) xq.exclude.push(tok);
-      xq.must = xq.must.filter((t) => t !== tok);
-      consume(`not … ${m[1]!}`, "exclude");
-    }
-  }
-
-  // 2c. Temporal lexicon — anchored patterns only (RISKS P4: a bare month name
-  //     never binds as a date; "million man march" stays three literal terms).
-  applyTemporalLexicon(xq, rawRest, now, consume);
-
-  // 2d. Glue is removed before media detection so "show photos" recognizes
-  // "photos" as the first meaningful token.
-  const GLUE = new Set([
-    "tweets",
-    "tweet",
-    "posts",
-    "post",
-    "thread",
-    "threads",
-    "show",
-    "me",
-    "find",
-    "search",
-    "about",
-    "say",
-    "says",
-    "said",
-    "vs",
-    "versus",
-    "what",
-    "who",
-    "why",
-    "how",
-    "when",
-    "where",
-    "which",
-    "someone",
-  ]);
-  const tokensWithoutGlue = xq.must.filter((token) => !GLUE.has(token));
-  // Aspect detection intentionally sees glue words such as "vs" before
-  // retrieval removes them.
-  const tokensForAspects = [...xq.must];
-
-  // 2e. Media lexicon: a leading media noun is a filter, not a term.
-  const MEDIA_NOUNS: Record<string, MediaFilter> = {
-    pic: "image",
-    pics: "image",
-    photo: "image",
-    photos: "image",
-    screenshot: "image",
-    screenshots: "image",
-    image: "image",
-    images: "image",
-    video: "video",
-    videos: "video",
-    clip: "video",
-    clips: "video",
-    gif: "gif",
-    gifs: "gif",
-  };
-  const leading = tokensWithoutGlue[0];
-  if (leading !== undefined && MEDIA_NOUNS[leading] !== undefined) {
-    if (xq.filters.media === null) xq.filters.media = MEDIA_NOUNS[leading]!;
-    xq.intent = Intent.Media;
-    xq.must = tokensWithoutGlue.slice(1);
-    consume(leading, "filters.media");
-  } else {
-    xq.must = tokensWithoutGlue;
-  }
-
-  // 2f. Question intent: interrogative shape, trailing "?", or an attribute-of
-  //     opener ("height of taj mahal" — the attribute survives as structure).
-  const question = detectQuestionIntent(rawRest, xq.must);
-  if (question !== null && xq.intent === Intent.Topic) xq.intent = question;
-  if (
-    xq.intent === Intent.Topic &&
-    /^\s*(height|weight|size|specs?|price|cost|dimensions?)\s+of\s/i.test(rawRest)
-  ) {
-    xq.intent = Intent.Question;
-  }
-
-  // 2g. Compare: "vs"/"versus" is glue AND a compare signal.
-  if (tokensForAspects.some((t) => t === "vs" || t === "versus")) {
-    if (xq.intent === Intent.Topic) xq.intent = Intent.Compare;
-  }
-
-  // Aspect mapping (step 5) sees the pre-glue token stream: glue words like
-  // "vs" are aspect signals ("~compare") even though they never gate retrieval.
-  for (const t of tokensForAspects) if (GLUE.has(t)) consume(t, "glue");
-
-  // 3. Entity linking over the remaining tokens — bounded to two probes; the
-  //    dominance + common-word rules live inside deps (RISKS P1). Only attempted
-  //    with person-shaped evidence (a question, e.g. "what did X say", or a
-  //    single-token query): a handle-colliding word inside a topic query
-  //    ("typescript tips") must never hijack retrieval into one author's timeline.
-  const personShaped = xq.intent === Intent.Question || xq.must.length === 1;
-  if (xq.filters.authorId === null && personShaped) {
-    for (const token of xq.must.slice(0, 2)) {
-      const hit = await deps.resolveEntity([token]);
+    // 1. from:-handle -> authorId. Hard filter: an unknown handle is surfaced in
+    //    leftover (the caller decides how to error), never soft-failed into a term.
+    if (px.pendingFromHandle != null) {
+      const hit = await deps.resolveHandle(px.pendingFromHandle);
       if (hit !== null) {
         xq.filters.authorId = hit.authorId;
-        xq.must = xq.must.filter((t) => t !== token);
-        // A question stays a question; otherwise this is a person(+topic) query.
-        if (xq.intent === Intent.Topic) {
-          xq.intent = xq.must.length > 0 ? Intent.PersonTopic : Intent.Person;
-        }
-        consume(token, "filters.authorId");
-        break;
-      }
-    }
-  }
-
-  // 5. Aspect mapping; weak trigger words move to should (they gate nothing but
-  //    boost polarity at rerank — DESIGN §4.6).
-  const aspects = mapAspects(tokensForAspects, rawRest);
-  if (aspects.length > 0) {
-    xq.aspects = aspects;
-    const weakWords = new Set<string>();
-    for (const aspect of aspects) {
-      for (const w of weakWordsFor(aspect)) weakWords.add(w);
-    }
-    const stay: Term[] = [];
-    for (const t of xq.must) {
-      if (weakWords.has(t)) {
-        xq.should.push(t);
-        consume(t, "should (weak aspect trigger)");
+        consume(`from:${px.pendingFromHandle}`, "filters.authorId");
       } else {
-        stay.push(t);
+        trace.leftover.push(`from:${px.pendingFromHandle}`);
       }
     }
-    // G5 guard, query side: never let an aspect empty the whole must set — a
-    // bare attribute word ("cheap") stays a literal term.
-    if (stay.length > 0) {
-      xq.must = stay;
-    } else {
-      xq.aspects = [];
-      xq.should = xq.should.filter((t) => !weakWords.has(t));
+
+    // 2a. Operator dates recorded by Tier A (absolute or relative), now resolvable.
+    const now = deps.now();
+    if (px.pendingSince != null) {
+      const since = resolveDateValue(px.pendingSince, now);
+      if (since === null) trace.leftover.push(`since:${px.pendingSince}`);
+      else {
+        xq.filters.since = since;
+        consume(`since:${px.pendingSince}`, "filters.since");
+      }
     }
-  }
+    if (px.pendingUntil != null) {
+      const until = resolveDateValue(px.pendingUntil, now);
+      if (until === null) trace.leftover.push(`until:${px.pendingUntil}`);
+      else {
+        xq.filters.until = until;
+        consume(`until:${px.pendingUntil}`, "filters.until");
+      }
+    }
 
-  // 6. Spelling repair (edit-distance-1 df probes) is deliberately deferred:
-  //    Tier B's read budget is ~3 point reads (PARSER §2) and repair costs ~15.
-  //    Unmatched tokens surface via leftover/L5 instead.
+    // 2b. NL negation needs the raw residue ("not" is a stopword and never reaches
+    //     the token stream): "apple tweets not about the iphone" -> exclude iphone.
+    for (const m of rawRest.matchAll(
+      /(?:^|\s)not\s+(?:about\s+|having\s+)?(?:the\s+|a\s+|an\s+)?([\p{L}\p{N}_#@'-]+)/giu,
+    )) {
+      for (const tok of tokenize(m[1]!).tokens) {
+        if (!xq.exclude.includes(tok)) xq.exclude.push(tok);
+        xq.must = xq.must.filter((t) => t !== tok);
+        consume(`not … ${m[1]!}`, "exclude");
+      }
+    }
 
-  delete px.pendingFromHandle;
-  delete px.pendingSince;
-  delete px.pendingUntil;
-  delete px.rawRest;
-  return { xq, trace };
-}
+    // 2c. Temporal lexicon — anchored patterns only (RISKS P4: a bare month name
+    //     never binds as a date; "million man march" stays three literal terms).
+    applyTemporalLexicon(xq, rawRest, now, consume);
 
+    // 2d. Glue is removed before media detection so "show photos" recognizes
+    // "photos" as the first meaningful token.
+    const GLUE = new Set([
+      "tweets",
+      "tweet",
+      "posts",
+      "post",
+      "thread",
+      "threads",
+      "show",
+      "me",
+      "find",
+      "search",
+      "about",
+      "say",
+      "says",
+      "said",
+      "vs",
+      "versus",
+      "what",
+      "who",
+      "why",
+      "how",
+      "when",
+      "where",
+      "which",
+      "someone",
+    ]);
+    const tokensWithoutGlue = xq.must.filter((token) => !GLUE.has(token));
+    // Aspect detection intentionally sees glue words such as "vs" before
+    // retrieval removes them.
+    const tokensForAspects = [...xq.must];
+
+    // 2e. Media lexicon: a leading media noun is a filter, not a term.
+    const MEDIA_NOUNS: Record<string, MediaFilter> = {
+      pic: "image",
+      pics: "image",
+      photo: "image",
+      photos: "image",
+      screenshot: "image",
+      screenshots: "image",
+      image: "image",
+      images: "image",
+      video: "video",
+      videos: "video",
+      clip: "video",
+      clips: "video",
+      gif: "gif",
+      gifs: "gif",
+    };
+    const leading = tokensWithoutGlue[0];
+    if (leading !== undefined && MEDIA_NOUNS[leading] !== undefined) {
+      if (xq.filters.media === null) xq.filters.media = MEDIA_NOUNS[leading]!;
+      xq.intent = Intent.Media;
+      xq.must = tokensWithoutGlue.slice(1);
+      consume(leading, "filters.media");
+    } else {
+      xq.must = tokensWithoutGlue;
+    }
+
+    // 2f. Question intent: interrogative shape, trailing "?", or an attribute-of
+    //     opener ("height of taj mahal" — the attribute survives as structure).
+    const question = detectQuestionIntent(rawRest, xq.must);
+    if (question !== null && xq.intent === Intent.Topic) xq.intent = question;
+    if (
+      xq.intent === Intent.Topic &&
+      /^\s*(height|weight|size|specs?|price|cost|dimensions?)\s+of\s/i.test(rawRest)
+    ) {
+      xq.intent = Intent.Question;
+    }
+
+    // 2g. Compare: "vs"/"versus" is glue AND a compare signal.
+    if (tokensForAspects.some((t) => t === "vs" || t === "versus")) {
+      if (xq.intent === Intent.Topic) xq.intent = Intent.Compare;
+    }
+
+    // Aspect mapping (step 5) sees the pre-glue token stream: glue words like
+    // "vs" are aspect signals ("~compare") even though they never gate retrieval.
+    for (const t of tokensForAspects) if (GLUE.has(t)) consume(t, "glue");
+
+    // 3. Entity linking over the remaining tokens — bounded to two probes; the
+    //    dominance + common-word rules live inside deps (RISKS P1). Only attempted
+    //    with person-shaped evidence (a question, e.g. "what did X say", or a
+    //    single-token query): a handle-colliding word inside a topic query
+    //    ("typescript tips") must never hijack retrieval into one author's timeline.
+    const personShaped = xq.intent === Intent.Question || xq.must.length === 1;
+    if (xq.filters.authorId === null && personShaped) {
+      for (const token of xq.must.slice(0, 2)) {
+        const hit = await deps.resolveEntity([token]);
+        if (hit !== null) {
+          xq.filters.authorId = hit.authorId;
+          xq.must = xq.must.filter((t) => t !== token);
+          // A question stays a question; otherwise this is a person(+topic) query.
+          if (xq.intent === Intent.Topic) {
+            xq.intent = xq.must.length > 0 ? Intent.PersonTopic : Intent.Person;
+          }
+          consume(token, "filters.authorId");
+          break;
+        }
+      }
+    }
+
+    // 5. Aspect mapping; weak trigger words move to should (they gate nothing but
+    //    boost polarity at rerank — DESIGN §4.6).
+    const aspects = mapAspects(tokensForAspects, rawRest);
+    if (aspects.length > 0) {
+      xq.aspects = aspects;
+      const weakWords = new Set<string>();
+      for (const aspect of aspects) {
+        for (const w of weakWordsFor(aspect)) weakWords.add(w);
+      }
+      const stay: Term[] = [];
+      for (const t of xq.must) {
+        if (weakWords.has(t)) {
+          xq.should.push(t);
+          consume(t, "should (weak aspect trigger)");
+        } else {
+          stay.push(t);
+        }
+      }
+      // G5 guard, query side: never let an aspect empty the whole must set — a
+      // bare attribute word ("cheap") stays a literal term.
+      if (stay.length > 0) {
+        xq.must = stay;
+      } else {
+        xq.aspects = [];
+        xq.should = xq.should.filter((t) => !weakWords.has(t));
+      }
+    }
+
+    // 6. Spelling repair (edit-distance-1 df probes) is deliberately deferred:
+    //    Tier B's read budget is ~3 point reads (PARSER §2) and repair costs ~15.
+    //    Unmatched tokens surface via leftover/L5 instead.
+
+    delete px.pendingFromHandle;
+    delete px.pendingSince;
+    delete px.pendingUntil;
+    delete px.rawRest;
+    return { xq, trace };
+  },
+);
 /** since:/until: operator values: absolute YYYY-MM-DD or relative Nd/Nh/Nw. */
 function resolveDateValue(val: string, now: number): number | null {
   const abs = val.match(/^(\d{4})-(\d{2})-(\d{2})$/);
@@ -455,7 +466,10 @@ function stripTokens(xq: XQuery, fragment: string) {
  * non-aspect content token (ASPECTS.md G5). "$"+digits in the ORIGINAL text is a
  * ~price signal (tokenizer already reduced it to a bare number — hence rawText).
  */
-export function mapAspects(tokens: Term[], rawText: string): Term[] {
+export const mapAspects: {
+  (tokens: Term[], rawText: string): Term[];
+  (rawText: string): (tokens: Term[]) => Term[];
+} = dual(2, (tokens: Term[], rawText: string): Term[] => {
   const found = new Set<Term>();
   const joined = " " + tokens.join(" ") + " ";
   for (const [aspect, patterns] of ASPECT_ENTRIES) {
@@ -469,7 +483,7 @@ export function mapAspects(tokens: Term[], rawText: string): Term[] {
   }
   if (DOLLAR_DIGIT_RE.test(rawText)) found.add(ASPECT_PRICE);
   return [...found].sort();
-}
+});
 
 /** Lexicon rows parsed once at module load, not on every query. Patterns stay
  * raw strings; only the aspect keys enter the Term space. */
@@ -506,10 +520,13 @@ function hasContentToken(tokens: Term[], weak: string[]): boolean {
 }
 
 /** Interrogative-shape detector (question intent, PARSER golden rows). */
-export function detectQuestionIntent(raw: string, tokens: string[]): Intent | null {
+export const detectQuestionIntent: {
+  (raw: string, tokens: string[]): Intent | null;
+  (tokens: string[]): (raw: string) => Intent | null;
+} = dual(2, (raw: string, tokens: string[]): Intent | null => {
   const first = tokens[0];
   const interrogatives = ["what", "who", "why", "how", "when", "where", "which"];
   if (first !== undefined && interrogatives.includes(first)) return Intent.Question;
   if (raw.trimEnd().endsWith("?")) return Intent.Question;
   return null;
-}
+});

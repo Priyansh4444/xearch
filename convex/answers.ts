@@ -15,7 +15,7 @@ export const get = query({
 
 export const request = action({
   args: { queryKey: v.string(), xqueryJson: v.string() },
-  handler: async (_ctx, _args) => {
+  handler: (_ctx, _args) => {
     // TODO(implement):
     // 1. Cache check: existing done/streaming row younger than TTL -> return.
     // 2. runQuery the search pipeline for top ~40 (already ranked — same retrieval,

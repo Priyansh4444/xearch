@@ -16,7 +16,7 @@ const hash = (value) =>
     .digest("hex");
 const object = (x) => x !== null && typeof x === "object" && !Array.isArray(x);
 function requireValue(ok, reason) {
-  if (!ok) throw new Error(reason);
+  if (ok === false) throw new Error(reason);
 }
 function id(x) {
   requireValue(typeof x === "string" && /^\d+$/.test(x), "missing/invalid string ID");
@@ -43,7 +43,7 @@ function publicUrl(x) {
   if (typeof x !== "string") return undefined;
   try {
     const u = new URL(x);
-    if (u.protocol !== "https:" || u.username || u.password) return undefined;
+    if (u.protocol !== "https:" || u.username !== "" || u.password !== "") return undefined;
     u.search = "";
     u.hash = "";
     return u.toString();
@@ -67,7 +67,7 @@ function author(a) {
   };
   if (typeof a.description === "string") out.bio = a.description;
   const avatar = publicUrl(a.avatar_url);
-  if (avatar) out.avatarUrl = avatar;
+  if (avatar !== undefined && avatar !== "") out.avatarUrl = avatar;
   return out;
 }
 function media(m) {
@@ -76,13 +76,14 @@ function media(m) {
   const arrays = ["all", "photos", "videos", "animated"];
   for (const key of arrays)
     requireValue(m[key] == null || Array.isArray(m[key]), "invalid media list");
-  const items = m.all?.length
-    ? m.all.map((x) => [x, undefined])
-    : [
-        ...(m.photos ?? []).map((x) => [x, "image"]),
-        ...(m.videos ?? []).map((x) => [x, "video"]),
-        ...(m.animated ?? []).map((x) => [x, "gif"]),
-      ];
+  const items =
+    m.all?.length !== undefined && m.all?.length !== 0
+      ? m.all.map((x) => [x, undefined])
+      : [
+          ...(m.photos ?? []).map((x) => [x, "image"]),
+          ...(m.videos ?? []).map((x) => [x, "video"]),
+          ...(m.animated ?? []).map((x) => [x, "gif"]),
+        ];
   return items.map(([item, fallback]) => {
     requireValue(object(item), "invalid media item");
     const type = { photo: "image", animated_gif: "gif" }[item.type] ?? item.type ?? fallback;
@@ -202,7 +203,8 @@ export function normalizeEvent(event) {
       });
       return;
     }
-    if (t?.author) attempt(t.author, `${location}.author`, author);
+    if (t?.author !== null && t?.author !== undefined)
+      attempt(t.author, `${location}.author`, author);
     attempt(t, location, (x) => tweet(x, captured));
     if (object(t?.quote)) visit(t.quote, `${location}.quote`, depth + 1);
   };
@@ -297,7 +299,7 @@ export async function stage(input, state) {
     const batches = path.join(state, "batches");
     await fs.mkdir(batches, { recursive: true });
     for (const name of await fs.readdir(batches)) {
-      if (!name.startsWith(".") && !ledger.acked.includes(name))
+      if (name.startsWith(".") === false && ledger.acked.includes(name) === false)
         throw new Error(`pending batch ${name}: retry ingestion and ack before staging more input`);
     }
     const coverage = await readJson(path.join(state, "chunks.json"), {});
@@ -323,10 +325,10 @@ export async function stage(input, state) {
         continue;
       }
       const raw = line.raw;
-      if (!raw.trim()) continue;
+      if (raw.trim() === "") continue;
       try {
         const result = normalizeEvent(JSON.parse(raw));
-        if (result.ignored) {
+        if (result.ignored === true) {
           ignored++;
           continue;
         }
@@ -346,7 +348,11 @@ export async function stage(input, state) {
             hash: fingerprint(r),
             textHash: r.kind === "tweet" ? hash(r.text) : undefined,
           };
-          if (previous?.textHash && previous.textHash !== candidate.textHash) {
+          if (
+            previous?.textHash !== null &&
+            previous?.textHash !== undefined &&
+            previous.textHash !== candidate.textHash
+          ) {
             issues.push({
               line: lines,
               kind: r.kind,
@@ -355,17 +361,22 @@ export async function stage(input, state) {
             });
             continue;
           }
-          if (previous && candidate.captured < previous.captured) {
+          if (
+            previous !== null &&
+            previous !== undefined &&
+            candidate.captured < previous.captured
+          ) {
             duplicates++;
             continue;
           }
-          if (previous && candidate.hash === previous.hash) {
+          if (previous !== null && previous !== undefined && candidate.hash === previous.hash) {
             duplicates++;
             selected.set(key, candidate);
             continue;
           }
           if (
-            previous &&
+            previous !== null &&
+            previous !== undefined &&
             candidate.captured === previous.captured &&
             candidate.hash !== previous.hash
           ) {
@@ -485,7 +496,7 @@ export async function ingest(state, batch, { run = runIndexer } = {}) {
   state = await fs.realpath(state);
   return locked(state, async () => {
     const ledger = await ledgerAt(state);
-    if (ledger.acked.includes(batch)) return { batch, alreadyAcknowledged: true };
+    if (ledger.acked.includes(batch) === true) return { batch, alreadyAcknowledged: true };
     const { dir, manifest } = await batchAt(state, batch);
     requireValue(manifest.records > 0, "empty batch needs no ingestion");
     const attemptId = randomUUID();
@@ -550,7 +561,7 @@ export async function ingest(state, batch, { run = runIndexer } = {}) {
 /** Accept only the latest wrapper-owned successful attempt, never caller-supplied proof paths. */
 async function acknowledgeLocked(state, batch) {
   const ledger = await ledgerAt(state);
-  if (ledger.acked.includes(batch)) return { batch, alreadyAcknowledged: true };
+  if (ledger.acked.includes(batch) === true) return { batch, alreadyAcknowledged: true };
   const { dir, manifest } = await batchAt(state, batch);
   const latest = await readJson(path.join(dir, "latest-attempt.json"), {});
   requireValue(
@@ -627,7 +638,11 @@ async function main() {
     "Usage: node apps/posthog-export/cli.mjs stage EXPORT.jsonl STATE_DIR\n       node apps/posthog-export/cli.mjs ingest STATE_DIR BATCH\n       node apps/posthog-export/cli.mjs ack STATE_DIR BATCH",
   );
 }
-if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+if (
+  process.argv[1] !== undefined &&
+  process.argv[1] !== "" &&
+  import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href
+) {
   main()
     .then((result) => console.log(JSON.stringify(result, null, 2)))
     .catch((error) => {

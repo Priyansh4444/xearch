@@ -1,5 +1,7 @@
 {
   "$schema": "./node_modules/@effect/tsgo/oxlint-schema.json",
+  // All four effect-tsgo category presets (recommended + the not-yet-promoted
+  // rules); severity deltas inside correctness are re-escalated below.
   "extends": [
     "./node_modules/@effect/tsgo/oxlint-presets/correctness.json",
     "./node_modules/@effect/tsgo/oxlint-presets/antipattern.json",
@@ -12,16 +14,21 @@
   },
   "rules": {
     "vitest/no-conditional-expect": "off",
-    "effecttsgo/async-function": "off",
-    "effecttsgo/node-builtin-import": "off",
-    "effecttsgo/schema-number": "off"
+    // Convex handlers, React/Vite callbacks, `node:test` bodies, the
+    // promise-returning acquisition API and its injected `fetch`/`sleep` seams
+    // must all be async by contract; Effect-native `Effect.fn`/`Effect.gen`
+    // twins exist alongside them where Effect owns the control flow.
+    "effecttsgo/async-function": "off"
   },
   "overrides": [
     {
       "files": ["apps/collector/tests/effect.ts"],
       "rules": {
         "vitest/expect-expect": "off",
-        "vitest/valid-title": "off"
+        "vitest/valid-title": "off",
+        // Test-harness shim: dispatches between the it.effect-style and
+        // curried call shapes, which is inherently a conditional.
+        "vitest/no-conditional-tests": "off"
       }
     },
     {
@@ -33,10 +40,25 @@
     {
       "files": ["apps/posthog-export/*.test.mjs"],
       "rules": {
+        // Top-level `test()` calls are the node:test registration pattern.
         "typescript/no-floating-promises": "off"
       }
     },
     {
+      // Standalone Node scripts (`node cli.mjs`), not composable Effect
+      // pipelines: their exported async helpers are only ever called directly
+      // (ingest's optional third argument also makes a data-last form
+      // ambiguous), so the pipeable-overload suggestion does not apply.
+      "files": ["apps/posthog-export/*.mjs"],
+      "rules": {
+        "effecttsgo/missing-pipeable-signature": "off"
+      }
+    },
+    {
+      // Runtimes where Effect is not the host: Convex functions, the React UI,
+      // the Workers dashboard and the plain-Node scripts each own their own
+      // I/O, logging and timers. apps/collector (the Effect code) is not in
+      // this list, so the rules stay on wherever Effect actually runs.
       "files": [
         "convex/**/*.ts",
         "tests/**/*.ts",
@@ -49,17 +71,34 @@
         "effecttsgo/global-console": "off",
         "effecttsgo/global-date": "off",
         "effecttsgo/new-promise": "off",
-        "effecttsgo/process-env": "off"
+        "effecttsgo/process-env": "off",
+        // Vite config, the export script and Collector tests deliberately
+        // drive `node:fs`/`node:http` directly; collector src/ goes through the
+        // @effect/platform FileSystem/Crypto/Path services instead.
+        "effecttsgo/node-builtin-import": "off"
       }
     },
     {
-      "files": ["apps/collector/src/cli/**/*.ts"],
+      // Test fixtures build temp dirs and fake servers with raw node APIs on
+      // purpose; the Effect services are exercised by the code under test.
+      "files": ["apps/collector/tests/**/*.ts"],
       "rules": {
-        "effecttsgo/strict-effect-provide": "off"
+        "effecttsgo/node-builtin-import": "off"
       }
     },
     {
-      "files": ["apps/collector/src/probe/run.ts", "apps/collector/tests/**/*.ts"],
+      // Composition roots. The CLI mains provide the Node layers once at the
+      // edge; the promise-returning bridges in pilot/, config/ and
+      // normalization/ (plus the probe's promise entry) exist precisely to
+      // provide those layers for promise callers and tests.
+      "files": [
+        "apps/collector/src/cli/**/*.ts",
+        "apps/collector/src/config/pilot.ts",
+        "apps/collector/src/normalization/normalize.ts",
+        "apps/collector/src/pilot/**/*.ts",
+        "apps/collector/src/probe/run.ts",
+        "apps/collector/tests/**/*.ts"
+      ],
       "rules": {
         "effecttsgo/strict-effect-provide": "off"
       }

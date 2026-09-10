@@ -1,6 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { makeTempDirectory, posixPath, readText, removeRecursively } from "./support/fs.ts";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   FxTwitterError,
@@ -30,9 +28,7 @@ const temporaryDirectories: string[] = [];
 
 afterEach(async () => {
   await Promise.all(
-    temporaryDirectories
-      .splice(0)
-      .map((directory) => rm(directory, { recursive: true, force: true })),
+    temporaryDirectories.splice(0).map((directory) => removeRecursively(directory)),
   );
 });
 
@@ -54,7 +50,7 @@ describe("pilot acquisition", () => {
       config,
       client,
       now: () => NOW,
-      sleep: async () => undefined,
+      sleep: () => undefined,
     });
 
     expect(manifest.acquisition.status).toBe("completed");
@@ -71,13 +67,13 @@ describe("pilot acquisition", () => {
       ["id:100", null],
       ["id:100", "c1"],
     ]);
-    expect(await fileExists(join(paths.raw, "100", "profile.json"))).toBe(true);
-    expect(await fileExists(join(paths.raw, "100", "000002.json"))).toBe(true);
+    expect(await fileExists(posixPath.join(paths.raw, "100", "profile.json"))).toBe(true);
+    expect(await fileExists(posixPath.join(paths.raw, "100", "000002.json"))).toBe(true);
     const meta = await readJson<{
       receivedAt: number;
       resultCount: number;
       outputCursor: string | null;
-    }>(join(paths.raw, "100", "000002.meta.json"));
+    }>(posixPath.join(paths.raw, "100", "000002.meta.json"));
     expect(meta).toMatchObject({
       receivedAt: expect.any(Number),
       resultCount: 1,
@@ -100,7 +96,7 @@ describe("pilot acquisition", () => {
       config,
       client,
       now: () => NOW,
-      sleep: async () => undefined,
+      sleep: () => undefined,
     });
 
     expect(manifest.acquisition.status).toBe("in_progress");
@@ -113,7 +109,9 @@ describe("pilot acquisition", () => {
       state: "completed",
       stopReason: "cursor_exhausted",
     });
-    expect(await fileExists(join(paths.raw, "_unresolved", "squatted", "profile.json"))).toBe(true);
+    expect(
+      await fileExists(posixPath.join(paths.raw, "_unresolved", "squatted", "profile.json")),
+    ).toBe(true);
     expect(manifest.acceptance.passed).toBe(false);
   });
 
@@ -143,7 +141,7 @@ describe("pilot acquisition", () => {
       config,
       client,
       now: () => NOW,
-      sleep: async () => undefined,
+      sleep: () => undefined,
     });
 
     expect(manifest.acquisition.accounts[0]).toMatchObject({
@@ -173,7 +171,7 @@ describe("pilot acquisition", () => {
       config,
       client,
       now: () => NOW,
-      sleep: async () => undefined,
+      sleep: () => undefined,
     });
 
     // Strict `<`: only cutoff-1 stops on the first page; at/after cutoff takes
@@ -204,7 +202,7 @@ describe("pilot acquisition", () => {
       config,
       client,
       now: () => NOW,
-      sleep: async () => undefined,
+      sleep: () => undefined,
     });
 
     expect(manifest.acquisition.accounts[0]).toMatchObject({
@@ -231,7 +229,7 @@ describe("pilot acquisition", () => {
       config,
       client: first,
       now: () => NOW,
-      sleep: async () => undefined,
+      sleep: () => undefined,
       maxRequests: 2,
     });
     expect(interrupted.acquisition.status).toBe("in_progress");
@@ -251,7 +249,7 @@ describe("pilot acquisition", () => {
       config,
       client: second,
       now: () => NOW,
-      sleep: async () => undefined,
+      sleep: () => undefined,
     });
 
     expect(second.profileRequests).toEqual([]);
@@ -285,7 +283,7 @@ describe("pilot acquisition", () => {
       config,
       client: first,
       now: () => NOW,
-      sleep: async () => undefined,
+      sleep: () => undefined,
     });
     expect(paused.acquisition.accounts[0]).toMatchObject({
       state: "paused",
@@ -293,7 +291,7 @@ describe("pilot acquisition", () => {
       pagesCompleted: 0,
     });
     expect(paused.acquisition.accounts[1]).toMatchObject({ state: "completed" });
-    expect(await fileExists(join(paths.raw, "100", "000001.error.json"))).toBe(true);
+    expect(await fileExists(posixPath.join(paths.raw, "100", "000001.error.json"))).toBe(true);
 
     const second = fakeClient({
       profiles: {},
@@ -304,7 +302,7 @@ describe("pilot acquisition", () => {
       config,
       client: second,
       now: () => NOW,
-      sleep: async () => undefined,
+      sleep: () => undefined,
     });
     expect(recovered.acquisition.status).toBe("completed");
     expect(recovered.acquisition.accounts[0]).toMatchObject({
@@ -334,7 +332,7 @@ describe("pilot acquisition", () => {
       config,
       client,
       now: () => NOW,
-      sleep: async () => undefined,
+      sleep: () => undefined,
     });
     expect(paused.acquisition.accounts[0]).toMatchObject({
       state: "paused",
@@ -365,7 +363,7 @@ describe("pilot acquisition", () => {
       config,
       client,
       now: () => NOW,
-      sleep: async () => undefined,
+      sleep: () => undefined,
     });
 
     expect(client.timelineRequests.map((request) => request.cursor)).toEqual([
@@ -402,7 +400,7 @@ describe("pilot acquisition", () => {
       config,
       client: first,
       now: () => NOW,
-      sleep: async () => undefined,
+      sleep: () => undefined,
     });
     expect(exhausted.acquisition.accounts[0]).toMatchObject({
       state: "completed",
@@ -431,7 +429,7 @@ describe("pilot acquisition", () => {
       config,
       client: second,
       now: () => NOW,
-      sleep: async () => undefined,
+      sleep: () => undefined,
     });
     expect(second.timelineRequests.map((request) => request.cursor)).toEqual(["c3", "c4"]);
     expect(resumed.acquisition.accounts[0]).toMatchObject({
@@ -457,7 +455,7 @@ describe("pilot acquisition", () => {
       config,
       client,
       now: () => NOW,
-      sleep: async () => undefined,
+      sleep: () => undefined,
     });
     expect(stalled.acquisition.accounts[0]).toMatchObject({
       state: "paused",
@@ -483,7 +481,7 @@ describe("pilot acquisition", () => {
       config,
       client,
       now: () => NOW,
-      sleep: async () => undefined,
+      sleep: () => undefined,
     });
     expect(manifest.acquisition.accounts[0]).toMatchObject({
       state: "completed",
@@ -505,7 +503,7 @@ describe("pilot acquisition", () => {
       config,
       client,
       now: () => NOW,
-      sleep: async () => undefined,
+      sleep: () => undefined,
     });
     expect(manifest.acquisition.accounts[0]).toMatchObject({
       state: "completed",
@@ -537,7 +535,7 @@ describe("pilot lifecycle", () => {
         ],
       },
     });
-    await acquire({ paths, config, client, now: () => NOW, sleep: async () => undefined });
+    await acquire({ paths, config, client, now: () => NOW, sleep: () => undefined });
 
     const result = await normalizeAndArchive({ dataDir, paths, config, now: () => NOW });
 
@@ -557,7 +555,7 @@ describe("pilot lifecycle", () => {
         "report.json",
       ]),
     );
-    const ingress = await readFile(result.archivedPaths.ingress, "utf8");
+    const ingress = await readText(result.archivedPaths.ingress);
     expect(ingress.split("\n")[0]).toContain('"kind":"author"');
     const report = await readJson<PilotReport>(result.archivedPaths.report);
     expect(report.acquisition.requests.total).toBe(3);
@@ -581,7 +579,7 @@ describe("pilot lifecycle", () => {
       profiles: { broken: profile("42", "someone_else"), fine: profile("2", "fine") },
       timelines: { "2": [page([row("20", "2", NOW - DAY)], null)] },
     });
-    await acquire({ paths, config, client, now: () => NOW, sleep: async () => undefined });
+    await acquire({ paths, config, client, now: () => NOW, sleep: () => undefined });
     await expect(normalizeAndArchive({ dataDir, paths, config, now: () => NOW })).rejects.toThrow(
       /in_progress/,
     );
@@ -711,9 +709,10 @@ function row(
     lang: "en",
     replying_to: null,
     quote: options.quotes ?? null,
-    reposted_by: options.repostedBy
-      ? { id: options.repostedBy, screen_name: "reposter", name: "Reposter" }
-      : null,
+    reposted_by:
+      options.repostedBy !== undefined && options.repostedBy !== ""
+        ? { id: options.repostedBy, screen_name: "reposter", name: "Reposter" }
+        : null,
     media: null,
     author: {
       id: authorId,
@@ -728,7 +727,7 @@ function row(
 }
 
 async function temporaryDirectory(): Promise<string> {
-  const directory = await mkdtemp(join(tmpdir(), "xearch-pilot-"));
+  const directory = await makeTempDirectory("xearch-pilot-");
   temporaryDirectories.push(directory);
   return directory;
 }

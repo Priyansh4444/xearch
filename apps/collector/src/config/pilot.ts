@@ -1,13 +1,16 @@
 // Pilot configuration (config/collection/pilot.json, docs/collection/01-pilot.md).
 // Pure parsing and validation; the CLI owns file reads.
 
-import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import * as Crypto from "effect/Crypto";
 import * as Data from "effect/Data";
 import { Option } from "effect";
 import * as Effect from "effect/Effect";
+import { dual } from "effect/Function";
+import * as FileSystem from "effect/FileSystem";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import { CollectorRuntime } from "../contracts/runtime.ts";
+import { readTextEffect } from "../contracts/fs.ts";
 
 export const PILOT_CONFIG_VERSION = 2;
 
@@ -168,8 +171,8 @@ function configFail(path: string, message: string): PilotConfigError {
   return new PilotConfigError({ message, path, cause: new Error(message) });
 }
 
-export async function loadPilotConfig(path: string): Promise<PilotConfig> {
-  return Effect.runPromise(loadPilotConfigEffect(path));
+export function loadPilotConfig(path: string): Promise<PilotConfig> {
+  return CollectorRuntime.runPromise(loadPilotConfigEffect(path));
 }
 
 /**
@@ -180,17 +183,20 @@ export async function loadPilotConfig(path: string): Promise<PilotConfig> {
  */
 export const loadPilotConfigEffect = Effect.fn("loadPilotConfigEffect")(function* (
   path: string,
-): Effect.fn.Return<PilotConfig, PilotConfigError> {
-  const text = yield* Effect.tryPromise({
-    try: () => readFile(path, "utf8"),
-    catch: (cause) =>
-      new PilotConfigError({
-        message: `failed to load pilot config ${path}`,
-        path,
-        cause,
-      }),
-  });
-  const parsed: unknown = yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown))(text).pipe(
+): Effect.fn.Return<PilotConfig, PilotConfigError, FileSystem.FileSystem> {
+  const text = yield* readTextEffect(path).pipe(
+    Effect.mapError(
+      (cause) =>
+        new PilotConfigError({
+          message: `failed to load pilot config ${path}`,
+          path,
+          cause,
+        }),
+    ),
+  );
+  const parsed: unknown = yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown))(
+    text,
+  ).pipe(
     Effect.mapError(
       (cause) =>
         new PilotConfigError({
@@ -204,9 +210,12 @@ export const loadPilotConfigEffect = Effect.fn("loadPilotConfigEffect")(function
 });
 
 /** Restrict a config to the named handles (case-insensitive), preserving config order. */
-export function selectAccounts(config: PilotConfig, handles: string[] | null): PilotConfig {
-  return Effect.runSync(selectAccountsEffect(config, handles));
-}
+export const selectAccounts: {
+  (config: PilotConfig, handles: string[] | null): PilotConfig;
+  (handles: string[] | null): (config: PilotConfig) => PilotConfig;
+} = dual(2, (config: PilotConfig, handles: string[] | null): PilotConfig =>
+  Effect.runSync(selectAccountsEffect(config, handles)),
+);
 
 export const selectAccountsEffect = Effect.fn("selectAccounts")(function* (
   config: PilotConfig,
@@ -232,7 +241,18 @@ export function canonicalJson(value: unknown): string {
 }
 
 export function configHash(config: PilotConfig): string {
-  return createHash("sha256").update(canonicalJson(config)).digest("hex");
+  return CollectorRuntime.runSync(
+    Effect.gen(function* () {
+      const crypto = yield* Crypto.Crypto;
+      return yield* crypto
+        .digest("SHA-256", new TextEncoder().encode(canonicalJson(config)))
+        .pipe(
+          Effect.map((digest) =>
+            [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join(""),
+          ),
+        );
+    }),
+  );
 }
 
 function sortKeys(value: unknown): unknown {

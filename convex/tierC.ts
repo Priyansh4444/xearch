@@ -16,7 +16,7 @@ export const refine = internalAction({
     parsedSoFarJson: v.string(), // A+B parse — the LLM may only fill, never override
     now: v.number(),
   },
-  handler: async (_ctx, _args) => {
+  handler: (_ctx, _args) => {
     // TODO(implement):
     // 1. normalizedRaw = raw.trim().toLowerCase(); cache check via runQuery.
     // 2. Build request: system prompt (PARSER §3.2, versioned string in this file),
@@ -34,7 +34,7 @@ export const refine = internalAction({
 /** "Report bad parse": busts the cache row and logs the case for the eval set. */
 export const reportBadParse = internalAction({
   args: { raw: v.string() },
-  handler: async (_ctx, _args) => {
+  handler: (_ctx, _args) => {
     // TODO(implement): delete queryCache row; append raw to a review log table or
     // file the humans harvest into shared/fixtures/parser-golden.jsonl.
     throw new Error("not implemented: reportBadParse");

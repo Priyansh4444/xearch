@@ -123,7 +123,8 @@ describe("collector shared contracts", () => {
     { value: "", parsed: null, ingress: null },
   ])("provider media boundary %j", ({ value, parsed, ingress }) => {
     expect(parseProviderMediaType(value)).toBe(parsed);
-    if (parsed !== null) expect(toIngressMediaType(parsed)).toBe(ingress);
+    // One unconditional assertion: a null parse maps to a null ingress type.
+    expect(parsed === null ? null : toIngressMediaType(parsed)).toBe(ingress);
   });
 
   it.each([

@@ -1,10 +1,12 @@
 // Normalize, validate, finalize, archive, verify, abandon
 // (docs/collection/01-pilot.md "Run lifecycle").
 
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
+import { dual } from "effect/Function";
+import * as FileSystem from "effect/FileSystem";
+import { posixPath } from "../contracts/posixPath.ts";
+import { CollectorRuntime } from "../contracts/runtime.ts";
 import type { PilotConfig } from "../config/pilot.ts";
 import {
   fileExistsEffect,
@@ -77,12 +79,15 @@ function lifecycleFail(message: string, cause: unknown = null): LifecycleError {
   return new LifecycleError({ message, cause });
 }
 
-function readBytesEffect(path: string): Effect.Effect<Buffer, FsError> {
-  return Effect.tryPromise({
-    try: () => readFile(path),
-    catch: (cause) =>
-      new FsError({ message: `failed to read ${path}`, path, operation: "read", cause }),
-  });
+function readBytesEffect(path: string): Effect.Effect<Uint8Array, FsError, FileSystem.FileSystem> {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    return yield* fs.readFile(path);
+  }).pipe(
+    Effect.mapError(
+      (cause) => new FsError({ message: `failed to read ${path}`, path, operation: "read", cause }),
+    ),
+  );
 }
 
 /** Normalize a terminal run, validate the outputs, write the report, finalize hashes, archive. */
@@ -134,10 +139,8 @@ export const normalizeAndArchiveEffect = Effect.fn("normalizeAndArchive")(functi
   } satisfies NormalizeAndArchiveResult;
 });
 
-export async function normalizeAndArchive(
-  options: LifecycleOptions,
-): Promise<NormalizeAndArchiveResult> {
-  return Effect.runPromise(normalizeAndArchiveEffect(options));
+export function normalizeAndArchive(options: LifecycleOptions): Promise<NormalizeAndArchiveResult> {
+  return CollectorRuntime.runPromise(normalizeAndArchiveEffect(options));
 }
 
 /** Compute digests for every retained file, write the final manifest, move the run to data/old. */
@@ -160,21 +163,21 @@ export const finalizeAndArchiveEffect = Effect.fn("finalizeAndArchive")(function
   return archived;
 });
 
-export async function finalizeAndArchive(
-  dataDir: string,
-  paths: RunPaths,
-  manifest: Manifest,
-  now: number,
-): Promise<RunPaths> {
-  return Effect.runPromise(finalizeAndArchiveEffect(dataDir, paths, manifest, now));
-}
+export const finalizeAndArchive: {
+  (dataDir: string, paths: RunPaths, manifest: Manifest, now: number): Promise<RunPaths>;
+  (paths: RunPaths, manifest: Manifest, now: number): (dataDir: string) => Promise<RunPaths>;
+} = dual(
+  4,
+  (dataDir: string, paths: RunPaths, manifest: Manifest, now: number): Promise<RunPaths> =>
+    CollectorRuntime.runPromise(finalizeAndArchiveEffect(dataDir, paths, manifest, now)),
+);
 
 const digestRunEffect = Effect.fn("digestRun")(function* (paths: RunPaths) {
   const files = yield* listFilesEffect(paths.root);
   const digests: FileDigest[] = [];
   for (const path of files) {
     if (path === "manifest.json" || path.endsWith(".tmp")) continue;
-    digests.push({ path, ...(yield* sha256FileEffect(join(paths.root, path))) });
+    digests.push({ path, ...(yield* sha256FileEffect(posixPath.join(paths.root, path))) });
   }
   return digests;
 });
@@ -217,12 +220,12 @@ export const validateNormalizationEffect = Effect.fn("validateNormalization")(fu
   }
 });
 
-export async function validateNormalization(
-  paths: RunPaths,
-  result: NormalizationResult,
-): Promise<void> {
-  return Effect.runPromise(validateNormalizationEffect(paths, result));
-}
+export const validateNormalization: {
+  (paths: RunPaths, result: NormalizationResult): Promise<void>;
+  (result: NormalizationResult): (paths: RunPaths) => Promise<void>;
+} = dual(2, (paths: RunPaths, result: NormalizationResult): Promise<void> =>
+  CollectorRuntime.runPromise(validateNormalizationEffect(paths, result)),
+);
 
 export interface VerifyResult {
   runId: string;
@@ -246,7 +249,7 @@ export const verifyArchiveEffect = Effect.fn("verifyArchive")(function* (
 
   const hashMismatches: string[] = [];
   for (const file of manifest.archive.files) {
-    const digest = yield* sha256FileEffect(join(archivedPaths.root, file.path));
+    const digest = yield* sha256FileEffect(posixPath.join(archivedPaths.root, file.path));
     if (digest.sha256 !== file.sha256 || digest.bytes !== file.bytes)
       hashMismatches.push(file.path);
   }
@@ -271,7 +274,8 @@ export const verifyArchiveEffect = Effect.fn("verifyArchive")(function* (
       outputsCompared.push(name);
       const a = yield* readBytesEffect(archivedFile);
       const b = yield* readBytesEffect(scratchFile);
-      if (!a.equals(b)) outputsDiffering.push(name);
+      const equal = a.length === b.length && a.every((byte, index) => byte === b[index]);
+      if (!equal) outputsDiffering.push(name);
     }
   }
 
@@ -285,13 +289,14 @@ export const verifyArchiveEffect = Effect.fn("verifyArchive")(function* (
   } satisfies VerifyResult;
 });
 
-export async function verifyArchive(
-  archivedPaths: RunPaths,
-  scratchDir: string,
-  config: PilotConfig,
-): Promise<VerifyResult> {
-  return Effect.runPromise(verifyArchiveEffect(archivedPaths, scratchDir, config));
-}
+export const verifyArchive: {
+  (archivedPaths: RunPaths, scratchDir: string, config: PilotConfig): Promise<VerifyResult>;
+  (scratchDir: string, config: PilotConfig): (archivedPaths: RunPaths) => Promise<VerifyResult>;
+} = dual(
+  3,
+  (archivedPaths: RunPaths, scratchDir: string, config: PilotConfig): Promise<VerifyResult> =>
+    CollectorRuntime.runPromise(verifyArchiveEffect(archivedPaths, scratchDir, config)),
+);
 
 export const abandonAccountEffect = Effect.fn("abandonAccount")(function* (
   options: LifecycleOptions,
@@ -317,13 +322,12 @@ export const abandonAccountEffect = Effect.fn("abandonAccount")(function* (
   return yield* saveStateEffect(options.paths, checkpoint, options.config, now());
 });
 
-export async function abandonAccount(
-  options: LifecycleOptions,
-  handle: string,
-  reason: string,
-): Promise<Manifest> {
-  return Effect.runPromise(abandonAccountEffect(options, handle, reason));
-}
+export const abandonAccount: {
+  (options: LifecycleOptions, handle: string, reason: string): Promise<Manifest>;
+  (handle: string, reason: string): (options: LifecycleOptions) => Promise<Manifest>;
+} = dual(3, (options: LifecycleOptions, handle: string, reason: string): Promise<Manifest> =>
+  CollectorRuntime.runPromise(abandonAccountEffect(options, handle, reason)),
+);
 
 /**
  * Re-open an account that completed through cursor exhaustion so the next `acquire`
@@ -347,14 +351,14 @@ export const reopenAccountEffect = Effect.fn("reopenAccount")(function* (
     account.state === AccountState.Paused && account.pauseReason === PauseReason.CursorStalled;
   if (!exhausted && !stalled) {
     return yield* lifecycleFail(
-      `account ${handle} is ${account.state}${account.stopReason ? ` (${account.stopReason})` : ""}${account.pauseReason ? ` (${account.pauseReason})` : ""}; only cursor_exhausted or cursor_stalled accounts can be reopened`,
+      `account ${handle} is ${account.state}${account.stopReason !== null ? ` (${account.stopReason})` : ""}${account.pauseReason !== null ? ` (${account.pauseReason})` : ""}; only cursor_exhausted or cursor_stalled accounts can be reopened`,
     );
   }
   if (account.userId === null || account.pagesCompleted === 0) {
     return yield* lifecycleFail(`account ${handle} has no retained pages to continue from`);
   }
   const lastMeta = (yield* readJsonEffect(
-    join(
+    posixPath.join(
       options.paths.raw,
       account.userId,
       `${String(account.pagesCompleted).padStart(6, "0")}.meta.json`,
@@ -375,13 +379,12 @@ export const reopenAccountEffect = Effect.fn("reopenAccount")(function* (
   return yield* saveStateEffect(options.paths, checkpoint, options.config, now());
 });
 
-export async function reopenAccount(
-  options: LifecycleOptions,
-  handle: string,
-  reason: string,
-): Promise<Manifest> {
-  return Effect.runPromise(reopenAccountEffect(options, handle, reason));
-}
+export const reopenAccount: {
+  (options: LifecycleOptions, handle: string, reason: string): Promise<Manifest>;
+  (handle: string, reason: string): (options: LifecycleOptions) => Promise<Manifest>;
+} = dual(3, (options: LifecycleOptions, handle: string, reason: string): Promise<Manifest> =>
+  CollectorRuntime.runPromise(reopenAccountEffect(options, handle, reason)),
+);
 
 /** Stop the whole run on purpose; it is archived as-is with its terminal state recorded. */
 export const abandonRunEffect = Effect.fn("abandonRun")(function* (
@@ -408,9 +411,12 @@ export const abandonRunEffect = Effect.fn("abandonRun")(function* (
   return yield* finalizeAndArchiveEffect(options.dataDir, options.paths, manifest, now());
 });
 
-export async function abandonRun(options: LifecycleOptions, reason: string): Promise<RunPaths> {
-  return Effect.runPromise(abandonRunEffect(options, reason));
-}
+export const abandonRun: {
+  (options: LifecycleOptions, reason: string): Promise<RunPaths>;
+  (reason: string): (options: LifecycleOptions) => Promise<RunPaths>;
+} = dual(2, (options: LifecycleOptions, reason: string): Promise<RunPaths> =>
+  CollectorRuntime.runPromise(abandonRunEffect(options, reason)),
+);
 
 /** Locate a run by id in either root. */
 export const locateRunEffect = Effect.fn("locateRun")(function* (dataDir: string, runId: string) {
@@ -421,19 +427,21 @@ export const locateRunEffect = Effect.fn("locateRun")(function* (dataDir: string
   return null;
 });
 
-export async function locateRun(
-  dataDir: string,
-  runId: string,
-): Promise<{ paths: RunPaths; archived: boolean } | null> {
-  return Effect.runPromise(locateRunEffect(dataDir, runId));
-}
+export const locateRun: {
+  (dataDir: string, runId: string): Promise<{ paths: RunPaths; archived: boolean } | null>;
+  (runId: string): (dataDir: string) => Promise<{ paths: RunPaths; archived: boolean } | null>;
+} = dual(
+  2,
+  (dataDir: string, runId: string): Promise<{ paths: RunPaths; archived: boolean } | null> =>
+    CollectorRuntime.runPromise(locateRunEffect(dataDir, runId)),
+);
 
 export const loadRunConfigEffect = Effect.fn("loadRunConfig")(function* (paths: RunPaths) {
   return (yield* readJsonIfExistsEffect(paths.config)) as PilotConfig | null;
 });
 
-export async function loadRunConfig(paths: RunPaths): Promise<PilotConfig | null> {
-  return Effect.runPromise(loadRunConfigEffect(paths));
+export function loadRunConfig(paths: RunPaths): Promise<PilotConfig | null> {
+  return CollectorRuntime.runPromise(loadRunConfigEffect(paths));
 }
 
 function countLines(text: string): number {

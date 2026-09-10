@@ -225,7 +225,7 @@ export const applyMetrics = internalMutation({
       }),
     ),
   },
-  handler: async (_ctx, _args) => {
+  handler: (_ctx, _args) => {
     // TODO(implement): patch tweets; when newScoreBucket present, patch the tweet's
     // postings via by_tweet (the ONLY code path that ever rewrites postings, §6.1).
     throw new Error("not implemented: applyMetrics");
@@ -237,7 +237,7 @@ export const upsertAuthority = internalMutation({
   args: {
     rows: v.array(v.object({ authorId: v.string(), authority: v.number() })),
   },
-  handler: async (_ctx, _args) => {
+  handler: (_ctx, _args) => {
     // TODO(implement): patch authors.authority; floor rule
     // authority = max(tweepcred, 0.5 * log1p(followers)) lives HERE (RISKS K3),
     // so the indexer stays ignorant of serving-side blending.

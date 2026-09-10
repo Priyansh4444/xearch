@@ -24,6 +24,7 @@
     "doctor": "react-doctor --no-telemetry --no-supply-chain"
   },
   "dependencies": {
+    "@effect/platform-node": "4.0.0-rc.112",
     "convex": "^1.45.0",
     "effect": "4.0.0-rc.112"
   },

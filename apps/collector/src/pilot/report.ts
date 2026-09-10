@@ -2,9 +2,11 @@
 // smoke thresholds). Built from page sidecars + normalization counts; never from
 // live requests.
 
-import { join } from "node:path";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
+import { dual } from "effect/Function";
+import { posixPath } from "../contracts/posixPath.ts";
+import { CollectorRuntime } from "../contracts/runtime.ts";
 import { readJsonEffect } from "../contracts/fs.ts";
 import { AccountState, AcquisitionStatus } from "../contracts/run-state.ts";
 import { mean, percentile } from "../contracts/statistics.ts";
@@ -86,7 +88,7 @@ export const buildReportEffect = Effect.fn("buildReportEffect")(function* (
     if (account.userId === null) continue;
     for (let page = 1; page <= account.pagesCompleted; page += 1) {
       const meta = (yield* readJsonEffect(
-        join(accountRawDirectory(paths, account.userId), pageMetaFileName(page)),
+        posixPath.join(accountRawDirectory(paths, account.userId), pageMetaFileName(page)),
       )) as PageMeta;
       latencies.push(meta.latencyMs);
       attempts += meta.attempts;
@@ -243,13 +245,17 @@ export const buildReportEffect = Effect.fn("buildReportEffect")(function* (
   };
 });
 
-export async function buildReport(
-  paths: RunPaths,
-  manifest: Manifest,
-  counts: NormalizationCounts | null,
-): Promise<PilotReport> {
-  return Effect.runPromise(buildReportEffect(paths, manifest, counts));
-}
+export const buildReport: {
+  (paths: RunPaths, manifest: Manifest, counts: NormalizationCounts | null): Promise<PilotReport>;
+  (
+    manifest: Manifest,
+    counts: NormalizationCounts | null,
+  ): (paths: RunPaths) => Promise<PilotReport>;
+} = dual(
+  3,
+  (paths: RunPaths, manifest: Manifest, counts: NormalizationCounts | null): Promise<PilotReport> =>
+    CollectorRuntime.runPromise(buildReportEffect(paths, manifest, counts)),
+);
 
 function check(
   name: string,

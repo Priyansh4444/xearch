@@ -2,8 +2,11 @@
 // "TypeScript normalization responsibilities"). `normalizePages` is pure; the
 // `*Run` helpers wrap it with filesystem access to the run layout.
 
-import { join } from "node:path";
 import * as Effect from "effect/Effect";
+import { dual } from "effect/Function";
+import { posixPath } from "../contracts/posixPath.ts";
+import { CollectorRuntime } from "../contracts/runtime.ts";
+import * as FileSystem from "effect/FileSystem";
 import type { FxTwitterJson } from "../acquisition/fxtwitter.ts";
 import { FxTwitterError, FxTwitterErrorKind, parseTimelinePage } from "../acquisition/fxtwitter.ts";
 import type { PilotConfig } from "../config/pilot.ts";
@@ -109,10 +112,10 @@ interface Occurrence {
   receivedAt: number;
 }
 
-export function normalizePages(
-  pages: RawPageInput[],
-  options: NormalizeOptions,
-): NormalizationResult {
+export const normalizePages: {
+  (pages: RawPageInput[], options: NormalizeOptions): NormalizationResult;
+  (options: NormalizeOptions): (pages: RawPageInput[]) => NormalizationResult;
+} = dual(2, (pages: RawPageInput[], options: NormalizeOptions): NormalizationResult => {
   const accountOrder = new Map(options.accounts.map((account, index) => [account.userId, index]));
   const ordered = [...pages].sort((a, b) => {
     const accountDelta =
@@ -310,7 +313,7 @@ export function normalizePages(
     skips: toJsonl(skips.map((skip) => JSON.stringify(skip))),
     counts,
   };
-}
+});
 
 export function unknownRejectionCodes(counts: NormalizationCounts): string[] {
   const known = new Set<string>(REJECTION_CODES);
@@ -329,20 +332,23 @@ export interface PageMeta {
 }
 
 /** Read every completed page named by the manifest, in manifest account order. */
-export async function readRunPages(paths: RunPaths, manifest: Manifest): Promise<RawPageInput[]> {
-  return Effect.runPromise(readRunPagesEffect(paths, manifest));
-}
+export const readRunPages: {
+  (paths: RunPaths, manifest: Manifest): Promise<RawPageInput[]>;
+  (manifest: Manifest): (paths: RunPaths) => Promise<RawPageInput[]>;
+} = dual(2, (paths: RunPaths, manifest: Manifest): Promise<RawPageInput[]> =>
+  CollectorRuntime.runPromise(readRunPagesEffect(paths, manifest)),
+);
 
 export const readRunPagesEffect = Effect.fn("readRunPages")(function* (
   paths: RunPaths,
   manifest: Manifest,
-): Effect.fn.Return<RawPageInput[], FsError | FxTwitterError> {
+): Effect.fn.Return<RawPageInput[], FsError | FxTwitterError, FileSystem.FileSystem> {
   const pages: RawPageInput[] = [];
   for (const account of manifest.acquisition.accounts) {
     if (account.userId === null) continue;
     const directory = accountRawDirectory(paths, account.userId);
     for (let page = 1; page <= account.pagesCompleted; page += 1) {
-      const raw = yield* readJsonEffect(join(directory, pageFileName(page)));
+      const raw = yield* readJsonEffect(posixPath.join(directory, pageFileName(page)));
       const body = yield* Effect.try({
         try: () => parseTimelinePage(raw),
         catch: (cause) =>
@@ -356,7 +362,9 @@ export const readRunPagesEffect = Effect.fn("readRunPages")(function* (
                 retryDelay: 0,
               }),
       });
-      const meta = (yield* readJsonEffect(join(directory, pageMetaFileName(page)))) as PageMeta;
+      const meta = (yield* readJsonEffect(
+        posixPath.join(directory, pageMetaFileName(page)),
+      )) as PageMeta;
       pages.push({
         // Manifest userIds arrive as plain strings; the per-row provider ids
         // are re-validated by mapping, so this asserts the space, not the value.
@@ -371,32 +379,33 @@ export const readRunPagesEffect = Effect.fn("readRunPages")(function* (
   return pages;
 });
 
-export function normalizeOptionsFor(manifest: Manifest, config: PilotConfig): NormalizeOptions {
-  return {
-    cutoffAt: manifest.cutoffAt,
-    coverageFloor: config.coverageFloor,
-    accounts: manifest.acquisition.accounts
-      .filter((account) => account.userId !== null)
-      // Config handles are HandleSchema-validated at load; userIds are provider
-      // ids re-validated per row by mapping — both casts assert space only.
-      .map((account) => ({
-        userId: account.userId as string as AuthorId,
-        handle: (account.resolvedHandle ?? account.requestedHandle) as Handle,
-      })),
-  };
-}
+export const normalizeOptionsFor: {
+  (manifest: Manifest, config: PilotConfig): NormalizeOptions;
+  (config: PilotConfig): (manifest: Manifest) => NormalizeOptions;
+} = dual(2, (manifest: Manifest, config: PilotConfig): NormalizeOptions => ({
+  cutoffAt: manifest.cutoffAt,
+  coverageFloor: config.coverageFloor,
+  accounts: manifest.acquisition.accounts
+    .filter((account) => account.userId !== null)
+    // Config handles are HandleSchema-validated at load; userIds are provider
+    // ids re-validated per row by mapping — both casts assert space only.
+    .map((account) => ({
+      userId: account.userId as string as AuthorId,
+      handle: (account.resolvedHandle ?? account.requestedHandle) as Handle,
+    })),
+}));
 
-export async function writeNormalizationOutput(
-  paths: RunPaths,
-  result: NormalizationResult,
-): Promise<void> {
-  return Effect.runPromise(writeNormalizationOutputEffect(paths, result));
-}
+export const writeNormalizationOutput: {
+  (paths: RunPaths, result: NormalizationResult): Promise<void>;
+  (result: NormalizationResult): (paths: RunPaths) => Promise<void>;
+} = dual(2, (paths: RunPaths, result: NormalizationResult): Promise<void> =>
+  CollectorRuntime.runPromise(writeNormalizationOutputEffect(paths, result)),
+);
 
 export const writeNormalizationOutputEffect = Effect.fn("writeNormalizationOutput")(function* (
   paths: RunPaths,
   result: NormalizationResult,
-): Effect.fn.Return<void, FsError> {
+): Effect.fn.Return<void, FsError, FileSystem.FileSystem> {
   yield* writeTextAtomicEffect(paths.ingress, result.ingress);
   yield* writeTextAtomicEffect(paths.rejections, result.rejections);
   yield* writeTextAtomicEffect(paths.duplicates, result.duplicates);

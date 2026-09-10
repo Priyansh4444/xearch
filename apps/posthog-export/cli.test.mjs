@@ -78,17 +78,17 @@ function mockIndexer({ offset, rejected = false, code = 0, signal = null, error,
     assert.equal(attempt.checkpoint, checkpoint);
     assert.equal(attempt.quarantine, quarantine);
     assert.equal(await fs.realpath(quarantine), quarantine);
-    if (error) throw new Error(error);
+    if (error !== undefined && error !== "") throw new Error(error);
     await fs.writeFile(
       checkpoint,
       JSON.stringify({ config_hash: "test", offsets: { [filename]: offset ?? rows } }),
     );
-    if (rejected) await fs.writeFile(path.join(quarantine, filename), "rejected record\n");
-    if (during) await during({ checkpoint, quarantine, dataDir, filename, attempt });
+    if (rejected === true) await fs.writeFile(path.join(quarantine, filename), "rejected record\n");
+    if (during !== undefined) await during({ checkpoint, quarantine, dataDir, filename, attempt });
     return { code, signal };
   };
 }
-test("object/string properties, closed fields, epoch seconds/ms, quotes and identity separation", () => {
+void test("object/string properties, closed fields, epoch seconds/ms, quotes and identity separation", () => {
   const e = event([
     {
       ...post,
@@ -125,7 +125,7 @@ test("object/string properties, closed fields, epoch seconds/ms, quotes and iden
     ].sort(),
   );
 });
-test("missing author facts defer to indexer stubs; missing metrics never become zero", () => {
+void test("missing author facts defer to indexer stubs; missing metrics never become zero", () => {
   const result = normalizeEvent(
     event([
       { ...post, author: { id: "42" } },
@@ -136,7 +136,7 @@ test("missing author facts defer to indexer stubs; missing metrics never become 
   assert.equal(result.issues.length, 2);
   assert.ok(result.issues.some((x) => x.reason.includes("likes")));
 });
-test("media provider variants and repost metadata do not invent edges", () => {
+void test("media provider variants and repost metadata do not invent edges", () => {
   const r = normalizeEvent(
     event([
       {
@@ -156,7 +156,7 @@ test("media provider variants and repost metadata do not invent edges", () => {
   );
   assert.equal(r.retweetOfTweetId, null);
 });
-test("malformed versions, sizes and timestamps reject; unrelated events ignored", () => {
+void test("malformed versions, sizes and timestamps reject; unrelated events ignored", () => {
   assert.equal(normalizeEvent({ event: "other" }).ignored, true);
   assert.throws(() => normalizeEvent(event([], { archive_schema_version: 2 })), /schema/);
   assert.throws(() => normalizeEvent(event([{ ...post, text: "a".repeat(200000) }])), /oversized/);
@@ -167,7 +167,7 @@ test("malformed versions, sizes and timestamps reject; unrelated events ignored"
     1,
   );
 });
-test("stage, retry, checkpoint-gated ack, content dedup and changed metrics", async (t) => {
+void test("stage, retry, checkpoint-gated ack, content dedup and changed metrics", async (t) => {
   const f = await fixture(t);
   await f.write([event(), event(), "not json"]);
   const batch = await stage(f.input, f.state);
@@ -193,9 +193,7 @@ test("stage, retry, checkpoint-gated ack, content dedup and changed metrics", as
   const attempts = await fs.readdir(path.join(batch.directory, "attempts"));
   assert.equal(attempts.length, 3); // Fresh retries retain prior failure evidence.
   const rejections = await Promise.all(
-    attempts.map(async (id) =>
-      fs.readdir(path.join(batch.directory, "attempts", id, "quarantine")),
-    ),
+    attempts.map((id) => fs.readdir(path.join(batch.directory, "attempts", id, "quarantine"))),
   );
   assert.equal(rejections.flat().length, 1);
   await f.write([
@@ -213,7 +211,7 @@ test("stage, retry, checkpoint-gated ack, content dedup and changed metrics", as
   assert.equal(JSON.parse(output).metrics.likes, 8);
   assert.equal(output.includes("private-requester"), false);
 });
-test("file tampering and concurrent state lock block ack/staging", async (t) => {
+void test("file tampering and concurrent state lock block ack/staging", async (t) => {
   const f = await fixture(t);
   await f.write([event()]);
   const batch = await stage(f.input, f.state);
@@ -222,7 +220,7 @@ test("file tampering and concurrent state lock block ack/staging", async (t) => 
   await fs.writeFile(path.join(f.state, ".lock"), "stale");
   await assert.rejects(stage(f.input, f.state), /state locked/);
 });
-test("partial chunks reported, all exported resources supported", async (t) => {
+void test("partial chunks reported, all exported resources supported", async (t) => {
   const f = await fixture(t);
   await f.write(
     ["profile", "search", "followers", "following"].map((resource) =>
@@ -238,7 +236,7 @@ test("partial chunks reported, all exported resources supported", async (t) => {
   assert.equal(batch.quarantineCount, 1);
 });
 
-test("chunk coverage spans windows; empty diagnostic batches do not block", async (t) => {
+void test("chunk coverage spans windows; empty diagnostic batches do not block", async (t) => {
   const f = await fixture(t);
   await f.write([event([], { chunk_count: 2 })]);
   assert.equal((await stage(f.input, f.state)).quarantineCount, 1);
@@ -248,7 +246,7 @@ test("chunk coverage spans windows; empty diagnostic batches do not block", asyn
   assert.equal(Object.values(coverage)[0].seen.length, 2);
   assert.equal(JSON.stringify(coverage).includes("00000000-0000"), false);
 });
-test("out-of-order snapshots select newest; public URLs omit query credentials", async (t) => {
+void test("out-of-order snapshots select newest; public URLs omit query credentials", async (t) => {
   const f = await fixture(t);
   await f.write([
     event([{ ...post, likes: 8 }], { captured_at: "2025-01-03T00:00:00Z" }),
@@ -301,7 +299,7 @@ for (const mixed of [false, true]) {
   });
 }
 
-test("raw export lines are bounded before parsing and oversized lines do not hide following records", async (t) => {
+void test("raw export lines are bounded before parsing and oversized lines do not hide following records", async (t) => {
   const f = await fixture(t);
   const oversized = JSON.stringify({ ...event(), export_metadata: "x".repeat(1_000_000) });
   const valid = JSON.stringify(event([{ ...post, text: "multibyte 😀" }]));
@@ -323,7 +321,7 @@ test("raw export lines are bounded before parsing and oversized lines do not hid
     assert.equal(issues[i].sha256, createHash("sha256").update(raw).digest("hex"));
   }
 });
-test("raw line byte bound accepts the boundary and normal unterminated JSONL", async (t) => {
+void test("raw line byte bound accepts the boundary and normal unterminated JSONL", async (t) => {
   const f = await fixture(t);
   const raw = JSON.stringify(event());
   await fs.writeFile(f.input, raw + " ".repeat(1_000_000 - Buffer.byteLength(raw)));
@@ -346,7 +344,7 @@ for (const failure of [{ code: 1 }, { code: null, signal: "SIGTERM" }, { error: 
     assert.equal((await ingest(f.state, batch.batch, { run: mockIndexer() })).acknowledged, 2);
   });
 }
-test("successful process can resume ack after local ledger write failure", async (t) => {
+void test("successful process can resume ack after local ledger write failure", async (t) => {
   const f = await fixture(t);
   await f.write([event()]);
   const batch = await stage(f.input, f.state);
@@ -363,7 +361,7 @@ test("successful process can resume ack after local ledger write failure", async
   await fs.rmdir(path.join(f.state, "ledger.json"));
   assert.equal((await acknowledge(f.state, batch.batch)).acknowledged, 2);
 });
-test("successful process cannot ack a batch changed while it ran, even with matching checkpoint", async (t) => {
+void test("successful process cannot ack a batch changed while it ran, even with matching checkpoint", async (t) => {
   const f = await fixture(t);
   await f.write([event()]);
   const batch = await stage(f.input, f.state);
@@ -379,7 +377,7 @@ test("successful process cannot ack a batch changed while it ran, even with matc
   );
   await assert.rejects(fs.stat(path.join(f.state, "ledger.json")), /ENOENT/);
 });
-test("wrong quarantine path cannot be substituted for a rejected bound attempt", async (t) => {
+void test("wrong quarantine path cannot be substituted for a rejected bound attempt", async (t) => {
   const f = await fixture(t);
   await f.write([event()]);
   const batch = await stage(f.input, f.state);
@@ -396,7 +394,7 @@ test("wrong quarantine path cannot be substituted for a rejected bound attempt",
   await assert.rejects(acknowledge(f.state, batch.batch), /quarantined/);
 });
 
-test("legacy CLI proof-path overrides fail closed before touching state", () => {
+void test("legacy CLI proof-path overrides fail closed before touching state", () => {
   const result = spawnSync(
     process.execPath,
     [
@@ -412,7 +410,7 @@ test("legacy CLI proof-path overrides fail closed before touching state", () => 
   assert.equal(result.status, 1);
   assert.match(result.stderr, /no longer accepts proof paths/);
 });
-test("state stays locked while the child runs and ack validates recorded attempt hash", async (t) => {
+void test("state stays locked while the child runs and ack validates recorded attempt hash", async (t) => {
   const f = await fixture(t);
   await f.write([event()]);
   const batch = await stage(f.input, f.state);
@@ -516,7 +514,7 @@ for (const missing of ["checkpoint", "quarantine"]) {
     await assert.rejects(fs.stat(path.join(f.state, "ledger.json")), /ENOENT/);
   });
 }
-test("bound acknowledgement rejects edited attempt paths", async (t) => {
+void test("bound acknowledgement rejects edited attempt paths", async (t) => {
   const f = await fixture(t);
   await f.write([event()]);
   const batch = await stage(f.input, f.state);
@@ -554,7 +552,7 @@ for (const kind of ["alternate-name", "directory", "symlink"]) {
     await assert.rejects(fs.stat(path.join(f.state, "ledger.json")), /ENOENT/);
   });
 }
-test("empty quarantine files do not hide the clean attempt", async (t) => {
+void test("empty quarantine files do not hide the clean attempt", async (t) => {
   const f = await fixture(t);
   await f.write([event()]);
   const batch = await stage(f.input, f.state);

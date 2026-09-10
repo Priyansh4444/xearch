@@ -88,7 +88,11 @@ async function click(text: string): Promise<void> {
     (element) => element.textContent === text,
   );
   expect(button).toBeDefined();
-  await act(async () => button!.click());
+  // `act` is awaited in its async form: awaiting the sync form is a no-op that
+  // the type checker (rightly) rejects.
+  await act(async () => {
+    button!.click();
+  });
 }
 
 it.each([

@@ -1,11 +1,11 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { posixPath } from "../contracts/posixPath.ts";
 import * as Data from "effect/Data";
 import * as Clock from "effect/Clock";
 import * as Console from "effect/Console";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import { CollectorRuntime } from "../contracts/runtime.ts";
+import * as FileSystem from "effect/FileSystem";
 import * as Schema from "effect/Schema";
 import { FxTwitterError, makeFxTwitterClient } from "../acquisition/fxtwitter.ts";
 import {
@@ -80,10 +80,14 @@ interface Flags {
 
 type CliError = PilotCliError | PilotConfigError | FsError | FxTwitterError | Error;
 
-const main = Effect.fn("pilot.main")(function* (): Effect.fn.Return<void, CliError> {
+const main = Effect.fn("pilot.main")(function* (): Effect.fn.Return<
+  void,
+  CliError,
+  FileSystem.FileSystem
+> {
   const [command, ...rest] = process.argv.slice(2);
   const flags = yield* parseFlagsEffect(rest);
-  const dataDir = resolve(flags.options.get("data-dir") ?? DEFAULT_DATA_DIR);
+  const dataDir = posixPath.resolve(flags.options.get("data-dir") ?? DEFAULT_DATA_DIR);
 
   switch (command) {
     case PilotCommand.acquire:
@@ -112,7 +116,7 @@ const main = Effect.fn("pilot.main")(function* (): Effect.fn.Return<void, CliErr
 const acquireCommand = Effect.fn("pilot.acquire")(function* (
   flags: Flags,
   dataDir: string,
-): Effect.fn.Return<void, CliError> {
+): Effect.fn.Return<void, CliError, FileSystem.FileSystem> {
   const requestedRunId = flags.options.get("run") ?? null;
   let paths: RunPaths;
   let config: PilotConfig;
@@ -144,7 +148,7 @@ const acquireCommand = Effect.fn("pilot.acquire")(function* (
       }
     }
     const loaded = yield* loadPilotConfigEffect(
-      resolve(flags.options.get("config") ?? DEFAULT_CONFIG),
+      posixPath.resolve(flags.options.get("config") ?? DEFAULT_CONFIG),
     );
     const accounts =
       flags.options
@@ -153,7 +157,9 @@ const acquireCommand = Effect.fn("pilot.acquire")(function* (
         .map((handle) => handle.trim())
         .filter(Boolean) ?? null;
     config = yield* selectAccountsEffect(loaded, accounts);
-    const runId = requestedRunId ?? createRunId(DateTime.toDate(yield* DateTime.now), flags.options.get("label") ?? "pilot");
+    const runId =
+      requestedRunId ??
+      createRunId(DateTime.toDate(yield* DateTime.now), flags.options.get("label") ?? "pilot");
     paths = runPaths(dataDir, "runs", runId);
     yield* createRunEffect(paths, config, runId, yield* Clock.currentTimeMillis);
     yield* Console.log(`created run ${runId} with ${config.accounts.length} account(s)`);
@@ -180,7 +186,7 @@ const acquireCommand = Effect.fn("pilot.acquire")(function* (
 const normalizeCommand = Effect.fn("pilot.normalize")(function* (
   flags: Flags,
   dataDir: string,
-): Effect.fn.Return<void, CliError> {
+): Effect.fn.Return<void, CliError, FileSystem.FileSystem> {
   const runId = yield* requireRunId(flags);
   const located = yield* tryPromise(locateRun(dataDir, runId));
   if (located === null) return yield* cliFail(`run ${runId} not found under ${dataDir}`);
@@ -207,7 +213,7 @@ const normalizeCommand = Effect.fn("pilot.normalize")(function* (
 const verifyCommand = Effect.fn("pilot.verify")(function* (
   flags: Flags,
   dataDir: string,
-): Effect.fn.Return<void, CliError> {
+): Effect.fn.Return<void, CliError, FileSystem.FileSystem> {
   const runId = yield* requireRunId(flags);
   const located = yield* tryPromise(locateRun(dataDir, runId));
   if (located === null) return yield* cliFail(`run ${runId} not found under ${dataDir}`);
@@ -216,9 +222,10 @@ const verifyCommand = Effect.fn("pilot.verify")(function* (
   const config = yield* tryPromise(loadRunConfig(located.paths));
   if (config === null) return yield* cliFail(`run ${runId} has no config snapshot`);
 
-  const scratch = yield* tryPromise(mkdtemp(join(tmpdir(), "xearch-verify-")));
+  const fs = yield* FileSystem.FileSystem;
+  const scratch = yield* fs.makeTempDirectory({ prefix: "xearch-verify-" });
   const result = yield* tryPromise(verifyArchive(located.paths, scratch, config)).pipe(
-    Effect.ensuring(tryPromise(rm(scratch, { recursive: true, force: true })).pipe(Effect.orDie)),
+    Effect.ensuring(fs.remove(scratch, { recursive: true, force: true }).pipe(Effect.orDie)),
   );
   yield* Console.log(
     `verify ${runId}: ${result.hashesChecked} file hash(es) checked, ${result.hashMismatches.length} mismatch(es)`,
@@ -235,7 +242,7 @@ const verifyCommand = Effect.fn("pilot.verify")(function* (
 const abandonAccountCommand = Effect.fn("pilot.abandonAccount")(function* (
   flags: Flags,
   dataDir: string,
-): Effect.fn.Return<void, CliError> {
+): Effect.fn.Return<void, CliError, FileSystem.FileSystem> {
   const runId = yield* requireRunId(flags);
   const handle = flags.positional[1];
   const reason = flags.options.get("reason");
@@ -252,7 +259,7 @@ const abandonAccountCommand = Effect.fn("pilot.abandonAccount")(function* (
 const reopenAccountCommand = Effect.fn("pilot.reopenAccount")(function* (
   flags: Flags,
   dataDir: string,
-): Effect.fn.Return<void, CliError> {
+): Effect.fn.Return<void, CliError, FileSystem.FileSystem> {
   const runId = yield* requireRunId(flags);
   const handle = flags.positional[1];
   const reason = flags.options.get("reason");
@@ -269,7 +276,7 @@ const reopenAccountCommand = Effect.fn("pilot.reopenAccount")(function* (
 const abandonRunCommand = Effect.fn("pilot.abandon")(function* (
   flags: Flags,
   dataDir: string,
-): Effect.fn.Return<void, CliError> {
+): Effect.fn.Return<void, CliError, FileSystem.FileSystem> {
   const runId = yield* requireRunId(flags);
   const reason = flags.options.get("reason");
   if (reason === undefined || reason.trim().length === 0)
@@ -282,7 +289,7 @@ const abandonRunCommand = Effect.fn("pilot.abandon")(function* (
 const statusCommand = Effect.fn("pilot.status")(function* (
   flags: Flags,
   dataDir: string,
-): Effect.fn.Return<void, CliError> {
+): Effect.fn.Return<void, CliError, FileSystem.FileSystem> {
   const runId = yield* requireRunId(flags);
   const located = yield* tryPromise(locateRun(dataDir, runId));
   if (located === null) return yield* cliFail(`run ${runId} not found under ${dataDir}`);
@@ -296,7 +303,7 @@ const statusCommand = Effect.fn("pilot.status")(function* (
 const discoverCommand = Effect.fn("pilot.discover")(function* (
   flags: Flags,
   dataDir: string,
-): Effect.fn.Return<void, CliError> {
+): Effect.fn.Return<void, CliError, FileSystem.FileSystem> {
   if (flags.positional.length === 0) return yield* usageFail("At least one run id is required.");
   const minSeeds = yield* integerOptionEffect(flags, "min-seeds", 3);
   const pages: RawPageInput[] = [];
@@ -321,7 +328,7 @@ const discoverCommand = Effect.fn("pilot.discover")(function* (
     yield* Console.log(`${runId}: ${pages.length} page(s) loaded so far`);
   }
   const configured = yield* loadPilotConfigEffect(
-    resolve(flags.options.get("config") ?? DEFAULT_CONFIG),
+    posixPath.resolve(flags.options.get("config") ?? DEFAULT_CONFIG),
   );
   const candidates = discoverFromPages(pages, {
     seeds: [...seeds.values()],
@@ -348,10 +355,10 @@ const discoverCommand = Effect.fn("pilot.discover")(function* (
     yield* resolveCandidatesEffect(candidates, client, pace(), logLine);
   }
 
-  const outDir = resolve(
-    flags.options.get("out") ?? join(dataDir, "discovery", flags.positional.join("+")),
+  const outDir = posixPath.resolve(
+    flags.options.get("out") ?? posixPath.join(dataDir, "discovery", flags.positional.join("+")),
   );
-  yield* writeJsonAtomicEffect(join(outDir, "report.json"), {
+  yield* writeJsonAtomicEffect(posixPath.join(outDir, "report.json"), {
     generatedAt: yield* Clock.currentTimeMillis,
     sourceRuns: flags.positional,
     minSeeds,
@@ -359,17 +366,17 @@ const discoverCommand = Effect.fn("pilot.discover")(function* (
     candidates,
   });
   yield* writeTextAtomicEffect(
-    join(outDir, "report.md"),
+    posixPath.join(outDir, "report.md"),
     renderMarkdown(candidates, minSeeds, flags.positional),
   );
   const proposed = proposeConfig(
     { ...(baseConfig as PilotConfig), selectedOn: DateTime.formatIsoDate(yield* DateTime.now) },
     candidates,
   );
-  yield* writeJsonAtomicEffect(join(outDir, "proposed-config.json"), proposed);
-  yield* Console.log(`report: ${join(outDir, "report.md")}`);
+  yield* writeJsonAtomicEffect(posixPath.join(outDir, "proposed-config.json"), proposed);
+  yield* Console.log(`report: ${posixPath.join(outDir, "report.md")}`);
   yield* Console.log(
-    `proposed gate-2 config with ${proposed.accounts.length} guest account(s): ${join(outDir, "proposed-config.json")}`,
+    `proposed gate-2 config with ${proposed.accounts.length} guest account(s): ${posixPath.join(outDir, "proposed-config.json")}`,
   );
   yield* Console.log(
     `unresolved (need --resolve): ${candidates.filter((candidate) => candidate.resolution === DiscoveryResolution.Unresolved).length}`,
@@ -393,7 +400,7 @@ const printAcquisition = Effect.fn("pilot.printAcquisition")(function* (
   paths: RunPaths,
 ): Effect.fn.Return<void> {
   yield* Console.log(
-    `run ${manifest.runId}: acquisition ${manifest.acquisition.status}${manifest.archive ? " (archived)" : ""}`,
+    `run ${manifest.runId}: acquisition ${manifest.acquisition.status}${manifest.archive !== null ? " (archived)" : ""}`,
   );
   for (const account of manifest.acquisition.accounts) {
     const detail =
@@ -519,7 +526,7 @@ function tryPromise<A>(promise: Promise<A>): Effect.Effect<A, Error> {
   });
 }
 
-Effect.runPromise(main()).catch((error: unknown) => {
+CollectorRuntime.runPromise(main()).catch((error: unknown) => {
   if (error instanceof PilotCliError) {
     Effect.runSync(Console.error(error.message));
     process.exitCode = error.exitCode;

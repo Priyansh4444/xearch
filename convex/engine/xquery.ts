@@ -4,6 +4,7 @@
 // the Tier C output grammar. Bump `v` on any breaking change.
 
 import type { VisualMediaType } from "../contracts/media";
+import { dual } from "effect/Function";
 import type { AuthorId, QueryKey, Term } from "../contracts/ids";
 
 export const XQUERY_VERSION = 1 as const;
@@ -143,8 +144,11 @@ export function parseXQueryJson(_json: string): XQuery | null {
  * Merge a Tier C refinement into an A+B parse. Tier C may FILL empty slots and
  * ADD should/aspects; it may never contradict operator-set slots (PARSER §2).
  */
-export function mergeRefinement(_base: XQuery, _refined: XQuery): XQuery {
+export const mergeRefinement: {
+  (_base: XQuery, _refined: XQuery): XQuery;
+  (_refined: XQuery): (_base: XQuery) => XQuery;
+} = dual(2, (_base: XQuery, _refined: XQuery): XQuery => {
   // TODO: slot-wise merge honoring the may-not-override rule; count overridden
   // attempts into the trace for the eval harness.
   throw new Error("not implemented: mergeRefinement");
-}
+});

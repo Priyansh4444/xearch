@@ -100,7 +100,7 @@ export function buildSummary(snapshot: Snapshot): Summary {
   for (const run of distinct) {
     if (run.error !== null) continue;
     const c = run.normalization?.counts;
-    if (c) {
+    if (c !== null && c !== undefined) {
       totals.runsNormalized += 1;
       totals.posts += c.accepted?.total ?? 0;
       totals.postsTimeline += c.accepted?.timeline ?? 0;
@@ -110,7 +110,7 @@ export function buildSummary(snapshot: Snapshot): Summary {
       totals.skippedOutsideWindow += c.skippedOutsideWindow ?? 0;
       totals.authors += c.authors ?? 0;
     }
-    if (run.accounts) {
+    if (run.accounts !== null) {
       for (const key of Object.keys(totals.accounts) as (keyof typeof totals.accounts)[]) {
         totals.accounts[key] += run.accounts[key];
       }
@@ -126,7 +126,7 @@ export function buildSummary(snapshot: Snapshot): Summary {
   const latest = distinct[0] ?? null;
   const reported = distinct.find((run) => run.report !== null) ?? null;
   const quality: Summary["quality"] =
-    reported && reported.report
+    reported !== null && reported.report !== null
       ? {
           runId: reported.runId,
           generatedAt: reported.report.generatedAt,
@@ -140,8 +140,8 @@ export function buildSummary(snapshot: Snapshot): Summary {
     generatedAt: snapshot.generatedAt,
     bucket: snapshot.bucket,
     totals,
-    live: live ? lite(live) : null,
-    latest: latest ? lite(latest) : null,
+    live: live !== null ? lite(live) : null,
+    latest: latest !== null ? lite(latest) : null,
     quality,
     runs: distinct.map(lite),
   };

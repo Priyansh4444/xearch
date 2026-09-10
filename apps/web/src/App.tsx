@@ -69,7 +69,10 @@ function useSearchPage() {
 
   const shown = input.trim() === query ? current : undefined;
   const error = inputError ?? shown?.error;
-  const searching = input.trim() !== "" && !error && shown === undefined;
+  const searching =
+    input.trim() !== "" &&
+    (error === null || error === undefined || error === "") &&
+    shown === undefined;
   const operatorSort = full !== undefined && Object.values(full.trace.consumed).includes("sort");
   const activeSort = full?.appliedQuery.sort ?? sort;
 
@@ -224,7 +227,7 @@ function SearchBody({
   onPick,
 }: SearchBodyProps): ReactElement {
   if (query === "") return <Intro onPick={onPick} />;
-  if (error) return <p role="alert">{error}</p>;
+  if (error !== null && error !== undefined && error !== "") return <p role="alert">{error}</p>;
   if (shown === undefined) return <SkeletonList />;
   if (shown.results.length === 0) return <EmptyState query={query} onPick={onPick} />;
 
@@ -382,7 +385,7 @@ function ResultRow({ tweet, terms, queryKey }: ResultRowProps): ReactElement {
       <div className="byline">
         <span className="name">
           {name}
-          {tweet.author?.verified ? (
+          {tweet.author?.verified === true ? (
             <svg className="verified" viewBox="0 0 24 24" aria-label="verified" role="img">
               <path d="M12 2l2.4 2.4 3.4-.5 1 3.3 3 1.7-1.2 3.1 1.2 3.1-3 1.7-1 3.3-3.4-.5L12 22l-2.4-2.4-3.4.5-1-3.3-3-1.7L3.4 12 2.2 8.9l3-1.7 1-3.3 3.4.5L12 2zm-1.3 13.6l5.4-5.4-1.2-1.2-4.2 4.2-1.8-1.8-1.2 1.2 3 3z" />
             </svg>

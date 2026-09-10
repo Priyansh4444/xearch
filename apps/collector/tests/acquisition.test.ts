@@ -7,11 +7,10 @@ import { TestClock } from "effect/testing";
 import { describe, expect, it } from "vitest";
 import {
   FxTwitter,
-  FxTwitterTest,
   makeFxTwitterClient,
   type TimelineRequest,
 } from "../src/acquisition/fxtwitter.ts";
-import { itEffect } from "./effect.ts";
+import { runEffect } from "./effect.ts";
 
 const request: TimelineRequest = {
   handle: "NASA",
@@ -22,36 +21,38 @@ const request: TimelineRequest = {
 const page = () => Response.json({ code: 200, results: [], cursor: { top: null, bottom: null } });
 
 describe("Effect acquisition", () => {
-  itEffect(
-    "honors Retry-After and resets attempts when reusing an Effect",
-    Effect.gen(function* () {
-      let calls = 0;
-      const delays: number[] = [];
-      const client = makeFxTwitterClient({
-        retries: 1,
-        fetchImpl: async () =>
-          ++calls % 2 === 1
-            ? new Response("limited", { status: 429, headers: { "retry-after": "2" } })
-            : page(),
-        sleep: async (ms) => {
-          delays.push(ms);
-        },
-      });
-      const program = client.fetchTimelinePageEffect(request);
-      expect((yield* program).attempts).toBe(2);
-      expect((yield* program).attempts).toBe(2);
-      expect(delays).toEqual([2000, 2000]);
-    }),
-  );
+  it("honors Retry-After and resets attempts when reusing an Effect", () =>
+    runEffect(
+      Effect.gen(function* () {
+        let calls = 0;
+        const delays: number[] = [];
+        const client = makeFxTwitterClient({
+          retries: 1,
+          fetchImpl: () =>
+            Promise.resolve(
+              ++calls % 2 === 1
+                ? new Response("limited", { status: 429, headers: { "retry-after": "2" } })
+                : page(),
+            ),
+          sleep: (ms) => {
+            delays.push(ms);
+          },
+        });
+        const program = client.fetchTimelinePageEffect(request);
+        expect((yield* program).attempts).toBe(2);
+        expect((yield* program).attempts).toBe(2);
+        expect(delays).toEqual([2000, 2000]);
+      }),
+    ));
 
   it.each([400, 401, 402, 403, 404, 422])(
     "does not retry permanent HTTP %i failures",
     async (status) => {
       let calls = 0;
       const client = makeFxTwitterClient({
-        fetchImpl: async () => {
+        fetchImpl: () => {
           calls += 1;
-          return new Response("denied", { status });
+          return Promise.resolve(new Response("denied", { status }));
         },
       });
       await expect(client.fetchTimelinePage(request)).rejects.toMatchObject({
@@ -69,11 +70,11 @@ describe("Effect acquisition", () => {
     const client = makeFxTwitterClient({
       retries: 1,
       retryBaseDelayMs: 0,
-      fetchImpl: async () => {
+      fetchImpl: () => {
         calls += 1;
-        return calls === 1 ? new Response("busy", { status }) : page();
+        return Promise.resolve(calls === 1 ? new Response("busy", { status }) : page());
       },
-      sleep: async () => undefined,
+      sleep: () => undefined,
     });
     expect((await client.fetchTimelinePage(request)).attempts).toBe(2);
     expect(calls).toBe(2);
@@ -94,9 +95,11 @@ describe("Effect acquisition", () => {
     const client = makeFxTwitterClient({
       retries: 1,
       retryBaseDelayMs: 500,
-      fetchImpl: async () =>
-        ++calls % 2 === 1 ? new Response("limited", { status: 429, headers }) : page(),
-      sleep: async (ms) => {
+      fetchImpl: () =>
+        Promise.resolve(
+          ++calls % 2 === 1 ? new Response("limited", { status: 429, headers }) : page(),
+        ),
+      sleep: (ms) => {
         delays.push(ms);
       },
     });
@@ -112,11 +115,13 @@ describe("Effect acquisition", () => {
       const client = makeFxTwitterClient({
         retries: 1,
         retryBaseDelayMs: 500,
-        fetchImpl: async () =>
-          ++calls % 2 === 1
-            ? new Response("limited", { status: 429, headers: { [name]: "2" } })
-            : page(),
-        sleep: async (ms) => {
+        fetchImpl: () =>
+          Promise.resolve(
+            ++calls % 2 === 1
+              ? new Response("limited", { status: 429, headers: { [name]: "2" } })
+              : page(),
+          ),
+        sleep: (ms) => {
           delays.push(ms);
         },
       });
@@ -125,36 +130,36 @@ describe("Effect acquisition", () => {
     },
   );
 
-  itEffect(
-    "exhausts transport retries with a typed error",
-    Effect.gen(function* () {
-      let calls = 0;
-      const delays: number[] = [];
-      const client = makeFxTwitterClient({
-        retries: 2,
-        retryBaseDelayMs: 10,
-        fetchImpl: async () => {
-          calls += 1;
-          throw new Error("connection closed");
-        },
-        sleep: async (ms) => {
-          delays.push(ms);
-        },
-      });
-      const exit = yield* Effect.exit(client.fetchTimelinePageEffect(request));
-      expect(exit._tag).toBe("Failure");
-      if (exit._tag === "Failure") {
-        const failure = Cause.findErrorOption(exit.cause);
-        expect(Option.isSome(failure) ? failure.value : null).toMatchObject({
-          _tag: "FxTwitterError",
-          kind: "transport",
-          status: null,
+  it("exhausts transport retries with a typed error", () =>
+    runEffect(
+      Effect.gen(function* () {
+        let calls = 0;
+        const delays: number[] = [];
+        const client = makeFxTwitterClient({
+          retries: 2,
+          retryBaseDelayMs: 10,
+          fetchImpl: () => {
+            calls += 1;
+            return Promise.reject(new Error("connection closed"));
+          },
+          sleep: (ms) => {
+            delays.push(ms);
+          },
         });
-      }
-      expect(calls).toBe(3);
-      expect(delays).toEqual([10, 20]);
-    }),
-  );
+        const exit = yield* Effect.exit(client.fetchTimelinePageEffect(request));
+        expect(exit._tag).toBe("Failure");
+        if (exit._tag === "Failure") {
+          const failure = Cause.findErrorOption(exit.cause);
+          expect(Option.isSome(failure) ? failure.value : null).toMatchObject({
+            _tag: "FxTwitterError",
+            kind: "transport",
+            status: null,
+          });
+        }
+        expect(calls).toBe(3);
+        expect(delays).toEqual([10, 20]);
+      }),
+    ));
 
   it.each([
     "not json",
@@ -167,48 +172,50 @@ describe("Effect acquisition", () => {
   ])("does not retry malformed envelope %j", async (body) => {
     let calls = 0;
     const client = makeFxTwitterClient({
-      fetchImpl: async () => {
+      fetchImpl: () => {
         calls += 1;
-        return new Response(body);
+        return Promise.resolve(new Response(body));
       },
     });
     await expect(client.fetchTimelinePage(request)).rejects.toMatchObject({ kind: "decode" });
     expect(calls).toBe(1);
   });
 
-  itEffect(
-    "backs off on the Effect clock without waiting for real",
-    Effect.gen(function* () {
-      let calls = 0;
-      const program = Effect.gen(function* () {
-        const client = yield* FxTwitter;
-        return yield* Effect.exit(client.fetchTimelinePageEffect(request));
-      }).pipe(
-        Effect.provide(
-          FxTwitterTest(
-            async () => {
-              calls += 1;
-              throw new Error("connection closed");
-            },
-            { retries: 2, retryBaseDelayMs: 5000 },
+  it("backs off on the Effect clock without waiting for real", () =>
+    runEffect(
+      Effect.gen(function* () {
+        let calls = 0;
+        const program = Effect.gen(function* () {
+          const client = yield* FxTwitter;
+          return yield* Effect.exit(client.fetchTimelinePageEffect(request));
+        }).pipe(
+          Effect.provideService(
+            FxTwitter,
+            makeFxTwitterClient({
+              fetchImpl: () => {
+                calls += 1;
+                throw new Error("connection closed");
+              },
+              retries: 2,
+              retryBaseDelayMs: 5000,
+            }),
           ),
-        ),
-      );
-      const fiber = yield* Effect.forkChild(program);
-      // Virtual 15s elapses both backoffs (5s + 10s) instantly.
-      yield* TestClock.adjust("15 seconds");
-      const exit = yield* Fiber.join(fiber);
-      expect(exit._tag).toBe("Failure");
-      if (exit._tag === "Failure") {
-        const failure = Cause.findErrorOption(exit.cause);
-        expect(Option.isSome(failure) ? failure.value : null).toMatchObject({
-          _tag: "FxTwitterError",
-          kind: "transport",
-        });
-      }
-      expect(calls).toBe(3);
-    }),
-  );
+        );
+        const fiber = yield* Effect.forkChild(program);
+        // Virtual 15s elapses both backoffs (5s + 10s) instantly.
+        yield* TestClock.adjust("15 seconds");
+        const exit = yield* Fiber.join(fiber);
+        expect(exit._tag).toBe("Failure");
+        if (exit._tag === "Failure") {
+          const failure = Cause.findErrorOption(exit.cause);
+          expect(Option.isSome(failure) ? failure.value : null).toMatchObject({
+            _tag: "FxTwitterError",
+            kind: "transport",
+          });
+        }
+        expect(calls).toBe(3);
+      }),
+    ));
 
   it("cancels an in-flight request without retrying it", async () => {
     const controller = new AbortController();
@@ -260,13 +267,17 @@ describe("Effect acquisition", () => {
 
   it("preserves profile-not-found and empty-timeline outcomes", async () => {
     const client = makeFxTwitterClient({
-      fetchImpl: async (input) => {
-        const href =
-          typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-        return href.includes("/statuses")
-          ? new Response(null, { status: 204 })
-          : new Response("missing", { status: 404 });
-      },
+      fetchImpl: (input) =>
+        Promise.resolve(
+          (typeof input === "string"
+            ? input
+            : input instanceof URL
+              ? input.href
+              : input.url
+          ).includes("/statuses")
+            ? new Response(null, { status: 204 })
+            : new Response("missing", { status: 404 }),
+        ),
     });
     expect((await client.fetchProfile("missing")).profile).toBeNull();
     expect((await client.fetchTimelinePage(request)).page).toBeNull();
@@ -306,7 +317,7 @@ describe("Effect acquisition", () => {
       await Effect.runPromise(
         Effect.callback<void>((resume) => {
           server.close((error) => {
-            if (error) resume(Effect.die(error));
+            if (error !== undefined) resume(Effect.die(error));
             else resume(Effect.void);
           });
         }),

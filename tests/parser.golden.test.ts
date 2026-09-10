@@ -26,7 +26,7 @@ const DF: Record<string, number> = {
 
 it.each(["cheap", "expensive", "cost", "costs", "afford", "free", "budget", "pricey"])(
   "weak ~price trigger %j needs a content co-occurrence (either order)",
-  async (weak) => {
+  (weak) => {
     const w = weak as Term;
     expect(mapAspects([w] as Term[], "")).not.toContain("~price");
     expect(mapAspects([w, w] as Term[], "")).not.toContain("~price");
@@ -131,14 +131,12 @@ describe("parser strong permutations", () => {
 
   it.each(["latest", "LATEST", "Latest"])("sort value %j: only lowercase binds", async (value) => {
     const { xq } = await tierB(tierA(`sort:${value} linux`), deps);
-    if (value === "latest") {
-      expect(xq.sort).toBe("latest");
-    } else {
-      // Unknown operator VALUE stays literal text: the op is rejected, the
-      // tokenizer then splits `sort:LATEST` into plain terms.
-      expect(xq.sort).toBe("top");
-      expect(xq.must).toContain("sort");
-      expect(xq.must).toContain(value.toLowerCase());
+    const binds = value === "latest";
+    expect(xq.sort).toBe(binds ? "latest" : "top");
+    // An unknown operator VALUE stays literal text: the op is rejected, the
+    // tokenizer then splits `sort:LATEST` into plain terms.
+    for (const term of binds ? [] : ["sort", value.toLowerCase()]) {
+      expect(xq.must).toContain(term);
     }
   });
 
@@ -207,36 +205,50 @@ describe("parser golden fixture (tiers A+B)", () => {
     test(`${row.raw} — ${row.note}`, async () => {
       const { xq } = await tierB(tierA(row.raw), deps);
       const e = row.expect;
-      if (e.must !== undefined) expect(xq.must).toEqual(e.must);
-      if (e.mustIncludes !== undefined) {
-        for (const t of e.mustIncludes) expect(xq.must).toContain(t);
-      }
-      if (e.should !== undefined) expect(xq.should).toEqual(e.should);
-      if (e.phrases !== undefined) expect(xq.phrases).toEqual(e.phrases);
-      if (e.exclude !== undefined) expect(xq.exclude).toEqual(e.exclude);
-      if (e.aspects !== undefined) expect(xq.aspects).toEqual(e.aspects);
-      if (e.media !== undefined) expect(xq.filters.media).toBe(e.media);
-      if (e.sort !== undefined) expect(xq.sort).toBe(e.sort);
-      if (e.intent !== undefined) expect(xq.intent).toBe(e.intent);
+      // Collect only the fields this fixture row pins, then assert once: the
+      // fixture format is a sparse expectation record, so per-field `expect`
+      // calls would each sit inside a condition.
+      const expected: Record<string, unknown> = {};
+      if (e.must !== undefined) expected["must"] = e.must;
+      if (e.should !== undefined) expected["should"] = e.should;
+      if (e.phrases !== undefined) expected["phrases"] = e.phrases;
+      if (e.exclude !== undefined) expected["exclude"] = e.exclude;
+      if (e.aspects !== undefined) expected["aspects"] = e.aspects;
+      if (e.sort !== undefined) expected["sort"] = e.sort;
+      if (e.intent !== undefined) expected["intent"] = e.intent;
       if (e.authorHandle !== undefined) {
-        expect(xq.filters.authorId).toBe(e.authorHandle === null ? null : AUTHORS[e.authorHandle]);
+        expected["authorId"] = e.authorHandle === null ? null : AUTHORS[e.authorHandle];
       }
-      if (e.sinceRelativeDays !== undefined) {
-        expect(xq.filters.since).toBe(NOW - e.sinceRelativeDays * DAY);
-      }
+      if (e.sinceRelativeDays !== undefined) expected["since"] = NOW - e.sinceRelativeDays * DAY;
       if (e.hasDateWindow !== undefined) {
-        expect(xq.filters.since !== null || xq.filters.until !== null).toBe(e.hasDateWindow);
+        expected["hasDateWindow"] = xq.filters.since !== null || xq.filters.until !== null;
       }
+      if (e.media !== undefined) expected["media"] = e.media;
       if (e.filtersUnchanged === true) {
-        expect(xq.filters).toEqual({
+        expected["filters"] = {
           authorId: null,
           since: null,
           until: null,
           media: null,
           minLikes: null,
           lang: null,
-        });
+        };
       }
+      expect({
+        must: xq.must,
+        should: xq.should,
+        phrases: xq.phrases,
+        exclude: xq.exclude,
+        aspects: xq.aspects,
+        sort: xq.sort,
+        intent: xq.intent,
+        authorId: xq.filters.authorId,
+        since: xq.filters.since,
+        hasDateWindow: xq.filters.since !== null || xq.filters.until !== null,
+        media: xq.filters.media,
+        filters: xq.filters,
+      }).toMatchObject(expected);
+      for (const t of e.mustIncludes ?? []) expect(xq.must).toContain(t);
     });
   }
 });

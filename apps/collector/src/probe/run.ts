@@ -1,8 +1,10 @@
-import { createHash } from "node:crypto";
-import { join } from "node:path";
+import * as Crypto from "effect/Crypto";
 import * as Data from "effect/Data";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import { dual } from "effect/Function";
+import { posixPath } from "../contracts/posixPath.ts";
+import { CollectorRuntime } from "../contracts/runtime.ts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import type {
@@ -177,14 +179,14 @@ const ProbeCheckpointSchema = Schema.Struct({
   report: ProbeReportSchema,
 });
 
-export async function runTimelineProbe(
-  client: PilotClient,
-  options: ProbeOptions,
-): Promise<ProbeReport> {
-  return Effect.runPromise(
+export const runTimelineProbe: {
+  (client: PilotClient, options: ProbeOptions): Promise<ProbeReport>;
+  (options: ProbeOptions): (client: PilotClient) => Promise<ProbeReport>;
+} = dual(2, (client: PilotClient, options: ProbeOptions): Promise<ProbeReport> =>
+  CollectorRuntime.runPromise(
     Effect.provideService(runTimelineProbeEffect(options), FxTwitter, client),
-  );
-}
+  ),
+);
 
 export const runTimelineProbeEffect = Effect.fn("probe.runTimelineProbe")(function* (
   options: ProbeOptions,
@@ -192,8 +194,8 @@ export const runTimelineProbeEffect = Effect.fn("probe.runTimelineProbe")(functi
   yield* validateOptions(options);
   const client = yield* FxTwitter;
 
-  const checkpointPath = join(options.outputDirectory, "checkpoint.json");
-  const reportPath = join(options.outputDirectory, "report.json");
+  const checkpointPath = posixPath.join(options.outputDirectory, "checkpoint.json");
+  const reportPath = posixPath.join(options.outputDirectory, "report.json");
   const loaded = yield* loadCheckpoint(checkpointPath);
   const checkpoint = loaded ?? newCheckpoint(options, DateTime.formatIso(yield* DateTime.now));
   yield* assertCheckpointMatches(checkpoint, options);
@@ -215,7 +217,7 @@ export const runTimelineProbeEffect = Effect.fn("probe.runTimelineProbe")(functi
     const response = yield* client.fetchTimelinePageEffect(request);
 
     yield* writeJsonAtomicEffect(
-      join(options.outputDirectory, "raw", `${String(pageNumber).padStart(6, "0")}.json`),
+      posixPath.join(options.outputDirectory, "raw", `${String(pageNumber).padStart(6, "0")}.json`),
       response.raw,
     );
 
@@ -256,81 +258,98 @@ export const runTimelineProbeEffect = Effect.fn("probe.runTimelineProbe")(functi
   return checkpoint.report;
 });
 
-export function analyzeTimelinePage(
-  pageNumber: number,
-  inputCursorValue: string | null,
-  response: TimelineResponse,
-  seenTweetIds: Set<string>,
-): PageReport {
-  if (response.page === null) {
-    throw new ProbeValidationError({ message: "Cannot analyze an empty timeline response" });
-  }
-
-  const missingRequiredFields: Record<string, number> = {};
-  const kinds = { replies: 0, quotes: 0, reposts: 0, images: 0, videos: 0, gifs: 0 };
-  let duplicateCount = 0;
-  let uniqueCount = 0;
-  let oldestCreatedAt: number | null = null;
-  let newestCreatedAt: number | null = null;
-
-  for (const result of response.page.results) {
-    const status = parseProviderStatus(result);
-    if (status === null) {
-      increment(missingRequiredFields, "result");
-      continue;
+export const analyzeTimelinePage: {
+  (
+    pageNumber: number,
+    inputCursorValue: string | null,
+    response: TimelineResponse,
+    seenTweetIds: Set<string>,
+  ): PageReport;
+  (
+    inputCursorValue: string | null,
+    response: TimelineResponse,
+    seenTweetIds: Set<string>,
+  ): (pageNumber: number) => PageReport;
+} = dual(
+  4,
+  (
+    pageNumber: number,
+    inputCursorValue: string | null,
+    response: TimelineResponse,
+    seenTweetIds: Set<string>,
+  ): PageReport => {
+    if (response.page === null) {
+      throw new ProbeValidationError({ message: "Cannot analyze an empty timeline response" });
     }
 
-    const id = parseNonEmptyString(status.id);
-    if (id === null) {
-      increment(missingRequiredFields, "id");
-    } else if (seenTweetIds.has(id)) {
-      duplicateCount += 1;
-    } else {
-      seenTweetIds.add(id);
-      uniqueCount += 1;
-    }
+    const missingRequiredFields: Record<string, number> = {};
+    const kinds = { replies: 0, quotes: 0, reposts: 0, images: 0, videos: 0, gifs: 0 };
+    let duplicateCount = 0;
+    let uniqueCount = 0;
+    let oldestCreatedAt: number | null = null;
+    let newestCreatedAt: number | null = null;
 
-    for (const field of missingIngressFields(status)) increment(missingRequiredFields, field);
+    for (const result of response.page.results) {
+      const status = parseProviderStatus(result);
+      if (status === null) {
+        increment(missingRequiredFields, "result");
+        continue;
+      }
 
-    const createdAt = timestampMilliseconds(status.created_timestamp);
-    if (createdAt !== null) {
-      oldestCreatedAt = oldestCreatedAt === null ? createdAt : Math.min(oldestCreatedAt, createdAt);
-      newestCreatedAt = newestCreatedAt === null ? createdAt : Math.max(newestCreatedAt, createdAt);
-    }
+      const id = parseNonEmptyString(status.id);
+      if (id === null) {
+        increment(missingRequiredFields, "id");
+      } else if (seenTweetIds.has(id)) {
+        duplicateCount += 1;
+      } else {
+        seenTweetIds.add(id);
+        uniqueCount += 1;
+      }
 
-    if (status.replying_to !== undefined && status.replying_to !== null) kinds.replies += 1;
-    const quote = parseProviderStatus(status.quote);
-    if (quote !== null && !isTombstoneRow(quote.type)) kinds.quotes += 1;
-    if (status.reposted_by !== undefined && status.reposted_by !== null) kinds.reposts += 1;
+      for (const field of missingIngressFields(status)) increment(missingRequiredFields, field);
 
-    if (status.media?.all !== undefined && status.media.all !== null) {
-      for (const media of status.media.all) {
-        const mediaType = parseProviderMediaType(media.type);
-        if (mediaType === null) continue;
-        if (isImageProviderMedia(mediaType)) kinds.images += 1;
-        else if (mediaType === ProviderMediaType.Video) kinds.videos += 1;
-        else if (mediaType === ProviderMediaType.Gif) kinds.gifs += 1;
+      const createdAt = timestampMilliseconds(status.created_timestamp);
+      if (createdAt !== null) {
+        oldestCreatedAt =
+          oldestCreatedAt === null ? createdAt : Math.min(oldestCreatedAt, createdAt);
+        newestCreatedAt =
+          newestCreatedAt === null ? createdAt : Math.max(newestCreatedAt, createdAt);
+      }
+
+      if (status.replying_to !== undefined && status.replying_to !== null) kinds.replies += 1;
+      const quote = parseProviderStatus(status.quote);
+      if (quote !== null && !isTombstoneRow(quote.type)) kinds.quotes += 1;
+      if (status.reposted_by !== undefined && status.reposted_by !== null) kinds.reposts += 1;
+
+      if (status.media?.all !== undefined && status.media.all !== null) {
+        for (const media of status.media.all) {
+          const mediaType = parseProviderMediaType(media.type);
+          if (mediaType === null) continue;
+          if (isImageProviderMedia(mediaType)) kinds.images += 1;
+          else if (mediaType === ProviderMediaType.Video) kinds.videos += 1;
+          else if (mediaType === ProviderMediaType.Gif) kinds.gifs += 1;
+        }
       }
     }
-  }
 
-  return {
-    page: pageNumber,
-    httpStatus: response.httpStatus,
-    apiCode: response.page.code,
-    attempts: response.attempts,
-    latencyMs: Math.round(response.latencyMs * 10) / 10,
-    resultCount: response.page.results.length,
-    uniqueCount,
-    duplicateCount,
-    oldestCreatedAt,
-    newestCreatedAt,
-    inputCursor: cursorFingerprint(inputCursorValue),
-    outputCursor: cursorFingerprint(response.page.cursor.bottom),
-    missingRequiredFields,
-    kinds,
-  };
-}
+    return {
+      page: pageNumber,
+      httpStatus: response.httpStatus,
+      apiCode: response.page.code,
+      attempts: response.attempts,
+      latencyMs: Math.round(response.latencyMs * 10) / 10,
+      resultCount: response.page.results.length,
+      uniqueCount,
+      duplicateCount,
+      oldestCreatedAt,
+      newestCreatedAt,
+      inputCursor: cursorFingerprint(inputCursorValue),
+      outputCursor: cursorFingerprint(response.page.cursor.bottom),
+      missingRequiredFields,
+      kinds,
+    };
+  },
+);
 
 function missingIngressFields(status: ProviderStatus): string[] {
   const missing: string[] = [];
@@ -492,7 +511,9 @@ const assertCheckpointMatches = Effect.fn("probe.assertCheckpointMatches")(funct
     count: options.count,
     withReplies: options.withReplies,
   }).pipe(Effect.orDie);
-  const actual = yield* Schema.encodeEffect(ProbeIdentityJson)(checkpoint.identity).pipe(Effect.orDie);
+  const actual = yield* Schema.encodeEffect(ProbeIdentityJson)(checkpoint.identity).pipe(
+    Effect.orDie,
+  );
   if (actual !== expected) {
     return yield* new ProbeCheckpointError({
       message: "Existing checkpoint options do not match this run. Choose another --out directory.",
@@ -528,7 +549,19 @@ const validateOptions = Effect.fn("probe.validateOptions")(function* (options: P
 
 function cursorFingerprint(cursor: string | null): string | null {
   if (cursor === null) return null;
-  return createHash("sha256").update(cursor).digest("hex").slice(0, 12);
+  return CollectorRuntime.runSync(
+    Effect.gen(function* () {
+      const crypto = yield* Crypto.Crypto;
+      return yield* crypto.digest("SHA-256", new TextEncoder().encode(cursor)).pipe(
+        Effect.map((digest) =>
+          [...digest]
+            .map((byte) => byte.toString(16).padStart(2, "0"))
+            .join("")
+            .slice(0, 12),
+        ),
+      );
+    }),
+  );
 }
 
 function timestampMilliseconds(value: unknown): number | null {

@@ -4,6 +4,7 @@
 // are the executable contract.
 
 import { Option } from "effect";
+import { dual } from "effect/Function";
 import * as Schema from "effect/Schema";
 import { parseNonEmptyString, parseNonNegativeNumber } from "../contracts/primitives.ts";
 import {
@@ -224,13 +225,16 @@ export interface RejectedCandidate {
 export type MappedCandidate = MappedTweet | RejectedCandidate;
 
 /** Map one provider status (timeline row or embedded quote) and everything nested in it. */
-export function mapStatus(value: unknown, context: CandidateContext): MappedCandidate {
+export const mapStatus: {
+  (value: unknown, context: CandidateContext): MappedCandidate;
+  (context: CandidateContext): (value: unknown) => MappedCandidate;
+} = dual(2, (value: unknown, context: CandidateContext): MappedCandidate => {
   const status = parseProviderStatus(value);
   if (status === null || !isStatusRow(status.type)) {
     return reject(context, null, ["invalid_response_shape"], []);
   }
   return mapProviderStatus(status, context);
-}
+});
 
 function mapProviderStatus(value: ProviderStatus, context: CandidateContext): MappedCandidate {
   const id = parseTweetId(value.id);

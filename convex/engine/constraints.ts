@@ -1,4 +1,5 @@
 import { tokenize } from "./tokenize";
+import { dual } from "effect/Function";
 import type { Term } from "../contracts/ids";
 import type { XQuery } from "./xquery";
 
@@ -23,7 +24,10 @@ interface FilterableTweet {
 }
 
 /** Every retrieval path uses the same hard predicates before counting survivors. */
-export function matchesConstraints(tweet: FilterableTweet, xq: XQuery): boolean {
+export const matchesConstraints: {
+  (tweet: FilterableTweet, xq: XQuery): boolean;
+  (xq: XQuery): (tweet: FilterableTweet) => boolean;
+} = dual(2, (tweet: FilterableTweet, xq: XQuery): boolean => {
   const f = xq.filters;
   if (f.authorId !== null && tweet.authorId !== f.authorId) return false;
   if (f.since !== null && tweet.createdAt < f.since) return false;
@@ -41,7 +45,7 @@ export function matchesConstraints(tweet: FilterableTweet, xq: XQuery): boolean 
     if (!coversPhrase(tokens, phrase)) return false;
   }
   return true;
-}
+});
 
 /** One phrase matched with token adjacency. */
 function coversPhrase(tokens: Term[], phrase: Term[]): boolean {
