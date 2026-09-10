@@ -61,6 +61,28 @@ cannot be attributed solely to the code change. The result does show that the
 reported multi-second path still exists for some first requests and that the
 requested universal 20x improvement has not been established.
 
+## Post-fix observation (2026-09-10)
+
+After deploying the all-stopword and single-term-widening fixes (`fbdfbf55`), the
+read-only harness ran once over all 14 fixture queries (`--runs 1 --limit 14`, 14
+requests to `https://sleek-emu-128.convex.cloud`). Every result-count floor
+passed; single-term queries stayed at L0 and multi-term queries still escalated
+(`rust vs go` L1, `what did karpathy say about llm agents` L3 with 18 results).
+First-observed p50 was 634 ms and p95 1290 ms over 14 samples — client-observed
+HTTP time, not server execution, and not a controlled comparison against the
+earlier tables.
+
+The three reported query shapes were also checked directly through the same
+public API, read-only and without cache-busting:
+
+| Query | Lane | Before | After |
+| --- | --- | --- | --- |
+| `and so is` | baseline | threw `Add a search word or quoted phrase alongside filters.` | 19 verified posts, engagement-ordered |
+| `pronsh` | xearch | L3, widened into unrelated @theo megaposts | L0, exactly the 3 posts containing the token |
+| `waterfall` | baseline | built-in relevance order: a 2-like reply led and the 316-like post was ninth | 316-like post first, then 71 / 52 / 21 / 59 |
+
+Each row is one observation, not a recall or nDCG measurement.
+
 ## What the measurement means
 
 - Timing starts before HTTP fetch and stops after reading the response body. It includes connection setup, network, service processing, and body transfer. It excludes JSON parsing and browser rendering.
