@@ -6,12 +6,11 @@ import { v } from "convex/values";
 
 export const get = query({
   args: { queryKey: v.string() },
-  handler: async (ctx, { queryKey }) => {
-    return await ctx.db
+  handler: async (ctx, { queryKey }) =>
+    await ctx.db
       .query("answers")
       .withIndex("by_query", (q) => q.eq("queryKey", queryKey))
-      .unique();
-  },
+      .unique(),
 });
 
 export const request = action({

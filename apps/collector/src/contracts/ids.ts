@@ -8,22 +8,22 @@ import * as Schema from "effect/Schema";
 import { NonEmptyStringSchema } from "./primitives.ts";
 
 export const TweetIdSchema = NonEmptyStringSchema.pipe(Schema.brand("TweetId"));
-export type TweetId = Schema.Schema.Type<typeof TweetIdSchema>;
+export type TweetId = typeof TweetIdSchema.Type;
 
 export const AuthorIdSchema = NonEmptyStringSchema.pipe(Schema.brand("AuthorId"));
-export type AuthorId = Schema.Schema.Type<typeof AuthorIdSchema>;
+export type AuthorId = typeof AuthorIdSchema.Type;
 
 /** Normalized handle: lowercase, no leading `@` (see `normalizeHandle`). */
 export const HandleSchema = NonEmptyStringSchema.pipe(Schema.brand("Handle"));
-export type Handle = Schema.Schema.Type<typeof HandleSchema>;
+export type Handle = typeof HandleSchema.Type;
 
 /** Tokenizer-normalized index term (or `~aspect` token). */
 export const TermSchema = NonEmptyStringSchema.pipe(Schema.brand("Term"));
-export type Term = Schema.Schema.Type<typeof TermSchema>;
+export type Term = typeof TermSchema.Type;
 
 /** FNV-1a hex over canonical XQuery JSON (engine/xquery.ts `queryKey`). */
 export const QueryKeySchema = NonEmptyStringSchema.pipe(Schema.brand("QueryKey"));
-export type QueryKey = Schema.Schema.Type<typeof QueryKeySchema>;
+export type QueryKey = typeof QueryKeySchema.Type;
 
 // Parse fns share `parseNonEmptyString` semantics exactly (reject blank as well
 // as empty), so swapping them in at provider boundaries changes no behavior —

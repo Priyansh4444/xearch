@@ -1,6 +1,11 @@
 {
   "$schema": "./node_modules/@effect/tsgo/oxlint-schema.json",
-  "extends": ["./node_modules/@effect/tsgo/oxlint-presets/recommended.json"],
+  "extends": [
+    "./node_modules/@effect/tsgo/oxlint-presets/correctness.json",
+    "./node_modules/@effect/tsgo/oxlint-presets/antipattern.json",
+    "./node_modules/@effect/tsgo/oxlint-presets/effect-native.json",
+    "./node_modules/@effect/tsgo/oxlint-presets/style.json"
+  ],
   "plugins": ["typescript", "unicorn", "oxc", "vitest", "react"],
   "categories": {
     "correctness": "error"
@@ -53,7 +58,14 @@
         "effecttsgo/global-console": "off",
         "effecttsgo/global-console-in-effect": "off",
         "effecttsgo/global-date": "off",
-        "effecttsgo/global-date-in-effect": "off"
+        "effecttsgo/global-date-in-effect": "off",
+        "effecttsgo/strict-effect-provide": "off"
+      }
+    },
+    {
+      "files": ["apps/collector/src/probe/run.ts", "apps/collector/tests/**/*.ts"],
+      "rules": {
+        "effecttsgo/strict-effect-provide": "off"
       }
     }
   ]
