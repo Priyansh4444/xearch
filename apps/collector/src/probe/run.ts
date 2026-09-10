@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import * as Data from "effect/Data";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
-import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import type {
@@ -115,26 +115,26 @@ const StopReasonSchema = Schema.Union([
 ]);
 
 const ProbePageReportSchema = Schema.Struct({
-  page: Schema.Number,
-  httpStatus: Schema.Number,
-  apiCode: Schema.NullOr(Schema.Number),
-  attempts: Schema.Number,
-  latencyMs: Schema.Number,
-  resultCount: Schema.Number,
-  uniqueCount: Schema.Number,
-  duplicateCount: Schema.Number,
-  oldestCreatedAt: Schema.NullOr(Schema.Number),
-  newestCreatedAt: Schema.NullOr(Schema.Number),
+  page: Schema.Finite,
+  httpStatus: Schema.Finite,
+  apiCode: Schema.NullOr(Schema.Finite),
+  attempts: Schema.Finite,
+  latencyMs: Schema.Finite,
+  resultCount: Schema.Finite,
+  uniqueCount: Schema.Finite,
+  duplicateCount: Schema.Finite,
+  oldestCreatedAt: Schema.NullOr(Schema.Finite),
+  newestCreatedAt: Schema.NullOr(Schema.Finite),
   inputCursor: Schema.NullOr(Schema.String),
   outputCursor: Schema.NullOr(Schema.String),
-  missingRequiredFields: Schema.Record(Schema.String, Schema.Number),
+  missingRequiredFields: Schema.Record(Schema.String, Schema.Finite),
   kinds: Schema.Struct({
-    replies: Schema.Number,
-    quotes: Schema.Number,
-    reposts: Schema.Number,
-    images: Schema.Number,
-    videos: Schema.Number,
-    gifs: Schema.Number,
+    replies: Schema.Finite,
+    quotes: Schema.Finite,
+    reposts: Schema.Finite,
+    images: Schema.Finite,
+    videos: Schema.Finite,
+    gifs: Schema.Finite,
   }),
 });
 
@@ -142,30 +142,34 @@ const ProbeReportSchema = Schema.Struct({
   version: Schema.Literal(1),
   handle: Schema.String,
   baseUrl: Schema.String,
-  count: Schema.Number,
+  count: Schema.Finite,
   withReplies: Schema.Boolean,
   startedAt: Schema.String,
   updatedAt: Schema.String,
-  pagesCompleted: Schema.Number,
-  totalResults: Schema.Number,
-  uniqueTweets: Schema.Number,
-  duplicateTweets: Schema.Number,
-  oldestCreatedAt: Schema.NullOr(Schema.Number),
-  newestCreatedAt: Schema.NullOr(Schema.Number),
-  missingRequiredFields: Schema.Record(Schema.String, Schema.Number),
+  pagesCompleted: Schema.Finite,
+  totalResults: Schema.Finite,
+  uniqueTweets: Schema.Finite,
+  duplicateTweets: Schema.Finite,
+  oldestCreatedAt: Schema.NullOr(Schema.Finite),
+  newestCreatedAt: Schema.NullOr(Schema.Finite),
+  missingRequiredFields: Schema.Record(Schema.String, Schema.Finite),
   stopReason: StopReasonSchema,
   pages: Schema.Array(ProbePageReportSchema),
 });
 
+const ProbeIdentitySchema = Schema.Struct({
+  handle: Schema.String,
+  baseUrl: Schema.String,
+  count: Schema.Finite,
+  withReplies: Schema.Boolean,
+});
+
+const ProbeIdentityJson = Schema.fromJsonString(ProbeIdentitySchema);
+
 const ProbeCheckpointSchema = Schema.Struct({
   version: Schema.Literal(1),
-  identity: Schema.Struct({
-    handle: Schema.String,
-    baseUrl: Schema.String,
-    count: Schema.Number,
-    withReplies: Schema.Boolean,
-  }),
-  nextPage: Schema.Number,
+  identity: ProbeIdentitySchema,
+  nextPage: Schema.Finite,
   nextCursor: Schema.NullOr(Schema.String),
   seenCursors: Schema.Array(Schema.String),
   seenTweetIds: Schema.Array(Schema.String),
@@ -178,7 +182,7 @@ export async function runTimelineProbe(
   options: ProbeOptions,
 ): Promise<ProbeReport> {
   return Effect.runPromise(
-    Effect.provide(runTimelineProbeEffect(options), Layer.succeed(FxTwitter, client)),
+    Effect.provideService(runTimelineProbeEffect(options), FxTwitter, client),
   );
 }
 
@@ -191,7 +195,7 @@ export const runTimelineProbeEffect = Effect.fn("probe.runTimelineProbe")(functi
   const checkpointPath = join(options.outputDirectory, "checkpoint.json");
   const reportPath = join(options.outputDirectory, "report.json");
   const loaded = yield* loadCheckpoint(checkpointPath);
-  const checkpoint = loaded ?? newCheckpoint(options);
+  const checkpoint = loaded ?? newCheckpoint(options, DateTime.formatIso(yield* DateTime.now));
   yield* assertCheckpointMatches(checkpoint, options);
 
   if (checkpoint.completed) return checkpoint.report;
@@ -217,7 +221,7 @@ export const runTimelineProbeEffect = Effect.fn("probe.runTimelineProbe")(functi
 
     if (response.page === null) {
       checkpoint.report.stopReason = "no-content";
-      checkpoint.report.updatedAt = new Date().toISOString();
+      checkpoint.report.updatedAt = DateTime.formatIso(yield* DateTime.now);
       checkpoint.completed = true;
       yield* persist(checkpointPath, reportPath, checkpoint);
       break;
@@ -240,7 +244,7 @@ export const runTimelineProbeEffect = Effect.fn("probe.runTimelineProbe")(functi
     } else {
       checkpoint.report.stopReason = "page-limit";
     }
-    checkpoint.report.updatedAt = new Date().toISOString();
+    checkpoint.report.updatedAt = DateTime.formatIso(yield* DateTime.now);
     yield* persist(checkpointPath, reportPath, checkpoint);
 
     if (checkpoint.completed) break;
@@ -414,8 +418,7 @@ function mergePageReport(report: ProbeReport, page: PageReport): void {
   }
 }
 
-function newCheckpoint(options: ProbeOptions): ProbeCheckpoint {
-  const now = new Date().toISOString();
+function newCheckpoint(options: ProbeOptions, now: string): ProbeCheckpoint {
   return {
     version: CHECKPOINT_VERSION,
     identity: {
@@ -483,13 +486,14 @@ const assertCheckpointMatches = Effect.fn("probe.assertCheckpointMatches")(funct
   checkpoint: ProbeCheckpoint,
   options: ProbeOptions,
 ) {
-  const expected = JSON.stringify({
+  const expected = yield* Schema.encodeEffect(ProbeIdentityJson)({
     handle: options.handle,
     baseUrl: options.baseUrl,
     count: options.count,
     withReplies: options.withReplies,
-  });
-  if (JSON.stringify(checkpoint.identity) !== expected) {
+  }).pipe(Effect.orDie);
+  const actual = yield* Schema.encodeEffect(ProbeIdentityJson)(checkpoint.identity).pipe(Effect.orDie);
+  if (actual !== expected) {
     return yield* new ProbeCheckpointError({
       message: "Existing checkpoint options do not match this run. Choose another --out directory.",
       path: options.outputDirectory,

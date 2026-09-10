@@ -29,53 +29,36 @@ export const FxTwitterTimelineStatusSchema = Schema.Struct({
   type: Schema.optional(Schema.String),
   id: Schema.optional(Schema.String),
   text: Schema.optional(Schema.String),
-  author: Schema.optional(
-    Schema.NullOr(
-      Schema.Struct({
-        id: Schema.optional(Schema.String),
-        screen_name: Schema.optional(Schema.String),
-        name: Schema.optional(Schema.String),
-        followers: Schema.optional(Schema.Number),
-        following: Schema.optional(Schema.Number),
-        joined: Schema.optional(Schema.Json),
-        verification: Schema.optional(
-          Schema.NullOr(Schema.Struct({ verified: Schema.optional(Schema.Boolean) })),
-        ),
-      }),
+  author: Schema.Struct({
+    id: Schema.optional(Schema.String),
+    screen_name: Schema.optional(Schema.String),
+    name: Schema.optional(Schema.String),
+    followers: Schema.optional(Schema.Finite),
+    following: Schema.optional(Schema.Finite),
+    joined: Schema.optional(Schema.Json),
+    verification: Schema.Struct({ verified: Schema.optional(Schema.Boolean) }).pipe(
+      Schema.NullOr,
+      Schema.optional,
     ),
-  ),
+  }).pipe(Schema.NullOr, Schema.optional),
   created_timestamp: Schema.optional(Schema.Json),
   created_at: Schema.optional(Schema.String),
-  likes: Schema.optional(Schema.Number),
-  reposts: Schema.optional(Schema.Number),
-  quotes: Schema.optional(Schema.Number),
-  replies: Schema.optional(Schema.Number),
+  likes: Schema.optional(Schema.Finite),
+  reposts: Schema.optional(Schema.Finite),
+  quotes: Schema.optional(Schema.Finite),
+  replies: Schema.optional(Schema.Finite),
   reposted_by: Schema.optional(Schema.Json),
   quote: Schema.optional(Schema.Json),
-  replying_to: Schema.optional(
-    Schema.NullOr(
-      Schema.Struct({
-        screen_name: Schema.optional(Schema.String),
-        status: Schema.optional(Schema.String),
-      }),
-    ),
-  ),
-  media: Schema.optional(
-    Schema.NullOr(
-      Schema.Struct({
-        all: Schema.optional(
-          Schema.NullOr(
-            Schema.Array(
-              Schema.Struct({
-                type: Schema.optional(Schema.String),
-                url: Schema.optional(Schema.String),
-              }),
-            ),
-          ),
-        ),
-      }),
-    ),
-  ),
+  replying_to: Schema.Struct({
+    screen_name: Schema.optional(Schema.String),
+    status: Schema.optional(Schema.String),
+  }).pipe(Schema.NullOr, Schema.optional),
+  media: Schema.Struct({
+    all: Schema.Struct({
+      type: Schema.optional(Schema.String),
+      url: Schema.optional(Schema.String),
+    }).pipe(Schema.Array, Schema.NullOr, Schema.optional),
+  }).pipe(Schema.NullOr, Schema.optional),
 });
 export type FxTwitterTimelineStatus = typeof FxTwitterTimelineStatusSchema.Type;
 
@@ -157,7 +140,9 @@ export type PilotClient = TimelineClient & ProfileClient;
 /** Dependency-injection seam for the acquisition client. Only introduced where
  * it helps tests: layers let specs swap a fake transport (and TestClock) with
  * `Effect.provide`, instead of threading options through every call site. */
-export class FxTwitter extends Context.Service<FxTwitter, PilotClient>()("FxTwitter") {}
+export class FxTwitter extends Context.Service<FxTwitter, PilotClient>()(
+  "xearch/apps/collector/src/acquisition/fxtwitter",
+) {}
 
 /** Production layer: a real client from options. */
 export function FxTwitterLive(options: FxTwitterClientOptions = {}): Layer.Layer<FxTwitter> {
@@ -201,7 +186,7 @@ interface RawResponse {
 }
 
 const TimelinePageSchema = Schema.Struct({
-  code: Schema.Number,
+  code: Schema.Finite,
   results: Schema.Array(Schema.Json),
   cursor: Schema.Struct({
     top: Schema.NullOr(Schema.String),
@@ -215,8 +200,8 @@ export const FxTwitterProfileEnvelopeSchema = Schema.Struct({
     screen_name: Schema.String,
     name: Schema.optional(Schema.String),
     protected: Schema.optional(Schema.Boolean),
-    followers: Schema.optional(Schema.Number),
-    statuses: Schema.optional(Schema.Number),
+    followers: Schema.optional(Schema.Finite),
+    statuses: Schema.optional(Schema.Finite),
   }),
 });
 export type FxTwitterProfileEnvelope = typeof FxTwitterProfileEnvelopeSchema.Type;
@@ -405,7 +390,7 @@ const requestRaw = Effect.fn("FxTwitter.requestRaw")(function* (
             status: response.status,
             responseBody: bodyText,
             kind: FxTwitterErrorKind.Http,
-            retryDelay: retryDelayMs(response, attempt, config.retryBaseDelayMs),
+            retryDelay: retryDelayMs(response, attempt, config.retryBaseDelayMs, config.now()),
           });
         }
         return {
@@ -494,14 +479,14 @@ function isRetryableStatus(status: number): boolean {
   return status === 429 || status >= 500;
 }
 
-function retryDelayMs(response: Response, attempt: number, baseDelayMs: number): number {
+function retryDelayMs(response: Response, attempt: number, baseDelayMs: number, now: number): number {
   const retryAfter = response.headers.get("retry-after");
   if (retryAfter !== null) {
     const seconds = Number(retryAfter);
     if (Number.isFinite(seconds) && seconds >= 0) return Math.min(seconds * 1_000, 60_000);
 
     const date = Date.parse(retryAfter);
-    if (Number.isFinite(date)) return Math.min(Math.max(0, date - Date.now()), 60_000);
+    if (Number.isFinite(date)) return Math.min(Math.max(0, date - now), 60_000);
   }
   return exponentialDelayMs(attempt, baseDelayMs);
 }

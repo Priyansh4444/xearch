@@ -3,6 +3,7 @@
 // live requests.
 
 import { join } from "node:path";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import { readJsonEffect } from "../contracts/fs.ts";
 import { AccountState, AcquisitionStatus } from "../contracts/run-state.ts";
@@ -75,7 +76,7 @@ export const buildReportEffect = Effect.fn("buildReportEffect")(function* (
   manifest: Manifest,
   counts: NormalizationCounts | null,
 ) {
-  const now = Date.now();
+  const now = yield* Clock.currentTimeMillis;
   const latencies: number[] = [];
   const rowsPerPage: number[] = [];
   let attempts = 0;

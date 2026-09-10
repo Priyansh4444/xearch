@@ -89,7 +89,7 @@ export async function acquire(options: AcquireOptions): Promise<Manifest> {
 
 /** Default pacing sleep, hoisted so every acquire call doesn't mint a closure. */
 function defaultSleep(delayMs: number): Promise<void> {
-  return new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+  return Effect.runPromise(Effect.sleep(delayMs));
 }
 
 export const acquireEffect = Effect.fn("acquireEffect")(function* (
@@ -114,10 +114,7 @@ export const acquireEffect = Effect.fn("acquireEffect")(function* (
   let firstRequest = true;
   const pace = Effect.fn("acquireEffect.pace")(function* (): Effect.fn.Return<void> {
     if (!firstRequest && config.delayMs > 0) {
-      yield* Effect.tryPromise({
-        try: () => sleep(config.delayMs),
-        catch: (cause) => new Error(String(cause)),
-      }).pipe(Effect.orDie);
+      yield* Effect.promise(() => sleep(config.delayMs));
     }
     firstRequest = false;
     requests += 1;

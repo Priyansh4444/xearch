@@ -215,19 +215,21 @@ describe("Effect acquisition", () => {
     let calls = 0;
     let aborted = false;
     const client = makeFxTwitterClient({
-      fetchImpl: async (_url, init) => {
+      fetchImpl: (_url, init) => {
         calls += 1;
-        return new Promise<Response>((_resolve, reject) => {
-          init?.signal?.addEventListener(
-            "abort",
-            () => {
-              aborted = true;
-              reject(new Error("aborted"));
-            },
-            { once: true },
-          );
-          queueMicrotask(() => controller.abort());
-        });
+        return Effect.runPromise(
+          Effect.callback<Response>((resume) => {
+            init?.signal?.addEventListener(
+              "abort",
+              () => {
+                aborted = true;
+                resume(Effect.die(new Error("aborted")));
+              },
+              { once: true },
+            );
+            queueMicrotask(() => controller.abort());
+          }),
+        );
       },
     });
     // Plain `it`: runtime-level interruption comes from `runPromiseExit`'s
@@ -285,7 +287,11 @@ describe("Effect acquisition", () => {
             }),
       );
     });
-    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    await Effect.runPromise(
+      Effect.callback<void>((resume) => {
+        server.listen(0, "127.0.0.1", () => resume(Effect.void));
+      }),
+    );
     try {
       const address = server.address();
       if (address === null || typeof address === "string") throw new Error("Expected TCP address");
@@ -297,8 +303,13 @@ describe("Effect acquisition", () => {
       expect((await client.fetchTimelinePage(request)).attempts).toBe(2);
     } finally {
       server.closeAllConnections();
-      await new Promise<void>((resolve, reject) =>
-        server.close((error) => (error ? reject(error) : resolve())),
+      await Effect.runPromise(
+        Effect.callback<void>((resume) => {
+          server.close((error) => {
+            if (error) resume(Effect.die(error));
+            else resume(Effect.void);
+          });
+        }),
       );
     }
   });

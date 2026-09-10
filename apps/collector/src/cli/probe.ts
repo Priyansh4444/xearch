@@ -1,5 +1,9 @@
 import { resolve } from "node:path";
+import * as Console from "effect/Console";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import { FxTwitterLive } from "../acquisition/fxtwitter.ts";
 import { runTimelineProbeEffect, type ProbeOptions, type ProbeReport } from "../probe/run.ts";
 
@@ -25,7 +29,7 @@ const main = Effect.fn("cli.probe")(function* () {
       retries: options.retries,
     }),
   );
-  printSummary(report, options.outputDirectory);
+  yield* printSummary(report, options.outputDirectory);
 });
 
 interface CliOptions extends ProbeOptions {
@@ -95,35 +99,48 @@ function integer(value: string, flag: string): number {
   return parsed;
 }
 
-function printSummary(report: ProbeReport, outputDirectory: string): void {
+const printSummary = Effect.fn("cli.printSummary")(function* (
+  report: ProbeReport,
+  outputDirectory: string,
+): Effect.fn.Return<void> {
   const oldest =
-    report.oldestCreatedAt === null ? "n/a" : new Date(report.oldestCreatedAt).toISOString();
+    report.oldestCreatedAt === null
+      ? "n/a"
+      : DateTime.make(report.oldestCreatedAt).pipe(Option.getOrThrow, DateTime.formatIso);
   const newest =
-    report.newestCreatedAt === null ? "n/a" : new Date(report.newestCreatedAt).toISOString();
+    report.newestCreatedAt === null
+      ? "n/a"
+      : DateTime.make(report.newestCreatedAt).pipe(Option.getOrThrow, DateTime.formatIso);
   const missing = Object.entries(report.missingRequiredFields);
 
-  console.log(`FxTwitter timeline probe: @${report.handle}`);
-  console.log(`pages: ${report.pagesCompleted}`);
-  console.log(
+  yield* Console.log(`FxTwitter timeline probe: @${report.handle}`);
+  yield* Console.log(`pages: ${report.pagesCompleted}`);
+  yield* Console.log(
     `results: ${report.totalResults} (${report.uniqueTweets} unique, ${report.duplicateTweets} duplicates)`,
   );
-  console.log(`range: ${oldest} .. ${newest}`);
-  console.log(`stop: ${report.stopReason}`);
-  console.log(
-    `missing required fields: ${missing.length === 0 ? "none" : JSON.stringify(report.missingRequiredFields)}`,
-  );
-  console.log(`report: ${resolve(outputDirectory, "report.json")}`);
-}
+  yield* Console.log(`range: ${oldest} .. ${newest}`);
+  yield* Console.log(`stop: ${report.stopReason}`);
+  const missingFields =
+    missing.length === 0
+      ? "none"
+      : yield* Schema.encodeEffect(
+          Schema.fromJsonString(Schema.Record(Schema.String, Schema.Finite)),
+        )(report.missingRequiredFields).pipe(Effect.orDie);
+  yield* Console.log(`missing required fields: ${missingFields}`);
+  yield* Console.log(`report: ${resolve(outputDirectory, "report.json")}`);
+});
 
 function usage(message: string): never {
-  console.error(message);
-  console.error(
-    "Usage: pnpm collect:probe <handle> [--pages 10] [--count 100] [--out directory] [--without-replies]",
+  Effect.runSync(Console.error(message));
+  Effect.runSync(
+    Console.error(
+      "Usage: pnpm collect:probe <handle> [--pages 10] [--count 100] [--out directory] [--without-replies]",
+    ),
   );
   process.exit(2);
 }
 
 Effect.runPromise(main()).catch((error: unknown) => {
-  console.error(error instanceof Error ? error.message : error);
+  Effect.runSync(Console.error(error instanceof Error ? error.message : error));
   process.exitCode = 1;
 });

@@ -3,6 +3,7 @@ import { mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promi
 import { dirname, join, relative } from "node:path";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 
 export class FsError extends Data.TaggedError("FsError")<{
   readonly message: string;
@@ -43,7 +44,10 @@ export const writeJsonAtomicEffect = Effect.fn("writeJsonAtomicEffect")(function
   path: string,
   value: unknown,
 ): Effect.fn.Return<void, FsError> {
-  return yield* writeTextAtomicEffect(path, `${JSON.stringify(value, null, 2)}\n`);
+  const body = yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown, { space: 2 }))(value).pipe(
+    Effect.orDie,
+  );
+  return yield* writeTextAtomicEffect(path, `${body}\n`);
 });
 
 export const readTextEffect = Effect.fn("readTextEffect")(function* (
@@ -59,10 +63,9 @@ export const readJsonEffect = Effect.fn("readJsonEffect")(function* (
   path: string,
 ): Effect.fn.Return<unknown, FsError> {
   const text = yield* readTextEffect(path);
-  return yield* Effect.try({
-    try: () => JSON.parse(text) as unknown,
-    catch: (cause) => fsFail(path, "read", `failed to parse JSON at ${path}`, cause),
-  });
+  return yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown))(text).pipe(
+    Effect.mapError((cause) => fsFail(path, "read", `failed to parse JSON at ${path}`, cause)),
+  );
 });
 
 export const readJsonIfExistsEffect = Effect.fn("readJsonIfExistsEffect")(function* (

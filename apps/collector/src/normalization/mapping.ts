@@ -36,11 +36,11 @@ const ProviderAuthorSchema = Schema.Struct({
   id: Schema.optional(Schema.String),
   screen_name: Schema.optional(Schema.String),
   name: Schema.optional(Schema.String),
-  followers: Schema.optional(Schema.Number),
-  following: Schema.optional(Schema.Number),
-  statuses: Schema.optional(Schema.Number),
+  followers: Schema.optional(Schema.Finite),
+  following: Schema.optional(Schema.Finite),
+  statuses: Schema.optional(Schema.Finite),
   joined: Schema.optional(Schema.Unknown),
-  verification: Schema.optional(Schema.NullOr(ProviderVerificationSchema)),
+  verification: ProviderVerificationSchema.pipe(Schema.NullOr, Schema.optional),
   description: Schema.optional(Schema.String),
   avatar_url: Schema.optional(Schema.String),
   protected: Schema.optional(Schema.Boolean),
@@ -52,7 +52,7 @@ const ProviderMediaItemSchema = Schema.Struct({
 });
 
 const ProviderMediaSchema = Schema.Struct({
-  all: Schema.optional(Schema.NullOr(Schema.Array(ProviderMediaItemSchema))),
+  all: ProviderMediaItemSchema.pipe(Schema.Array, Schema.NullOr, Schema.optional),
 });
 
 const ProviderFacetSchema = Schema.Struct({
@@ -68,36 +68,29 @@ const ProviderStatusSchema = Schema.Struct({
   text: Schema.optional(Schema.String),
   created_timestamp: Schema.optional(Schema.Unknown),
   created_at: Schema.optional(Schema.String),
-  likes: Schema.optional(Schema.Number),
-  reposts: Schema.optional(Schema.Number),
-  quotes: Schema.optional(Schema.Number),
-  replies: Schema.optional(Schema.Number),
-  media: Schema.optional(Schema.NullOr(ProviderMediaSchema)),
-  author: Schema.optional(Schema.NullOr(ProviderAuthorSchema)),
-  quote: Schema.optional(Schema.NullOr(Schema.Record(Schema.String, Schema.Unknown))),
-  reposted_by: Schema.optional(Schema.NullOr(Schema.Record(Schema.String, Schema.Unknown))),
+  likes: Schema.optional(Schema.Finite),
+  reposts: Schema.optional(Schema.Finite),
+  quotes: Schema.optional(Schema.Finite),
+  replies: Schema.optional(Schema.Finite),
+  media: ProviderMediaSchema.pipe(Schema.NullOr, Schema.optional),
+  author: ProviderAuthorSchema.pipe(Schema.NullOr, Schema.optional),
+  quote: Schema.Record(Schema.String, Schema.Unknown).pipe(Schema.NullOr, Schema.optional),
+  reposted_by: Schema.Record(Schema.String, Schema.Unknown).pipe(Schema.NullOr, Schema.optional),
   lang: Schema.optional(Schema.String),
-  raw_text: Schema.optional(
-    Schema.NullOr(Schema.Struct({ facets: Schema.optional(Schema.Array(ProviderFacetSchema)) })),
+  raw_text: Schema.Struct({ facets: ProviderFacetSchema.pipe(Schema.Array, Schema.optional) }).pipe(
+    Schema.NullOr,
+    Schema.optional,
   ),
-  replying_to: Schema.optional(
-    Schema.NullOr(
-      Schema.Struct({
-        screen_name: Schema.optional(Schema.String),
-        status: Schema.optional(Schema.String),
-      }),
+  replying_to: Schema.Struct({
+    screen_name: Schema.optional(Schema.String),
+    status: Schema.optional(Schema.String),
+  }).pipe(Schema.NullOr, Schema.optional),
+  replying_to_status: Schema.Union([
+    Schema.String,
+    Schema.Array(
+      Schema.Union([Schema.String, Schema.Struct({ id: Schema.optional(Schema.String) })]),
     ),
-  ),
-  replying_to_status: Schema.optional(
-    Schema.NullOr(
-      Schema.Union([
-        Schema.String,
-        Schema.Array(
-          Schema.Union([Schema.String, Schema.Struct({ id: Schema.optional(Schema.String) })]),
-        ),
-      ]),
-    ),
-  ),
+  ]).pipe(Schema.NullOr, Schema.optional),
 });
 
 export type ProviderStatus = typeof ProviderStatusSchema.Type;

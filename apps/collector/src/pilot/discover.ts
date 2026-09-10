@@ -235,22 +235,19 @@ export async function resolveCandidates(
   pace: () => Promise<void>,
   log: (line: string) => void = () => undefined,
 ): Promise<void> {
-  return Effect.runPromise(resolveCandidatesEffect(candidates, client, pace, log));
+  return Effect.runPromise(resolveCandidatesEffect(candidates, client, Effect.promise(pace), log));
 }
 
 export const resolveCandidatesEffect = Effect.fn("resolveCandidatesEffect")(function* (
   candidates: DiscoveryCandidate[],
   client: PilotClient,
-  pace: () => Promise<void>,
+  pace: Effect.Effect<void>,
   log: (line: string) => void = () => undefined,
 ): Effect.fn.Return<void> {
   for (const candidate of candidates) {
     if (candidate.resolution !== DiscoveryResolution.Unresolved || candidate.handle === null)
       continue;
-    yield* Effect.tryPromise({
-      try: () => pace(),
-      catch: (cause) => new Error(String(cause)),
-    }).pipe(Effect.orDie);
+    yield* pace;
     const exit = yield* Effect.exit(client.fetchProfileEffect(candidate.handle));
     if (Exit.isFailure(exit)) {
       candidate.resolution = DiscoveryResolution.Unresolved;

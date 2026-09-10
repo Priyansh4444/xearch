@@ -59,7 +59,7 @@ const CoverageFloorSchema = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)).c
 const PilotAccountSchema = Schema.Struct({
   handle: Schema.String,
   /** Accept number only so the error can explain why string ids are required. */
-  expectedUserId: Schema.Union([Schema.String, Schema.Number]),
+  expectedUserId: Schema.Union([Schema.String, Schema.Finite]),
   cohort: CohortSchema,
 });
 
@@ -117,7 +117,7 @@ export const parsePilotConfigEffect = Effect.fn("parsePilotConfigEffect")(functi
   const seenIds = new Set<string>();
   for (const [index, entry] of config.accounts.entries()) {
     const handle = entry.handle.replace(/^@/, "");
-    if (Option.isNone(Schema.decodeUnknownOption(HandleSchema)(handle))) {
+    if (Option.isNone(Schema.decodeOption(HandleSchema)(handle))) {
       return yield* configFail(
         path,
         `accounts[${index}].handle is not a valid X handle: ${handle}`,
@@ -130,7 +130,7 @@ export const parsePilotConfigEffect = Effect.fn("parsePilotConfigEffect")(functi
       );
     }
     const expectedUserId = entry.expectedUserId;
-    if (Option.isNone(Schema.decodeUnknownOption(NumericUserIdSchema)(expectedUserId))) {
+    if (Option.isNone(Schema.decodeOption(NumericUserIdSchema)(expectedUserId))) {
       return yield* configFail(
         path,
         `accounts[${index}].expectedUserId must be a numeric string (ids exceed 2^53)`,
@@ -190,15 +190,16 @@ export const loadPilotConfigEffect = Effect.fn("loadPilotConfigEffect")(function
         cause,
       }),
   });
-  const parsed: unknown = yield* Effect.try({
-    try: () => JSON.parse(text) as unknown,
-    catch: (cause) =>
-      new PilotConfigError({
-        message: `failed to parse pilot config ${path}`,
-        path,
-        cause,
-      }),
-  });
+  const parsed: unknown = yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown))(text).pipe(
+    Effect.mapError(
+      (cause) =>
+        new PilotConfigError({
+          message: `failed to parse pilot config ${path}`,
+          path,
+          cause,
+        }),
+    ),
+  );
   return yield* parsePilotConfigEffect(parsed, path);
 });
 

@@ -55,10 +55,6 @@
     {
       "files": ["apps/collector/src/cli/**/*.ts"],
       "rules": {
-        "effecttsgo/global-console": "off",
-        "effecttsgo/global-console-in-effect": "off",
-        "effecttsgo/global-date": "off",
-        "effecttsgo/global-date-in-effect": "off",
         "effecttsgo/strict-effect-provide": "off"
       }
     },
