@@ -1,11 +1,15 @@
 {
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "$schema": "./node_modules/@effect/tsgo/oxlint-schema.json",
+  "extends": ["./node_modules/@effect/tsgo/oxlint-presets/recommended.json"],
   "plugins": ["typescript", "unicorn", "oxc", "vitest", "react"],
   "categories": {
     "correctness": "error"
   },
   "rules": {
-    "vitest/no-conditional-expect": "off"
+    "vitest/no-conditional-expect": "off",
+    "effecttsgo/async-function": "off",
+    "effecttsgo/node-builtin-import": "off",
+    "effecttsgo/schema-number": "off"
   },
   "overrides": [
     {
@@ -19,6 +23,37 @@
       "files": ["apps/collector/tests/acquisition.test.ts"],
       "rules": {
         "vitest/no-standalone-expect": "off"
+      }
+    },
+    {
+      "files": ["apps/posthog-export/*.test.mjs"],
+      "rules": {
+        "typescript/no-floating-promises": "off"
+      }
+    },
+    {
+      "files": [
+        "convex/**/*.ts",
+        "tests/**/*.ts",
+        "apps/web/**/*.ts",
+        "apps/web/**/*.tsx",
+        "apps/dashboard/**/*.ts",
+        "apps/posthog-export/**/*.mjs"
+      ],
+      "rules": {
+        "effecttsgo/global-console": "off",
+        "effecttsgo/global-date": "off",
+        "effecttsgo/new-promise": "off",
+        "effecttsgo/process-env": "off"
+      }
+    },
+    {
+      "files": ["apps/collector/src/cli/**/*.ts"],
+      "rules": {
+        "effecttsgo/global-console": "off",
+        "effecttsgo/global-console-in-effect": "off",
+        "effecttsgo/global-date": "off",
+        "effecttsgo/global-date-in-effect": "off"
       }
     }
   ]

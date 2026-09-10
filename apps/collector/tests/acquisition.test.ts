@@ -258,10 +258,13 @@ describe("Effect acquisition", () => {
 
   it("preserves profile-not-found and empty-timeline outcomes", async () => {
     const client = makeFxTwitterClient({
-      fetchImpl: async (url) =>
-        String(url).includes("/statuses")
+      fetchImpl: async (input) => {
+        const href =
+          typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        return href.includes("/statuses")
           ? new Response(null, { status: 204 })
-          : new Response("missing", { status: 404 }),
+          : new Response("missing", { status: 404 });
+      },
     });
     expect((await client.fetchProfile("missing")).profile).toBeNull();
     expect((await client.fetchTimelinePage(request)).page).toBeNull();

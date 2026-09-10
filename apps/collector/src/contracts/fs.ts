@@ -67,7 +67,7 @@ export const readJsonEffect = Effect.fn("readJsonEffect")(function* (
 
 export const readJsonIfExistsEffect = Effect.fn("readJsonIfExistsEffect")(function* (
   path: string,
-): Effect.fn.Return<unknown | null, FsError> {
+): Effect.fn.Return<unknown, FsError> {
   return yield* Effect.catch(readJsonEffect(path), (error) => {
     if (isNodeError(error.cause) && error.cause.code === "ENOENT") {
       return Effect.succeed(null);

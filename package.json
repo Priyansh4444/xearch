@@ -18,6 +18,7 @@
     "format": "oxfmt",
     "format:check": "oxfmt --check",
     "codegen": "convex codegen",
+    "prepare": "effect-tsgo patch --no-typescript --oxlint",
     "typecheck": "tsc --noEmit && pnpm --filter xearch-web typecheck",
     "web": "pnpm --filter xearch-web dev",
     "doctor": "react-doctor --no-telemetry --no-supply-chain"
@@ -27,11 +28,13 @@
     "effect": "4.0.0-rc.112"
   },
   "devDependencies": {
+    "@effect/tsgo": "^0.44.0",
     "@types/node": "^26.4.1",
     "convex-test": "^0.0.56",
     "jsdom": "^30.0.1",
     "oxfmt": "0.67.0",
     "oxlint": "1.82.0",
+    "oxlint-tsgolint": "^7.0.2001",
     "react-doctor": "^0.9.13",
     "typescript": "^7.0.2",
     "vitest": "^5.0.0"
