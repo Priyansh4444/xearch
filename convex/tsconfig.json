@@ -11,6 +11,8 @@
     "jsx": "react-jsx",
     "skipLibCheck": true,
     "allowSyntheticDefaultImports": true,
+    /* process.env is provided by the Convex runtime; only the types come from node */
+    "types": ["node"],
 
     /* These compiler options are required by Convex */
     "target": "ESNext",

@@ -21,6 +21,7 @@
     "apps/**/*.ts",
     "config/**/*.json",
     "convex/**/*.ts",
+    "scripts/**/*.ts",
     "tests/**/*.ts",
     "shared/**/*.json"
   ],

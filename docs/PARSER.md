@@ -55,7 +55,12 @@ into a slot); it may never contradict an operator Tier A parsed.
 |---|---|---|---|---|
 | A: operators | raw string | any slot the operator names | touch bare terms beyond tokenizing | ~0 ms |
 | B: lexicons | A's leftover tokens | entities→authorId, dates, media, aspects, glue-strip, intent | override A; guess low-confidence entities (P1 rule: 10× authority dominance) | ~1 ms + ≤3 index point-reads |
-| C: LLM | raw string + A/B parse + lexicon version | any empty slot; should[]; paraphrases; HyDE | override A operators; invent filter values not in the text | async, cached forever |
+| C: LLM | raw string + A/B parse + lexicon version | any empty slot; should[]; paraphrases; HyDE | override A operators; invent filter values not in the text | async, cached by interpretation policy |
+
+Authorship needs evidence. `height of theo` is a question *about* Theo, so Tier B
+keeps `must=[theo]`, moves `height` to `should` with `aspects=[~spec]`, and leaves
+`filters.authorId=null`. `what did theo say about terminals` and `from:@theo
+terminals` are requests *by* Theo and may resolve the author filter.
 
 ## 3. Tier C request — the exact artifact
 
@@ -139,8 +144,12 @@ structural tokens); temperature 0; max ~350 output tokens.
   interrogative shape; no cached IR for `normalizedRaw`. Plus the manual trigger:
   user taps "didn't find it?".
 - **Cache:** `queryCache[normalizedRaw] → {ir, expansions, hyde, source, lexiconVersion}`.
-  Evict/refresh when `lexiconVersion` changes or on bad-parse report. Expected hit
-  economics: head phrasings converge fast; the long tail is exactly what Tier C is for.
+  Search ignores a row when `lexiconVersion` changes and deletes it on a bad-parse
+  report. The cache stores interpretation, never results, so live posts and daily
+  engagement updates do not invalidate it. Entity-bearing rows need a separate
+  staleness policy before broad live indexing; see [CACHE-STRATEGIES.md](CACHE-STRATEGIES.md).
+  Expected hit economics: head phrasings converge fast; the long tail is exactly
+  what Tier C is for.
 - **Refinement UX:** SERP renders from A+B parse immediately with
   `interpretation: "literal"`; when C lands, results re-query with the refined IR and
   the UI shows "refined: ‹chips of what changed›" — auditable, undoable (tap a chip to

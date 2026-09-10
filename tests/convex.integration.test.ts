@@ -173,6 +173,24 @@ describe("search serving flow", () => {
     expect(widened.results.map((row) => row.tweetId)).toContain("tree-only");
   });
 
+  test("a rare single-term query never widens into its co-occurring topic", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(
+      internal.ingest.ingestBatch,
+      batch([
+        tweet("exact-1", "pronsh theo", ["pronsh", "theo"]),
+        tweet("exact-2", "pronsh theo again", ["pronsh", "theo"]),
+        // Co-occurring vocabulary the old L3 PRF step mined from the two exact
+        // hits and used to answer with unrelated @theo posts instead.
+        ...Array.from({ length: 5 }, (_, i) => tweet(`theo-${i}`, "theo posts", ["theo"])),
+      ]),
+    );
+    const result = await t.query(api.search.search, { raw: "pronsh", sort: "top" });
+    expect(result.ladder).toBe("L0");
+    expect(result.error).toBeNull();
+    expect(result.results.map((row) => row.tweetId).sort()).toEqual(["exact-1", "exact-2"]);
+  });
+
   test("exact hits keep their provenance after expansion", async () => {
     const t = convexTest(schema, modules);
     await t.mutation(
@@ -330,5 +348,29 @@ describe("trusted feedback", () => {
     await expect(voter.mutation(api.feedback.vote, { ...args, vote: 1 })).rejects.toThrow("limit");
     // Idempotent retry is allowed even after reaching the limit.
     await voter.mutation(api.feedback.vote, { ...args, vote: -1 });
+  });
+
+  test("bad-query reports require identity, normalize and deduplicate", async () => {
+    const t = convexTest(schema, modules);
+    const args = {
+      raw: "  React Compiler  ",
+      lane: "baseline" as const,
+      reason: "bad-results" as const,
+    };
+    await expect(t.mutation(api.feedback.reportQuery, args)).rejects.toThrow("Sign in");
+    const voter = t.withIdentity({ subject: "reporter" });
+    expect(await voter.mutation(api.feedback.reportQuery, args)).toEqual({
+      status: "recorded",
+    });
+    expect(
+      await voter.mutation(api.feedback.reportQuery, { ...args, raw: "react compiler" }),
+    ).toEqual({ status: "already-reported" });
+    const rows = await t.run((ctx) => ctx.db.query("queryReports").collect());
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      normalizedRaw: "react compiler",
+      lane: "baseline",
+      reason: "bad-results",
+    });
   });
 });

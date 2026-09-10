@@ -41,18 +41,30 @@ describe("escalate", () => {
   });
 
   test("L2 -> L3 only with mined PRF terms, then stops", () => {
-    const l2 = escalate(
-      planL0(xqWith({ must: [t("linux")] }), dfs),
-      0,
-      xqWith({ must: [t("linux")] }),
-      dfs,
-    )!;
+    const twoTerms = xqWith({ must: [t("linux"), t("box")] });
+    const l1 = escalate(planL0(twoTerms, dfs), 0, twoTerms, dfs)!;
+    const l2 = escalate(l1, 0, twoTerms, dfs)!;
     expect(l2.level).toBe("L2");
-    expect(escalate(l2, 0, xqWith({ must: [t("linux")] }), dfs)).toBeNull();
-    const l3 = escalate(l2, 0, xqWith({ must: [t("linux")] }), dfs, [t("kernel")])!;
+    expect(escalate(l2, 0, twoTerms, dfs)).toBeNull();
+    const l3 = escalate(l2, 0, twoTerms, dfs, [t("kernel")])!;
     expect(l3.level).toBe("L3");
     expect(l3.unions.map((u) => u.term)).toContain("kernel");
-    expect(escalate(l3, 0, xqWith({ must: [t("linux")] }), dfs, [t("kernel")])).toBeNull();
+    expect(escalate(l3, 0, twoTerms, dfs, [t("kernel")])).toBeNull();
+  });
+
+  test("a single-term query never widens: its exact result set is complete", () => {
+    const single = xqWith({ must: [t("linux")] });
+    // Below MIN_RESULTS the ladder used to union the same term and then mine
+    // PRF terms, answering a different question with the co-occurring topic.
+    expect(escalate(planL0(single, dfs), 0, single, dfs)).toBeNull();
+    expect(escalate(planL0(single, dfs), 0, single, dfs, [t("kernel")])).toBeNull();
+  });
+
+  test("soft terms count as relaxable, so a weak-aspect query still unions", () => {
+    const soft = xqWith({ must: [t("linux")], should: [t("cheap")] });
+    const l2 = escalate(planL0(soft, dfs), 0, soft, dfs)!;
+    expect(l2.level).toBe("L2");
+    expect(l2.unions.map((u) => u.term).sort()).toEqual(["cheap", "linux"]);
   });
 });
 
@@ -303,6 +315,30 @@ describe("rerank permutations", () => {
     for (const order of [cands, [...cands].reverse()]) {
       expect(rerank(emptyXQuery(), order, stats, NOW)[0]!.tweetId).toBe("viral");
     }
+  });
+
+  it("records the exact-versus-viral risk exposed by the production sample", () => {
+    const query = xqWith({ must: [t("linux"), t("box")] });
+    const exact: Candidate = {
+      ...base,
+      tweetId: "exact-quiet",
+      tf: new Map([
+        [t("linux"), 1],
+        [t("box"), 1],
+      ]),
+    };
+    const partialViral: Candidate = {
+      ...base,
+      tweetId: "partial-viral",
+      tf: new Map([[t("linux"), 1]]),
+      likeCount: 10_000,
+      matchedVia: "L2",
+    };
+    const ranked = rerank(query, [exact, partialViral], stats, NOW);
+    // This is intentionally a characterization, not approval. Changing the
+    // weights or imposing an exact-first partition requires the judged
+    // Recall@20/nDCG set tracked in TODO.md.
+    expect(ranked.map((row) => row.tweetId)).toEqual(["partial-viral", "exact-quiet"]);
   });
 
   it.each([

@@ -132,6 +132,15 @@ export default defineSchema({
     writes: v.number(),
   }).index("by_voter", ["voterId"]),
 
+  queryReports: defineTable({
+    reportKey: v.string(), // lane + normalized raw query
+    normalizedRaw: v.string(),
+    lane: v.union(v.literal("baseline"), v.literal("xearch")),
+    reason: v.union(v.literal("bad-results"), v.literal("no-results"), v.literal("error")),
+    voterId: v.string(),
+    createdAt: v.number(),
+  }).index("by_voter_query", ["voterId", "reportKey"]),
+
   // AI answer mode output (DESIGN §10). Single writer: the answers action.
   answers: defineTable({
     queryKey: v.string(),

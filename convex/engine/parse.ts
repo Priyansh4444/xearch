@@ -125,6 +125,14 @@ type XQueryWithPending = XQuery & {
 };
 
 /**
+ * Text Tier A left after consuming operators, phrases and negations. The baseline
+ * lane tokenizes it with stopwords kept so an all-stopword query stays searchable.
+ */
+export function residualText(xq: XQuery): string {
+  return (xq as XQueryWithPending).rawRest ?? "";
+}
+
+/**
  * Tier B: lexicon annotator. Consumes Tier A's leftovers; only refines.
  * Order matters and is part of the contract:
  *   1. resolve pending from:-handle -> authorId (hard filter; error surface if unknown)
@@ -274,18 +282,31 @@ export async function tierB(
   // "vs" are aspect signals ("~compare") even though they never gate retrieval.
   for (const t of tokensForAspects) if (GLUE.has(t)) consume(t, "glue");
 
-  // 3. Entity linking over the remaining tokens — bounded to two probes; the
-  //    dominance + common-word rules live inside deps (RISKS P1). Only attempted
-  //    with person-shaped evidence (a question, e.g. "what did X say", or a
-  //    single-token query): a handle-colliding word inside a topic query
-  //    ("typescript tips") must never hijack retrieval into one author's timeline.
-  const personShaped = xq.intent === Intent.Question || xq.must.length === 1;
-  if (xq.filters.authorId === null && personShaped) {
-    for (const token of xq.must.slice(0, 2)) {
+  // 3. An author filter means BY that account, not ABOUT it. A question alone
+  // is not authorship evidence: "height of theo" must keep Theo as its subject.
+  // Resolve only the speaker in explicit speech attribution, or a bare
+  // single-token topic query. Never substitute another author for unknown from:.
+  // The dominance + common-word rules still live inside deps (RISKS P1).
+  const speaker = rawRest.match(/^\s*what\s+(?:did|does|do)\s+(@?[\p{L}\p{N}_]+)\s+say\b/iu)?.[1];
+  const speakerTokens = speaker === undefined ? [] : tokenize(speaker).tokens;
+  const bareAccount = /^\s*[\p{L}\p{N}_]+\s*$/u.test(rawRest);
+  const entityCandidates =
+    speaker !== undefined
+      ? xq.must
+          .filter((token) => !token.startsWith("@") && speakerTokens.includes(token))
+          .slice(0, 1)
+      : xq.intent === Intent.Topic && xq.must.length === 1 && bareAccount
+        ? xq.must
+        : [];
+  if (px.pendingFromHandle == null && xq.filters.authorId === null) {
+    for (const token of entityCandidates) {
       const hit = await deps.resolveEntity([token]);
       if (hit !== null) {
         xq.filters.authorId = hit.authorId;
-        xq.must = xq.must.filter((t) => t !== token);
+        // Mentions dual-emit @handle + handle; both identify the same speaker.
+        xq.must = xq.must.filter((t) =>
+          speaker === undefined ? t !== token : !speakerTokens.includes(t),
+        );
         // A question stays a question; otherwise this is a person(+topic) query.
         if (xq.intent === Intent.Topic) {
           xq.intent = xq.must.length > 0 ? Intent.PersonTopic : Intent.Person;
@@ -507,7 +528,13 @@ function hasContentToken(tokens: Term[], weak: string[]): boolean {
 
 /** Interrogative-shape detector (question intent, PARSER golden rows). */
 export function detectQuestionIntent(raw: string, tokens: string[]): Intent | null {
-  const first = tokens[0];
+  // Glue stripping removes interrogatives from `tokens`, so inspect the raw
+  // opener first and use the token list only for direct helper callers.
+  const first =
+    raw
+      .trimStart()
+      .match(/^[\p{L}\p{N}_]+/u)?.[0]
+      ?.toLowerCase() ?? tokens[0];
   const interrogatives = ["what", "who", "why", "how", "when", "where", "which"];
   if (first !== undefined && interrogatives.includes(first)) return Intent.Question;
   if (raw.trimEnd().endsWith("?")) return Intent.Question;
