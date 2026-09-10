@@ -353,7 +353,7 @@ async function loadRun(
 
 // ---------- HTML ----------
 
-function esc(value: unknown): string {
+function esc(value: string | number | null | undefined): string {
   return String(value ?? "").replace(/[&<>"']/g, (char) => {
     switch (char) {
       case "&":

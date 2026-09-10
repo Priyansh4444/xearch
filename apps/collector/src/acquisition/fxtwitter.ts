@@ -23,7 +23,7 @@ export interface FxTwitterTimelinePage {
   cursor: FxTwitterCursor;
 }
 
-export type FxTwitterJson = Schema.Schema.Type<typeof Schema.Json>;
+export type FxTwitterJson = Schema.Json;
 
 export const FxTwitterTimelineStatusSchema = Schema.Struct({
   type: Schema.optional(Schema.String),
@@ -77,7 +77,7 @@ export const FxTwitterTimelineStatusSchema = Schema.Struct({
     ),
   ),
 });
-export type FxTwitterTimelineStatus = Schema.Schema.Type<typeof FxTwitterTimelineStatusSchema>;
+export type FxTwitterTimelineStatus = typeof FxTwitterTimelineStatusSchema.Type;
 
 export function parseTimelineStatus(value: unknown): FxTwitterTimelineStatus | null {
   const parsed = Schema.decodeUnknownOption(FxTwitterTimelineStatusSchema)(value);
@@ -219,7 +219,7 @@ export const FxTwitterProfileEnvelopeSchema = Schema.Struct({
     statuses: Schema.optional(Schema.Number),
   }),
 });
-export type FxTwitterProfileEnvelope = Schema.Schema.Type<typeof FxTwitterProfileEnvelopeSchema>;
+export type FxTwitterProfileEnvelope = typeof FxTwitterProfileEnvelopeSchema.Type;
 
 /** Build a PilotClient from closed-over config. No class instance state. */
 export function makeFxTwitterClient(options: FxTwitterClientOptions = {}): PilotClient {

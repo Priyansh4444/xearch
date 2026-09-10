@@ -100,9 +100,9 @@ const ProviderStatusSchema = Schema.Struct({
   ),
 });
 
-export type ProviderStatus = Schema.Schema.Type<typeof ProviderStatusSchema>;
-export type ProviderAuthor = Schema.Schema.Type<typeof ProviderAuthorSchema>;
-export type ProviderFacet = Schema.Schema.Type<typeof ProviderFacetSchema>;
+export type ProviderStatus = typeof ProviderStatusSchema.Type;
+export type ProviderAuthor = typeof ProviderAuthorSchema.Type;
+export type ProviderFacet = typeof ProviderFacetSchema.Type;
 
 export function parseProviderStatus(value: unknown): ProviderStatus | null {
   const status = Schema.decodeUnknownOption(ProviderStatusSchema)(value);
