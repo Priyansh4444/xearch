@@ -125,6 +125,14 @@ type XQueryWithPending = XQuery & {
 };
 
 /**
+ * Text Tier A left after consuming operators, phrases and negations. The baseline
+ * lane tokenizes it with stopwords kept so an all-stopword query stays searchable.
+ */
+export function residualText(xq: XQuery): string {
+  return (xq as XQueryWithPending).rawRest ?? "";
+}
+
+/**
  * Tier B: lexicon annotator. Consumes Tier A's leftovers; only refines.
  * Order matters and is part of the contract:
  *   1. resolve pending from:-handle -> authorId (hard filter; error surface if unknown)

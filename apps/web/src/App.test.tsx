@@ -168,6 +168,17 @@ test("baseline is default and interpreting requires an explicit click", async ()
   expect(window.location.search).toBe("?q=react");
 });
 
+test("a stopword-only query offers the literal lane instead of a dead end", async () => {
+  window.history.replaceState(null, "", "/?q=and+so+is&lane=xearch");
+  full = { ...response(), results: [] };
+  await render();
+  expect(container.textContent).toContain(
+    "Every word in this query is a stopword, so the posting index has no entries for it.",
+  );
+  await click("Search the literal lane");
+  expect(container.querySelector(".lane-toggle")?.textContent).toBe("lane: baseline");
+});
+
 test("baseline exposes current client latency and loads another bounded page", async () => {
   window.history.replaceState(null, "", "/?q=react");
   mocks.paginated.mockReturnValue({

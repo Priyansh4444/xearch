@@ -66,8 +66,9 @@ twins pass the shared golden fixture, `ingest.ingestBatch` + the Rust `backfill`
 loop loaded the corpus, and the full `search` query runs Tier A+B parsing
 (operators, dates, entities, aspects, glue), a Tier C refinement merge from
 `queryCache` (one bounded point read; fill-only, operator slots always win), the
-L0–L3 recall ladder with bounded reads, and the deterministic reranker with live
-feedback votes. `suggest` blends term completions with author handles (70/30,
+L0–L3 recall ladder with bounded reads (it widens only queries with two or more
+terms — one term's exact result set is already complete), and the deterministic
+reranker with live feedback votes.
 `from:@handle`). `ingest.applyMetrics` / `ingest.upsertAuthority` (refresh-mode
 verbs) are live. `tierC.refine` is an internal action (cache-first, JSON-schema
 constrained, entity strings resolved with the dominance rule); it stays dormant
@@ -128,8 +129,14 @@ Use `pnpm web` to view production without starting a backend watcher.
 ## Search limitations and optional demos
 
 Baseline requires every meaningful query token, verifies phrases/exclusions and
-explicit filters, and never repairs spelling automatically. Latest orders the
-bounded built-in relevance window, not all matching posts in the archive.
+explicit filters, and never repairs spelling automatically. Stopwords are the one
+exception to "meaningful": a query made only of them (`and so is`, `"to be"`)
+stays searchable, because the built-in full-text index keeps stopwords even though
+the posting index skips them. Top orders whichever candidate page retrieval
+returned with the same deterministic ranker in both lanes (`engine/rank.ts`), so
+the lanes differ in retrieval, not in what "Top" means; Latest orders the bounded
+window, not all matching posts in the archive. The posting lane never widens a
+single-term query: its exact result set is already complete.
 See [constraints.md](constraints.md) for known failure cases.
 
 The home page's opt-in arrivals panel subscribes to the newest 20 inserted posts.

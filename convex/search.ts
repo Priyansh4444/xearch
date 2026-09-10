@@ -6,7 +6,7 @@ import type { QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { ConvexError, v } from "convex/values";
 import { paginationOptsValidator } from "convex/server";
-import { tierA, tierB, type TierBDeps } from "./engine/parse";
+import { tierA, tierB, residualText, type TierBDeps } from "./engine/parse";
 import { tokenize } from "./engine/tokenize";
 import {
   planL0,
@@ -507,7 +507,7 @@ export const searchBaseline = query({
   handler: async (ctx, { raw, sort = SortOrder.Top }) => {
     const prepared = await prepareBaseline(ctx, raw, sort);
     if (prepared === null) return [];
-    const { xq, searchText } = prepared;
+    const { xq, searchText, verifyTokens } = prepared;
     const candidates = await ctx.db
       .query("tweets")
       .withSearchIndex("search_text", (q) => {
@@ -517,7 +517,7 @@ export const searchBaseline = query({
         return search;
       })
       .take(BASELINE_CANDIDATE_CAP);
-    return await finishBaselinePage(ctx, xq, candidates, SEARCH_RESULT_LIMIT);
+    return await finishBaselinePage(ctx, xq, candidates, verifyTokens, SEARCH_RESULT_LIMIT);
   },
 });
 
@@ -538,7 +538,7 @@ export const searchBaselinePage = query({
     if (prepared === null) {
       return { page: [], isDone: true, continueCursor: "" };
     }
-    const { xq, searchText } = prepared;
+    const { xq, searchText, verifyTokens } = prepared;
     const candidates = await ctx.db
       .query("tweets")
       .withSearchIndex("search_text", (q) => {
@@ -555,7 +555,7 @@ export const searchBaselinePage = query({
       });
     return {
       ...candidates,
-      page: await finishBaselinePage(ctx, xq, candidates.page),
+      page: await finishBaselinePage(ctx, xq, candidates.page, verifyTokens),
     };
   },
 });
@@ -564,7 +564,11 @@ async function prepareBaseline(
   ctx: QueryCtx,
   raw: string,
   sort: SortOrder,
-): Promise<{ xq: ReturnType<typeof emptyXQuery>; searchText: string } | null> {
+): Promise<{
+  xq: ReturnType<typeof emptyXQuery>;
+  searchText: string;
+  verifyTokens: Term[];
+} | null> {
   const inputError = queryInputError(raw);
   if (inputError !== null) throw new ConvexError(inputError);
   if (raw.trim().length === 0) return null;
@@ -579,49 +583,163 @@ async function prepareBaseline(
   const xq = parsed.xq;
   xq.must = literal.xq.must;
   if (!Object.values(parsed.trace.consumed).includes("sort")) xq.sort = sort;
-  const searchText = uniqueTerms(xq.must, phraseTerms(xq)).join(" ");
+  // The posting index drops stopwords, but the built-in full-text index keeps
+  // them. A query whose only words are stopwords ("and so is", `"to be"`) would
+  // otherwise have nothing to retrieve on, so it falls back to its literal
+  // tokens — retrieved from the same index and verified all-present.
+  const content = uniqueTerms(xq.must, phraseTerms(xq));
+  const verifyTokens =
+    content.length > 0
+      ? xq.must
+      : uniqueTerms(xq.must, xq.phrases.flat(), tokenize(residualText(literal.xq), true).tokens);
+  const searchText = (content.length > 0 ? content : verifyTokens).join(" ");
   if (searchText.length === 0) {
     throw new ConvexError("Add a search word or quoted phrase alongside filters.");
   }
-  return { xq, searchText };
+  return { xq, searchText, verifyTokens };
 }
 
+/**
+ * Literal verification and ordering for the built-in full-text lane. Retrieval is
+ * Convex's relevance window; `Top` then orders the verified page with the same
+ * deterministic ranker the posting lane uses (engine/rank.ts), so "Top" means one
+ * thing in both lanes — they differ in retrieval, not in ordering. Ranking runs
+ * over the current bounded page, never the whole archive.
+ */
 async function finishBaselinePage(
   ctx: QueryCtx,
   xq: ReturnType<typeof emptyXQuery>,
   candidates: Doc<"tweets">[],
+  verifyTokens: Term[],
   resultLimit?: number,
 ) {
-  let tweets = candidates.filter((tweet) => {
-    if (!matchesConstraints(tweet, xq)) return false;
-    const tokens = tokenize(tweet.text).tokens;
-    return xq.must.every((term) => tokens.includes(term));
-  });
-  if (xq.sort === SortOrder.Latest) {
-    tweets.sort((a, b) => b.createdAt - a.createdAt);
+  const scoreTerms = uniqueTerms(verifyTokens, xq.should, xq.aspects, phraseTerms(xq));
+  const verified: Doc<"tweets">[] = [];
+  const termCounts = new Map<string, Map<Term, number>>();
+  for (const tweet of candidates) {
+    if (!matchesConstraints(tweet, xq)) continue;
+    // Every queried token must appear in the text itself: the built-in index
+    // also matches prefixes, this lane promises the words the user typed.
+    // Stopwords stay in the count map: the all-stopword fallback verifies them.
+    const counts = tokenize(tweet.text, true).counts;
+    let hasEveryToken = true;
+    for (const term of verifyTokens) {
+      if (!counts.has(term)) {
+        hasEveryToken = false;
+        break;
+      }
+    }
+    if (!hasEveryToken) continue;
+    const tf = new Map<Term, number>();
+    for (const term of scoreTerms) {
+      const count = counts.get(term);
+      if (count !== undefined) tf.set(term, count);
+    }
+    termCounts.set(tweet._id, tf);
+    verified.push(tweet);
   }
-  if (resultLimit !== undefined) tweets = tweets.slice(0, resultLimit);
-  // Hydrate authors for only the returned page. Independent point reads run
-  // concurrently; duplicate authors still cost one read.
-  const authors = new Map<string, { displayName: string; verified: boolean } | null>();
-  const authorIds = [...new Set(tweets.map((tweet) => tweet.authorId))];
-  const authorRows = await Promise.all(
-    authorIds.map((authorId) =>
+
+  if (xq.sort === SortOrder.Top) {
+    // Authority is a ranking input, so authors are hydrated for every verified
+    // candidate of this page, not only for the rows that end up returned.
+    const authors = await hydrateBaselineAuthors(ctx, verified);
+    const ordered = await rankBaselinePage(ctx, xq, verified, termCounts, scoreTerms, authors);
+    const page = resultLimit === undefined ? ordered : ordered.slice(0, resultLimit);
+    return baselineRows(page, authors);
+  }
+
+  verified.sort((a, b) => b.createdAt - a.createdAt);
+  const page = resultLimit === undefined ? verified : verified.slice(0, resultLimit);
+  return baselineRows(page, await hydrateBaselineAuthors(ctx, page));
+}
+
+/**
+ * Score verified literal candidates with the shared ranker. `feedbackVotes` stays
+ * 0 because literal rows are not votable (their queryKey is null), so this path
+ * issues no feedback reads.
+ */
+async function rankBaselinePage(
+  ctx: QueryCtx,
+  xq: ReturnType<typeof emptyXQuery>,
+  tweets: Doc<"tweets">[],
+  termCounts: Map<string, Map<Term, number>>,
+  scoreTerms: Term[],
+  authors: Map<string, Doc<"authors"> | null>,
+): Promise<Doc<"tweets">[]> {
+  if (tweets.length === 0) return tweets;
+  const dfs = new Map<Term, number>();
+  const dfRows = await Promise.all(
+    scoreTerms.map((term) =>
       ctx.db
-        .query("authors")
-        .withIndex("by_authorId", (q) => q.eq("authorId", authorId))
+        .query("terms")
+        .withIndex("by_term", (q) => q.eq("term", term))
         .unique(),
     ),
   );
-  for (let i = 0; i < authorIds.length; i++) {
-    const author = authorRows[i] ?? null;
-    authors.set(
-      authorIds[i]!,
-      author === null ? null : { displayName: author.displayName, verified: author.verified },
-    );
+  for (let i = 0; i < scoreTerms.length; i++) {
+    const row = dfRows[i];
+    if (row !== null && row !== undefined) dfs.set(scoreTerms[i]!, row.df);
   }
-  return tweets.map((tweet) => ({
-    ...tweet,
-    author: authors.get(tweet.authorId) ?? null,
+  const candidates: Candidate[] = tweets.map((tweet) => ({
+    tweetId: tweet._id,
+    tf: termCounts.get(tweet._id)!,
+    // The literal lane retrieves exact matches with the built-in index, so the
+    // posting ladder does not apply here; every row is exact.
+    matchedVia: LadderLevel.L0,
+    likeCount: tweet.likeCount,
+    replyCount: tweet.replyCount,
+    retweetCount: tweet.retweetCount,
+    quoteCount: tweet.quoteCount,
+    propagatedBoost: tweet.propagatedBoost,
+    createdAt: tweet.createdAt,
+    tokenCount: tweet.tokenCount,
+    authorAuthority: authors.get(tweet.authorId)?.authority ?? 0,
+    mediaType: tweet.mediaType,
+    feedbackVotes: 0,
+    // Doc rows carry source ids as plain strings; assert the space once here.
+    retweetOfTweetId: tweet.retweetOfTweetId as TweetId | undefined,
+    quotedTweetId: tweet.quotedTweetId as TweetId | undefined,
+    sourceTweetId: tweet.tweetId as TweetId,
   }));
+  const scored = rerank(
+    xq,
+    candidates,
+    { totalDocs: TOTAL_DOCS_ESTIMATE, avgTokenCount: AVG_TOKEN_COUNT_ESTIMATE, dfs },
+    Date.now(),
+  );
+  const byId = new Map<string, Doc<"tweets">>(tweets.map((tweet) => [tweet._id, tweet]));
+  const ordered: Doc<"tweets">[] = [];
+  for (const row of scored) {
+    const tweet = byId.get(row.tweetId);
+    if (tweet !== undefined) ordered.push(tweet);
+  }
+  return ordered;
+}
+
+/** Author rows for the given tweets. Independent point reads run concurrently;
+ * duplicate authors still cost one read. */
+async function hydrateBaselineAuthors(
+  ctx: QueryCtx,
+  tweets: Doc<"tweets">[],
+): Promise<Map<string, Doc<"authors"> | null>> {
+  const authors = new Map<string, Doc<"authors"> | null>();
+  const authorIds = [...new Set(tweets.map((tweet) => tweet.authorId))];
+  const authorRows = await Promise.all(
+    authorIds.map((authorId) => authorByAuthorId(ctx, authorId)),
+  );
+  for (let i = 0; i < authorIds.length; i++) {
+    authors.set(authorIds[i]!, authorRows[i] ?? null);
+  }
+  return authors;
+}
+
+function baselineRows(tweets: Doc<"tweets">[], authors: Map<string, Doc<"authors"> | null>) {
+  return tweets.map((tweet) => {
+    const author = authors.get(tweet.authorId) ?? null;
+    return {
+      ...tweet,
+      author:
+        author === null ? null : { displayName: author.displayName, verified: author.verified },
+    };
+  });
 }

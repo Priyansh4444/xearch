@@ -94,6 +94,25 @@ Precomputing XQuery terms from popular posts would add ingestion writes and make
 intent follow popularity. The aspect lexicon and optional user-requested
 interpretation already handle vocabulary gaps without changing every query.
 
+## Corrections landed without the gate
+
+Two reported failure shapes were fixed as question-mismatch defects rather than
+tuning choices, so they landed without the judged set below:
+
+- A single-term query no longer escalates (`convex/engine/plan.ts`). The ladder
+  unioned the term with itself, then PRF-mined the topic co-occurring in the few
+  exact hits: `pronsh` returned @theo megaposts. The exact result set of one term
+  is already complete. Guards: `tests/plan-rank.test.ts`,
+  `tests/convex.integration.test.ts`.
+- The literal lane's `Top` now orders its verified candidate page with the same
+  deterministic ranker the posting lane uses (`convex/search.ts`). Built-in
+  relevance order put a 2-like reply above a 316-like post for `waterfall`. This
+  is an ordering-policy change without judged nDCG evidence; it stays scoped to
+  the candidate page each request retrieves.
+
+The gate below still applies before changing `WEIGHTS`, posting caps, or reply
+treatment, and to any further ordering-policy change.
+
 ## Required gate
 
 Before modifying `WEIGHTS`, ladder ordering, posting caps, or reply treatment:

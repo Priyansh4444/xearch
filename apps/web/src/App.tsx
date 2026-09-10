@@ -8,6 +8,7 @@ import { queryInputError } from "../../../convex/engine/constraints";
 import { LadderLevel } from "../../../convex/engine/plan";
 import { SortOrder } from "../../../convex/engine/xquery";
 import { tierA } from "../../../convex/engine/parse";
+import { tokenize } from "../../../convex/engine/tokenize";
 
 type SearchReturn = FunctionReturnType<typeof api.search.search>;
 type BaselineResults = FunctionReturnType<typeof api.search.searchBaselinePage>["page"];
@@ -29,6 +30,17 @@ interface Shown {
 
 /** Known-dense corpus topics — each returns real posts from the archived run. */
 const DEMO_QUERIES = ["bun", "pricing", "rust", "react server components", "agents"];
+
+/**
+ * Every word is a stopword ("and so is"). The posting index skips stopwords, so
+ * that lane has nothing to retrieve on; the literal lane keeps them. Checked here
+ * from the same tokenizer the backend uses, so the hint cannot drift.
+ */
+function isStopwordOnly(raw: string): boolean {
+  return (
+    raw.trim() !== "" && tokenize(raw).tokens.length === 0 && tokenize(raw, true).tokens.length > 0
+  );
+}
 
 function useSearchPage() {
   const [initial] = useState(() => {
@@ -273,6 +285,7 @@ export function App(): ReactElement {
         baselineStatus={lane === "baseline" ? baselineStatus : null}
         onLoadMore={loadMoreBaseline}
         onPick={pickQuery}
+        onUseLiteralLane={() => setLane("baseline")}
       />
       {query === "" ? <ArrivalFeed /> : null}
 
@@ -365,6 +378,7 @@ interface SearchBodyProps {
   baselineStatus: "CanLoadMore" | "LoadingMore" | "Exhausted" | "LoadingFirstPage" | null;
   onLoadMore: () => void;
   onPick: (query: string) => void;
+  onUseLiteralLane: () => void;
 }
 
 function SearchBody({
@@ -378,6 +392,7 @@ function SearchBody({
   baselineStatus,
   onLoadMore,
   onPick,
+  onUseLiteralLane,
 }: SearchBodyProps): ReactElement {
   if (query === "") return <Intro onPick={onPick} />;
   if (error !== null && error !== undefined)
@@ -401,7 +416,12 @@ function SearchBody({
   if (shown.results.length === 0)
     return (
       <>
-        <EmptyState query={query} onPick={onPick} />
+        <EmptyState
+          query={query}
+          stopwordOnly={lane === "xearch" && isStopwordOnly(query)}
+          onPick={onPick}
+          onUseLiteralLane={onUseLiteralLane}
+        />
         {canVote ? <QueryReport query={query} lane={lane} reason="no-results" /> : null}
       </>
     );
@@ -493,15 +513,33 @@ function Intro({ onPick }: { onPick: (q: string) => void }) {
   );
 }
 
-function EmptyState({ query, onPick }: { query: string; onPick: (q: string) => void }) {
+function EmptyState({
+  query,
+  stopwordOnly,
+  onPick,
+  onUseLiteralLane,
+}: {
+  query: string;
+  stopwordOnly: boolean;
+  onPick: (q: string) => void;
+  onUseLiteralLane: () => void;
+}) {
   return (
     <div className="empty-state">
       <p>
         No matches found in the bounded search window for{" "}
-        <span className="query-echo">{query}</span>. The corpus starts from 62 tech accounts — try
-        words people actually posted:
+        <span className="query-echo">{query}</span>.{" "}
+        {stopwordOnly
+          ? "Every word in this query is a stopword, so the posting index has no entries for it."
+          : "The corpus starts from 62 tech accounts — try words people actually posted:"}
       </p>
-      <DemoChips onPick={onPick} />
+      {stopwordOnly ? (
+        <button type="button" onClick={onUseLiteralLane}>
+          Search the literal lane
+        </button>
+      ) : (
+        <DemoChips onPick={onPick} />
+      )}
     </div>
   );
 }

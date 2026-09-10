@@ -79,6 +79,38 @@ describe("literal baseline search", () => {
     ).toEqual(["match"]);
   });
 
+  test("searches an all-stopword query through the built-in index", async () => {
+    const tc = await seed([
+      tweet("stopword", "and so is the compiler"),
+      tweet("partial", "and so the compiler"),
+      tweet("none", "react compiler"),
+    ]);
+    // The posting index has no entries for stopwords. The literal lane retrieves
+    // their tokens from the built-in full-text index and still checks every one.
+    expect(
+      (await tc.query(api.search.searchBaseline, { raw: "and so is" })).map((t) => t.tweetId),
+    ).toEqual(["stopword"]);
+    expect(
+      (await tc.query(api.search.searchBaseline, { raw: '"and so is"' })).map((t) => t.tweetId),
+    ).toEqual(["stopword"]);
+    expect(await tc.query(api.search.searchBaseline, { raw: "and yet" })).toEqual([]);
+  });
+
+  test("Top orders the verified page with the shared deterministic ranker", async () => {
+    const tc = await seed([
+      tweet("quiet", "waterfall thread", { likeCount: 1 }),
+      tweet("viral", "waterfall debug", { likeCount: 5000, retweetCount: 40 }),
+      tweet("mid", "waterfall trace", { likeCount: 50 }),
+    ]);
+    const rows = await tc.query(api.search.searchBaseline, { raw: "waterfall" });
+    expect(rows.map((t) => t.tweetId)).toEqual(["viral", "mid", "quiet"]);
+    const latest = await tc.query(api.search.searchBaseline, {
+      raw: "waterfall",
+      sort: "latest",
+    });
+    expect(latest).toHaveLength(3);
+  });
+
   test("preserves explicit author, media, date, likes, language, phrase and exclusion", async () => {
     const good = tweet("good", "React compiler is ready", { mediaType: "image" });
     const tc = await seed([

@@ -155,6 +155,11 @@ function postFiltersOf(xq: XQuery): ReadPlan["postFilters"] {
  * L0 -> L1 drop lowest-idf must term (≤2 times) -> L2 union(must∪should) ->
  * L3 PRF terms (caller mines cooccurrence, passes them in) -> stop (L4 is an action).
  * INVARIANT: filters never relax — only terms do.
+ *
+ * The ladder relaxes intersections. A query with fewer than two distinct terms
+ * has nothing to relax: every document the term(s) can retrieve is already in
+ * the result set, and PRF expansion would answer a different question (live
+ * evidence: the rare term "pronsh" widened at L3 into unrelated megaposts).
  */
 export function escalate(
   executed: ReadPlan,
@@ -164,6 +169,7 @@ export function escalate(
   prfTerms?: Term[],
 ): ReadPlan | null {
   if (survivors >= MIN_RESULTS) return null;
+  if (relaxableTerms(xq) < 2) return null;
 
   // L0/L1 -> L1: drop the lowest-idf (= highest-df) gate, at most twice, and only
   // while more than one gate remains. Filters ride along untouched (invariant 2).
@@ -212,6 +218,16 @@ export function escalate(
   }
 
   return null; // L4 (vectors) is an action, not a plan
+}
+
+/** Distinct terms the ladder could relax: gates plus the soft/union terms. */
+function relaxableTerms(xq: XQuery): number {
+  const seen = new Set<Term>();
+  for (const list of [xq.must, xq.should, xq.aspects]) {
+    for (const term of list) seen.add(term);
+  }
+  for (const term of phraseTerms(xq)) seen.add(term);
+  return seen.size;
 }
 
 function escalateToL2(xq: XQuery, dfs: Map<Term, number>): ReadPlan | null {
