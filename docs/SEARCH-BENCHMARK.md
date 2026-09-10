@@ -81,7 +81,10 @@ public API, read-only and without cache-busting:
 | `pronsh` | xearch | L3, widened into unrelated @theo megaposts | L0, exactly the 3 posts containing the token |
 | `waterfall` | baseline | built-in relevance order: a 2-like reply led and the 316-like post was ninth | 316-like post first, then 71 / 52 / 21 / 59 |
 
-Each row is one observation, not a recall or nDCG measurement.
+The last two rows were observed on the deploy of `fbdfbf55`; the `and so is`
+row was re-observed on the app's paginated path after `b98c06cd`, which reads one
+100-candidate window for all-stopword queries (20-candidate pages verified to
+zero rows). Each row is one observation, not a recall or nDCG measurement.
 
 ## What the measurement means
 
