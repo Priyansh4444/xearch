@@ -7,6 +7,7 @@
 import { internalMutation } from "./_generated/server";
 import { v } from "convex/values";
 import type { MutationCtx } from "./_generated/server";
+import type { Doc } from "./_generated/dataModel";
 import { TOKENIZER_VERSION } from "./engine/tokenize";
 import aspectsFile from "../shared/lexicons/aspects.json";
 import { mediaTypeValidator } from "./contracts/media";
@@ -225,10 +226,54 @@ export const applyMetrics = internalMutation({
       }),
     ),
   },
-  handler: async (_ctx, _args) => {
-    // TODO(implement): patch tweets; when newScoreBucket present, patch the tweet's
-    // postings via by_tweet (the ONLY code path that ever rewrites postings, §6.1).
-    throw new Error("not implemented: applyMetrics");
+  handler: async (ctx, args) => {
+    let updated = 0;
+    let skipped = 0;
+    let postingsPatched = 0;
+    for (const u of args.updates) {
+      const tweet = await ctx.db
+        .query("tweets")
+        .withIndex("by_tweetId", (q) => q.eq("tweetId", u.tweetId))
+        .unique();
+      if (tweet === null) {
+        skipped += 1;
+        continue;
+      }
+      // Newer-snapshot rule mirrors ingestBatch: stale metric replays are no-ops.
+      // propagatedBoost is refresh-job output, not a snapshot — applied when changed.
+      const patch: Partial<Doc<"tweets">> = {};
+      if (u.metricsAt > tweet.metricsAt) {
+        patch.likeCount = u.metrics.likes;
+        patch.retweetCount = u.metrics.retweets;
+        patch.replyCount = u.metrics.replies;
+        patch.quoteCount = u.metrics.quotes;
+        patch.metricsAt = u.metricsAt;
+      }
+      if (u.propagatedBoost !== undefined && u.propagatedBoost !== tweet.propagatedBoost) {
+        patch.propagatedBoost = u.propagatedBoost;
+      }
+      if (Object.keys(patch).length > 0) {
+        await ctx.db.patch(tweet._id, patch);
+        updated += 1;
+      } else {
+        skipped += 1;
+      }
+      // The ONLY code path that ever rewrites postings (DESIGN §6.1): a rare
+      // bucket-boundary crossing patches the tweet's postings via by_tweet.
+      if (u.newScoreBucket !== undefined) {
+        const postings = await ctx.db
+          .query("postings")
+          .withIndex("by_tweet", (q) => q.eq("tweetId", tweet._id))
+          .collect();
+        for (const posting of postings) {
+          if (posting.scoreBucket !== u.newScoreBucket) {
+            await ctx.db.patch(posting._id, { scoreBucket: u.newScoreBucket });
+            postingsPatched += 1;
+          }
+        }
+      }
+    }
+    return { updated, skipped, postingsPatched };
   },
 });
 
@@ -237,10 +282,25 @@ export const upsertAuthority = internalMutation({
   args: {
     rows: v.array(v.object({ authorId: v.string(), authority: v.number() })),
   },
-  handler: async (_ctx, _args) => {
-    // TODO(implement): patch authors.authority; floor rule
-    // authority = max(tweepcred, 0.5 * log1p(followers)) lives HERE (RISKS K3),
-    // so the indexer stays ignorant of serving-side blending.
-    throw new Error("not implemented: upsertAuthority");
+  handler: async (ctx, args) => {
+    let updated = 0;
+    let skipped = 0;
+    for (const row of args.rows) {
+      const author = await authorByAuthorId(ctx, row.authorId);
+      if (author === null) {
+        skipped += 1;
+        continue;
+      }
+      // Floor rule lives HERE (RISKS K3), so the indexer stays ignorant of
+      // serving-side blending: authority = max(tweepcred, 0.5 * log1p(followers)).
+      const floored = Math.max(row.authority, 0.5 * Math.log1p(author.followerCount));
+      if (author.authority === floored) {
+        skipped += 1;
+      } else {
+        await ctx.db.patch(author._id, { authority: floored });
+        updated += 1;
+      }
+    }
+    return { updated, skipped };
   },
 });

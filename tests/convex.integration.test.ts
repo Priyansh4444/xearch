@@ -331,4 +331,28 @@ describe("trusted feedback", () => {
     // Idempotent retry is allowed even after reaching the limit.
     await voter.mutation(api.feedback.vote, { ...args, vote: -1 });
   });
+
+  test("bad-query reports require identity, normalize and deduplicate", async () => {
+    const t = convexTest(schema, modules);
+    const args = {
+      raw: "  React Compiler  ",
+      lane: "baseline" as const,
+      reason: "bad-results" as const,
+    };
+    await expect(t.mutation(api.feedback.reportQuery, args)).rejects.toThrow("Sign in");
+    const voter = t.withIdentity({ subject: "reporter" });
+    expect(await voter.mutation(api.feedback.reportQuery, args)).toEqual({
+      status: "recorded",
+    });
+    expect(
+      await voter.mutation(api.feedback.reportQuery, { ...args, raw: "react compiler" }),
+    ).toEqual({ status: "already-reported" });
+    const rows = await t.run((ctx) => ctx.db.query("queryReports").collect());
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      normalizedRaw: "react compiler",
+      lane: "baseline",
+      reason: "bad-results",
+    });
+  });
 });

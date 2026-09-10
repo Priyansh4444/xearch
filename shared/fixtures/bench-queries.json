@@ -1,0 +1,19 @@
+{
+  "comment": "Query-shape smoke fixtures, not relevance labels. minResults are historical result-count floors attributed to the archived 164,959-post corpus on 2026-09-03; their provenance has not been independently verified. A floor failure needs investigation; passing counts do not measure recall or ranking quality.",
+  "queries": [
+    { "raw": "bun", "note": "single head term, score-ordered index", "minResults": 20 },
+    { "raw": "convex", "note": "single mid term", "minResults": 20 },
+    { "raw": "react server components", "note": "3-term AND intersection", "minResults": 10 },
+    { "raw": "rust vs go", "note": "compare intent, glue stripping", "minResults": 5 },
+    { "raw": "linux box cheap", "note": "aspect mapping (~price) + weak-word demotion" },
+    { "raw": "agents pricing", "note": "term + aspect trigger co-occurrence", "minResults": 5 },
+    { "raw": "\"server components\"", "note": "phrase adjacency verification", "minResults": 5 },
+    { "raw": "apple -iphone", "note": "negation post-filter" },
+    { "raw": "from:@theo", "note": "author-only timeline read", "minResults": 10 },
+    { "raw": "from:@theo react", "note": "term + author compound index", "minResults": 1 },
+    { "raw": "typescript sort:latest", "note": "latest ordering via by_term_time", "minResults": 10 },
+    { "raw": "what did karpathy say about llm agents", "note": "question intent + entity linking" },
+    { "raw": "nonexistentterm42", "note": "empty result path (full ladder walk)" },
+    { "raw": "ai since:2026-08-01 until:2026-09-01", "note": "date window pushdown", "minResults": 5 }
+  ]
+}

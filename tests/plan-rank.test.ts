@@ -305,6 +305,30 @@ describe("rerank permutations", () => {
     }
   });
 
+  it("records the exact-versus-viral risk exposed by the production sample", () => {
+    const query = xqWith({ must: [t("linux"), t("box")] });
+    const exact: Candidate = {
+      ...base,
+      tweetId: "exact-quiet",
+      tf: new Map([
+        [t("linux"), 1],
+        [t("box"), 1],
+      ]),
+    };
+    const partialViral: Candidate = {
+      ...base,
+      tweetId: "partial-viral",
+      tf: new Map([[t("linux"), 1]]),
+      likeCount: 10_000,
+      matchedVia: "L2",
+    };
+    const ranked = rerank(query, [exact, partialViral], stats, NOW);
+    // This is intentionally a characterization, not approval. Changing the
+    // weights or imposing an exact-first partition requires the judged
+    // Recall@20/nDCG set tracked in TODO.md.
+    expect(ranked.map((row) => row.tweetId)).toEqual(["partial-viral", "exact-quiet"]);
+  });
+
   it.each([
     { votes: -50, bucket: "floor" },
     { votes: -6, bucket: "floor" },

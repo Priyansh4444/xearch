@@ -5,6 +5,7 @@ import { query } from "./_generated/server";
 import type { QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { ConvexError, v } from "convex/values";
+import { paginationOptsValidator } from "convex/server";
 import { tierA, tierB, type TierBDeps } from "./engine/parse";
 import { tokenize } from "./engine/tokenize";
 import {
@@ -20,7 +21,15 @@ import {
   uniqueTerms,
 } from "./engine/plan";
 import { rerank, rrfFuse, type Candidate } from "./engine/rank";
-import { queryKey, emptyXQuery, SortOrder } from "./engine/xquery";
+import {
+  queryKey,
+  emptyXQuery,
+  SortOrder,
+  normalizeRaw,
+  parseXQueryJson,
+  mergeRefinement,
+} from "./engine/xquery";
+import aspectsFile from "../shared/lexicons/aspects.json";
 import type { AuthorId, Term, TweetId } from "./contracts/ids";
 import { matchesConstraints, queryInputError, MAX_QUERY_TERMS } from "./engine/constraints";
 
@@ -35,9 +44,12 @@ function invalidSearch(error: string) {
     ladder: LadderLevel.L0,
     appliedQuery: emptyXQuery(),
     trace: tierA("").trace,
+    refined: null as RefinedNote,
     results: [] as never[],
   };
 }
+
+type RefinedNote = { source: "llm" | "human-correction"; filled: string[] } | null;
 
 /**
  * Entity linking refuses tokens at/above this df — common words never link (P1).
@@ -51,6 +63,8 @@ export const COMMON_DF_FLOOR = 200;
 // to modest error in N. Replace with a real stats row when refresh mode lands.
 const TOTAL_DOCS_ESTIMATE = 165_000;
 const AVG_TOKEN_COUNT_ESTIMATE = 30;
+export const SEARCH_RESULT_LIMIT = 20;
+export const BASELINE_CANDIDATE_CAP = 100;
 
 export const search = query({
   args: {
@@ -60,17 +74,43 @@ export const search = query({
     cursor: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    // 0. Tier C refinement merge lands when tierC.ts exists; the reactive re-run
-    //    machinery is already in place because this is a plain Convex query.
     // 1. Parse.
     const inputError = queryInputError(args.raw);
     if (inputError !== null) return invalidSearch(inputError);
-    const parsed = await tierB(tierA(args.raw), deps(ctx));
-    const xq = parsed.xq;
+    const parsed = await tierB(tierA(args.raw), tierBDeps(ctx));
+    let xq = parsed.xq;
     if (!Object.values(parsed.trace.consumed).includes("sort")) xq.sort = args.sort;
     const unknownAuthor = parsed.trace.leftover.find((term) => term.startsWith("from:"));
     if (unknownAuthor !== undefined)
       return invalidSearch(`Unknown author: ${unknownAuthor.slice(5)}.`);
+
+    // 1b. Tier C refinement (queryCache): one bounded point read. The row was
+    //     written asynchronously by tierC.refine; because this is a reactive
+    //     query, its arrival re-runs every subscribed search automatically.
+    //     Fill-only merge (engine/xquery.mergeRefinement) — operator slots win.
+    let refined: RefinedNote = null;
+    const cacheRow = await ctx.db
+      .query("queryCache")
+      .withIndex("by_raw", (q) => q.eq("normalizedRaw", normalizeRaw(args.raw)))
+      .unique();
+    if (cacheRow !== null && cacheRow.lexiconVersion === aspectsFile.version) {
+      const cached = parseXQueryJson(cacheRow.xqueryJson);
+      if (cached !== null) {
+        const merge = mergeRefinement(xq, cached);
+        const mergedTerms = uniqueTerms(
+          merge.xq.must,
+          merge.xq.should,
+          merge.xq.aspects,
+          phraseTerms(merge.xq),
+        );
+        // A refinement may never invalidate a query that worked literally: if the
+        // merged term budget overflows, the A+B parse stands unrefined.
+        if (merge.filled.length > 0 && mergedTerms.length <= MAX_QUERY_TERMS) {
+          xq = merge.xq;
+          refined = { source: cacheRow.source, filled: merge.filled };
+        }
+      }
+    }
     const key = queryKey(xq);
 
     // 2. df point reads for every term the planner or reranker will touch.
@@ -78,12 +118,17 @@ export const search = query({
     if (allTerms.length > MAX_QUERY_TERMS)
       return invalidSearch("Use at most 12 search terms and aspects.");
     const dfs = new Map<Term, number>();
-    for (const term of allTerms) {
-      const row = await ctx.db
-        .query("terms")
-        .withIndex("by_term", (q) => q.eq("term", term))
-        .unique();
-      if (row !== null) dfs.set(term, row.df);
+    const dfRows = await Promise.all(
+      allTerms.map((term) =>
+        ctx.db
+          .query("terms")
+          .withIndex("by_term", (q) => q.eq("term", term))
+          .unique(),
+      ),
+    );
+    for (let i = 0; i < allTerms.length; i++) {
+      const row = dfRows[i];
+      if (row !== null && row !== undefined) dfs.set(allTerms[i]!, row.df);
     }
 
     // 3. Ladder: execute -> escalate while survivors < MIN_RESULTS (bounded loop).
@@ -97,10 +142,18 @@ export const search = query({
       via: Candidate["matchedVia"],
     ): Promise<Map<string, Match>> {
       const accepted = new Map<string, Match>();
-      for (const [id, match] of found) {
-        const tweet = tweets.get(id) ?? (await ctx.db.get(id as Id<"tweets">));
-        if (tweet === null) continue;
-        tweets.set(id, tweet);
+      // Ranking only consumes 200 candidates. Hydrating every row in a 12-term
+      // union could otherwise issue thousands of reads before slicing to 200.
+      const bounded = [...found].slice(0, RERANK_CANDIDATES);
+      const missing = bounded.filter(([id]) => !tweets.has(id));
+      const hydrated = await Promise.all(missing.map(([id]) => ctx.db.get(id as Id<"tweets">)));
+      for (let i = 0; i < missing.length; i++) {
+        const tweet = hydrated[i];
+        if (tweet !== null && tweet !== undefined) tweets.set(missing[i]![0], tweet);
+      }
+      for (const [id, match] of bounded) {
+        const tweet = tweets.get(id);
+        if (tweet === undefined) continue;
         if (!matchesConstraints(tweet, xq)) continue;
         if (!firstMatched.has(id)) firstMatched.set(id, via);
         accepted.set(id, match);
@@ -147,20 +200,30 @@ export const search = query({
       level = LadderLevel.L0;
     }
 
-    // 4. Hydrate candidates, with one exact feedback-total lookup per candidate.
+    // 4. Hydrate candidate-side signals. Independent indexed lookups run in
+    // parallel; this keeps exact feedback semantics without serial round trips.
     const ids = [...matches.keys()].slice(0, RERANK_CANDIDATES);
     const authors = new Map<string, Doc<"authors"> | null>();
+    const authorIds = [...new Set(ids.map((id) => tweets.get(id)!.authorId))];
+    const authorRows = await Promise.all(authorIds.map((id) => authorByAuthorId(ctx, id)));
+    for (let i = 0; i < authorIds.length; i++) {
+      authors.set(authorIds[i]!, authorRows[i] ?? null);
+    }
+    const feedbackRows = await Promise.all(
+      ids.map((id) => {
+        const tweet = tweets.get(id)!;
+        return ctx.db
+          .query("searchFeedbackTotals")
+          .withIndex("by_query_tweet", (q) => q.eq("queryKey", key).eq("tweetId", tweet._id))
+          .unique();
+      }),
+    );
     const candidates: Candidate[] = [];
-    for (const tweetId of ids) {
+    for (let i = 0; i < ids.length; i++) {
+      const tweetId = ids[i]!;
       // Postings denormalize the Convex doc id — hydration is a plain get.
       const t = tweets.get(tweetId)!;
-      if (!authors.has(t.authorId)) {
-        authors.set(t.authorId, await authorByAuthorId(ctx, t.authorId));
-      }
-      const feedback = await ctx.db
-        .query("searchFeedbackTotals")
-        .withIndex("by_query_tweet", (q) => q.eq("queryKey", key).eq("tweetId", t._id))
-        .unique();
+      const feedback = feedbackRows[i] ?? null;
       candidates.push({
         tweetId,
         tf: matches.get(tweetId)!.tf,
@@ -182,14 +245,14 @@ export const search = query({
       });
     }
 
-    // 5. Rerank, hydrate the top 20 for the SERP.
+    // 5. Rerank, hydrate the top page for the SERP.
     const scored = rerank(
       xq,
       candidates,
       { totalDocs: TOTAL_DOCS_ESTIMATE, avgTokenCount: AVG_TOKEN_COUNT_ESTIMATE, dfs },
       Date.now(),
     );
-    const results = scored.slice(0, 20).map((s) => {
+    const results = scored.slice(0, SEARCH_RESULT_LIMIT).map((s) => {
       const t = tweets.get(s.tweetId)!;
       const a = authors.get(t.authorId) ?? null;
       return {
@@ -207,6 +270,7 @@ export const search = query({
       ladder: level,
       appliedQuery: xq,
       trace: parsed.trace,
+      refined,
       results,
     };
   },
@@ -320,7 +384,7 @@ async function minePrfTerms(
 ): Promise<Term[]> {
   const known = new Set(queryTerms);
   const counts = new Map<Term, number>();
-  for (const tweetId of [...matches.keys()].slice(0, 20)) {
+  for (const tweetId of [...matches.keys()].slice(0, SEARCH_RESULT_LIMIT)) {
     const t = hydrated.get(tweetId) ?? (await ctx.db.get(tweetId as Id<"tweets">));
     if (t === null) continue;
     for (const tok of new Set(tokenize(t.text).tokens)) {
@@ -351,7 +415,16 @@ function authorByAuthorId(ctx: QueryCtx, authorId: string) {
     .unique();
 }
 
-/** Typeahead over the term dictionary — the "trie" range read (DESIGN §3). */
+const SUGGESTIONS = 10;
+const HANDLE_SUGGESTIONS = 3; // the "30" of the fixed 70/30 term/handle split
+
+/**
+ * Typeahead: the "trie" range read over the term dictionary (DESIGN §3), blended
+ * with author-handle completions (ARCHITECTURE open question, resolved yes) — one
+ * more bounded range read on authors.by_handle, fixed 70/30 split. Handle rows
+ * complete to a `from:@handle` operator, ranked by authority; `df` carries the
+ * author's follower count so the UI renders one shape for both kinds.
+ */
 export const suggest = query({
   args: { prefix: v.string() },
   handler: async (ctx, { prefix }) => {
@@ -361,18 +434,34 @@ export const suggest = query({
     const terms = await ctx.db
       .query("terms")
       .withIndex("by_term", (q) => q.gte("term", p).lt("term", p + "\uffff"))
-      .take(50); // over-fetch, rank by df, return 10
-    return terms
+      .take(50); // over-fetch, rank by df
+    // "@the" and "from:@the" complete against handles too; strip the operator part.
+    const handlePrefix = p.replace(/^from:/, "").replace(/^@/, "");
+    const authors =
+      handlePrefix.length === 0
+        ? []
+        : await ctx.db
+            .query("authors")
+            .withIndex("by_handle", (q) =>
+              q.gte("handle", handlePrefix).lt("handle", handlePrefix + "\uffff"),
+            )
+            .take(20);
+    const handleRows = authors
+      .filter((a) => !a.isStub)
+      .sort((a, b) => b.authority - a.authority)
+      .map((a) => ({ term: `from:@${a.handle}`, df: a.followerCount, kind: "author" as const }));
+    const termRows = terms
       .sort((a, b) => b.df - a.df)
-      .slice(0, 10)
-      .map((t) => ({ term: t.term, df: t.df }));
-    // TODO: blend author-handle completions (ARCHITECTURE open question) — one more
-    // range read on authors.by_handle, merged with terms by a fixed 70/30 split.
+      .map((t) => ({ term: t.term, df: t.df, kind: "term" as const }));
+    // 70/30 split, each side backfilling when the other runs short of matches.
+    const handleCount = Math.min(handleRows.length, HANDLE_SUGGESTIONS);
+    const termCount = Math.min(termRows.length, SUGGESTIONS - handleCount);
+    return [...termRows.slice(0, termCount), ...handleRows.slice(0, SUGGESTIONS - termCount)];
   },
 });
 
 /** TierBDeps backed by ctx.db — the only place parsing touches the database. */
-function deps(ctx: QueryCtx): TierBDeps {
+export function tierBDeps(ctx: QueryCtx): TierBDeps {
   const dfOf = async (term: string) => {
     const row = await ctx.db
       .query("terms")
@@ -407,35 +496,132 @@ function deps(ctx: QueryCtx): TierBDeps {
   };
 }
 
-/** Baseline lane for the A/B toggle: Convex built-in full-text search. */
+/** Literal search: strict matching within a bounded built-in relevance window.
+ * Latest orders that bounded window, not the entire matching corpus.
+ */
 export const searchBaseline = query({
-  args: { raw: v.string() },
-  handler: async (ctx, { raw }) => {
-    const inputError = queryInputError(raw);
-    if (inputError !== null) throw new ConvexError(inputError);
-    if (raw.trim().length === 0) return [];
-    const tweets = await ctx.db
+  args: {
+    raw: v.string(),
+    sort: v.optional(v.union(v.literal(SortOrder.Top), v.literal(SortOrder.Latest))),
+  },
+  handler: async (ctx, { raw, sort = SortOrder.Top }) => {
+    const prepared = await prepareBaseline(ctx, raw, sort);
+    if (prepared === null) return [];
+    const { xq, searchText } = prepared;
+    const candidates = await ctx.db
       .query("tweets")
-      .withSearchIndex("search_text", (q) => q.search("text", raw))
-      .take(20);
-    // Hydrate authors (20 bounded point reads on by_authorId) so the SERP can
-    // render display names without denormalizing more onto tweets.
-    const authors = new Map<string, { displayName: string; verified: boolean } | null>();
-    for (const t of tweets) {
-      if (!authors.has(t.authorId)) {
-        const a = await ctx.db
-          .query("authors")
-          .withIndex("by_authorId", (q) => q.eq("authorId", t.authorId))
-          .unique();
-        authors.set(
-          t.authorId,
-          a === null ? null : { displayName: a.displayName, verified: a.verified },
-        );
-      }
-    }
-    return tweets.map((t) => ({
-      ...t,
-      author: authors.get(t.authorId) ?? null,
-    }));
+      .withSearchIndex("search_text", (q) => {
+        let search = q.search("text", searchText);
+        if (xq.filters.authorId !== null) search = search.eq("authorId", xq.filters.authorId);
+        if (xq.filters.media !== null) search = search.eq("mediaType", xq.filters.media);
+        return search;
+      })
+      .take(BASELINE_CANDIDATE_CAP);
+    return await finishBaselinePage(ctx, xq, candidates, SEARCH_RESULT_LIMIT);
   },
 });
+
+/**
+ * Paginated literal search for the web app. Each request scans exactly one
+ * bounded full-text page. Users may request subsequent pages without making any
+ * single Convex query unbounded. Post-filtering can make a page shorter than 20;
+ * `isDone` alone says whether another candidate page exists.
+ */
+export const searchBaselinePage = query({
+  args: {
+    raw: v.string(),
+    sort: v.optional(v.union(v.literal(SortOrder.Top), v.literal(SortOrder.Latest))),
+    paginationOpts: paginationOptsValidator,
+  },
+  handler: async (ctx, { raw, sort = SortOrder.Top, paginationOpts }) => {
+    const prepared = await prepareBaseline(ctx, raw, sort);
+    if (prepared === null) {
+      return { page: [], isDone: true, continueCursor: "" };
+    }
+    const { xq, searchText } = prepared;
+    const candidates = await ctx.db
+      .query("tweets")
+      .withSearchIndex("search_text", (q) => {
+        let search = q.search("text", searchText);
+        if (xq.filters.authorId !== null) search = search.eq("authorId", xq.filters.authorId);
+        if (xq.filters.media !== null) search = search.eq("mediaType", xq.filters.media);
+        return search;
+      })
+      .paginate({
+        cursor: paginationOpts.cursor,
+        // Fixed server-side page size: callers cannot turn one request into an
+        // unbounded read, and no candidate is discarded between cursors.
+        numItems: SEARCH_RESULT_LIMIT,
+      });
+    return {
+      ...candidates,
+      page: await finishBaselinePage(ctx, xq, candidates.page),
+    };
+  },
+});
+
+async function prepareBaseline(
+  ctx: QueryCtx,
+  raw: string,
+  sort: SortOrder,
+): Promise<{ xq: ReturnType<typeof emptyXQuery>; searchText: string } | null> {
+  const inputError = queryInputError(raw);
+  if (inputError !== null) throw new ConvexError(inputError);
+  if (raw.trim().length === 0) return null;
+  const literal = tierA(raw);
+  // Resolve only explicit operators: no implicit entities, spelling repair,
+  // aspects, or natural-language relaxation in the default literal lane.
+  const operatorQuery = { ...literal.xq, must: [], rawRest: "" };
+  const parsed = await tierB({ xq: operatorQuery, trace: literal.trace }, tierBDeps(ctx));
+  if (parsed.trace.leftover.length > 0) {
+    throw new ConvexError(`Unknown author or invalid date: ${parsed.trace.leftover.join(", ")}.`);
+  }
+  const xq = parsed.xq;
+  xq.must = literal.xq.must;
+  if (!Object.values(parsed.trace.consumed).includes("sort")) xq.sort = sort;
+  const searchText = uniqueTerms(xq.must, phraseTerms(xq)).join(" ");
+  if (searchText.length === 0) {
+    throw new ConvexError("Add a search word or quoted phrase alongside filters.");
+  }
+  return { xq, searchText };
+}
+
+async function finishBaselinePage(
+  ctx: QueryCtx,
+  xq: ReturnType<typeof emptyXQuery>,
+  candidates: Doc<"tweets">[],
+  resultLimit?: number,
+) {
+  let tweets = candidates.filter((tweet) => {
+    if (!matchesConstraints(tweet, xq)) return false;
+    const tokens = tokenize(tweet.text).tokens;
+    return xq.must.every((term) => tokens.includes(term));
+  });
+  if (xq.sort === SortOrder.Latest) {
+    tweets.sort((a, b) => b.createdAt - a.createdAt);
+  }
+  if (resultLimit !== undefined) tweets = tweets.slice(0, resultLimit);
+  // Hydrate authors for only the returned page. Independent point reads run
+  // concurrently; duplicate authors still cost one read.
+  const authors = new Map<string, { displayName: string; verified: boolean } | null>();
+  const authorIds = [...new Set(tweets.map((tweet) => tweet.authorId))];
+  const authorRows = await Promise.all(
+    authorIds.map((authorId) =>
+      ctx.db
+        .query("authors")
+        .withIndex("by_authorId", (q) => q.eq("authorId", authorId))
+        .unique(),
+    ),
+  );
+  for (let i = 0; i < authorIds.length; i++) {
+    const author = authorRows[i] ?? null;
+    authors.set(
+      authorIds[i]!,
+      author === null ? null : { displayName: author.displayName, verified: author.verified },
+    );
+  }
+  return tweets.map((tweet) => ({
+    ...tweet,
+    author: authors.get(tweet.authorId) ?? null,
+  }));
+}

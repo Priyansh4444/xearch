@@ -1,5 +1,5 @@
-import { startTransition, useEffect, useState, type ReactElement } from "react";
-import { useMutation, useQuery } from "convex/react";
+import { startTransition, useEffect, useRef, useState, type ReactElement } from "react";
+import { useAction, useMutation, usePaginatedQuery, useQuery } from "convex/react";
 import { ConvexError } from "convex/values";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "../../../convex/_generated/api";
@@ -7,9 +7,10 @@ import { MediaType } from "../../../convex/contracts/media";
 import { queryInputError } from "../../../convex/engine/constraints";
 import { LadderLevel } from "../../../convex/engine/plan";
 import { SortOrder } from "../../../convex/engine/xquery";
+import { tierA } from "../../../convex/engine/parse";
 
 type SearchReturn = FunctionReturnType<typeof api.search.search>;
-type BaselineResults = FunctionReturnType<typeof api.search.searchBaseline>;
+type BaselineResults = FunctionReturnType<typeof api.search.searchBaselinePage>["page"];
 type Result = BaselineResults[number] & {
   matchedVia?: SearchReturn["results"][number]["matchedVia"];
 };
@@ -22,6 +23,8 @@ interface Shown {
   queryKey: string | null;
   /** Terms that actually gated/boosted retrieval — what highlighting should mark. */
   terms: string[];
+  /** Tier C upgrade applied to this SERP, when a queryCache row landed. */
+  refined: SearchReturn["refined"];
 }
 
 /** Known-dense corpus topics — each returns real posts from the archived run. */
@@ -34,13 +37,17 @@ function useSearchPage() {
       input: params.get("q") ?? "",
       query: (params.get("q") ?? "").trim(),
       sort: params.get("sort") === SortOrder.Latest ? SortOrder.Latest : SortOrder.Top,
-      lane: params.get("lane") === "baseline" ? ("baseline" as const) : ("xearch" as const),
+      lane: params.get("lane") === "xearch" ? ("xearch" as const) : ("baseline" as const),
     };
   });
   const [input, setInput] = useState(initial.input);
   const [query, setQuery] = useState(initial.query);
   const [sort, setSort] = useState<SortOrder>(initial.sort);
   const [lane, setLane] = useState<Lane>(initial.lane);
+  const [latencyMs, setLatencyMs] = useState<number | null>(null);
+  const requestStartedAt = useRef(0);
+  const requestSequence = useRef(0);
+  const measuredSequence = useRef(-1);
   const inputError = queryInputError(query);
   const canVote = useQuery(api.feedback.canVote);
 
@@ -51,7 +58,7 @@ function useSearchPage() {
     else url.searchParams.set("q", query);
     if (sort === SortOrder.Top) url.searchParams.delete("sort");
     else url.searchParams.set("sort", sort);
-    if (lane === "xearch") url.searchParams.delete("lane");
+    if (lane === "baseline") url.searchParams.delete("lane");
     else url.searchParams.set("lane", lane);
     window.history.replaceState(null, "", url);
   }, [query, sort, lane]);
@@ -60,39 +67,87 @@ function useSearchPage() {
     api.search.search,
     query === "" || inputError !== null || lane !== "xearch" ? "skip" : { raw: query, sort },
   );
-  const baseline = useQuery(
-    api.search.searchBaseline,
-    query === "" || inputError !== null || lane !== "baseline" ? "skip" : { raw: query },
+  const baselineArgs = { raw: query, sort };
+  const baseline = usePaginatedQuery(
+    api.search.searchBaselinePage,
+    query === "" || inputError !== null || lane !== "baseline" ? "skip" : baselineArgs,
+    { initialNumItems: 20 },
   );
+  const baselineResults = baseline.status === "LoadingFirstPage" ? undefined : baseline.results;
 
-  const current = presentResults(lane, query, full, baseline);
+  const current = presentResults(lane, query, full, baselineResults);
 
   const shown = input.trim() === query ? current : undefined;
   const error = inputError ?? shown?.error;
-  const searching = input.trim() !== "" && !error && shown === undefined;
-  const operatorSort = full !== undefined && Object.values(full.trace.consumed).includes("sort");
-  const activeSort = full?.appliedQuery.sort ?? sort;
+  const searching = input.trim() !== "" && error == null && shown === undefined;
+  const literal = tierA(query);
+  const operatorSort = Object.values(literal.trace.consumed).includes("sort");
+  const activeSort = operatorSort ? literal.xq.sort : (full?.appliedQuery.sort ?? sort);
 
+  useEffect(() => {
+    requestStartedAt.current = performance.now();
+  }, []);
+
+  useEffect(() => {
+    if (
+      query !== "" &&
+      input.trim() === query &&
+      current !== undefined &&
+      measuredSequence.current !== requestSequence.current
+    ) {
+      measuredSequence.current = requestSequence.current;
+      setLatencyMs(performance.now() - requestStartedAt.current);
+    }
+  }, [current, input, query]);
+
+  const beginRequest = () => {
+    requestStartedAt.current = performance.now();
+    requestSequence.current += 1;
+    setLatencyMs(null);
+  };
+  const runQuery = (next: string) => {
+    beginRequest();
+    startTransition(() => setQuery(next.trim()));
+  };
   const pickQuery = (next: string) => {
     setInput(next);
-    startTransition(() => setQuery(next.trim()));
+    runQuery(next);
   };
   const changeInput = (next: string) => {
     setInput(next);
-    startTransition(() => setQuery(next.trim()));
+  };
+  useEffect(() => {
+    const next = input.trim();
+    if (next === query) return;
+    const timer = window.setTimeout(() => runQuery(next), 150);
+    return () => window.clearTimeout(timer);
+  }, [input, query]);
+  const changeSort = (next: SortOrder) => {
+    beginRequest();
+    setSort(next);
+  };
+  const changeLane = (next: Lane) => {
+    beginRequest();
+    setLane(next);
   };
   return {
     input,
     query,
-    setSort,
+    setSort: changeSort,
     lane,
-    setLane,
+    setLane: changeLane,
     shown,
     error,
     searching,
     operatorSort,
     activeSort,
     canVote: canVote === true,
+    latencyMs,
+    baselineStatus: baseline.status,
+    loadMoreBaseline: () => {
+      beginRequest();
+      baseline.loadMore(20);
+    },
     pickQuery,
     changeInput,
   };
@@ -113,6 +168,7 @@ function presentResults(
           ladder: null,
           queryKey: null,
           terms: query.split(/\s+/),
+          refined: null,
         };
   }
   if (full === undefined) return undefined;
@@ -123,6 +179,7 @@ function presentResults(
     ladder: full.ladder,
     queryKey: full.queryKey,
     terms: [...q.must, ...q.should, ...q.phrases.flat(), ...q.exclude.map((term) => `-${term}`)],
+    refined: full.refined,
   };
 }
 
@@ -139,6 +196,9 @@ export function App(): ReactElement {
     operatorSort,
     activeSort,
     canVote,
+    latencyMs,
+    baselineStatus,
+    loadMoreBaseline,
     pickQuery,
     changeInput,
   } = useSearchPage();
@@ -154,12 +214,21 @@ export function App(): ReactElement {
           type="search"
           value={input}
           onChange={(e) => changeInput(e.target.value)}
-          placeholder="search 164,959 posts"
+          placeholder="search archived posts"
           aria-label="Search posts"
         />
         {/* Only while the input is ahead of the executed query — typing, not idle. */}
         {input.trim() !== query ? <Typeahead input={input} onPick={pickQuery} /> : null}
       </div>
+
+      <InterpretControl
+        key={query}
+        query={query}
+        onApply={(next) => {
+          setLane("baseline");
+          pickQuery(next);
+        }}
+      />
 
       {query !== "" ? (
         <div className="controls">
@@ -172,13 +241,16 @@ export function App(): ReactElement {
                 aria-selected={activeSort === s}
                 className={activeSort === s ? "tab active" : "tab"}
                 onClick={() => setSort(s)}
-                disabled={lane === "baseline" || operatorSort}
+                disabled={operatorSort}
               >
-                {s === SortOrder.Top ? "Top" : "Latest"}
+                {s === SortOrder.Top ? "Top" : lane === "baseline" ? "Recent" : "Latest"}
               </button>
             ))}
           </div>
           {operatorSort ? <span>Remove the sort: operator to use the tabs.</span> : null}
+          {lane === "baseline" && activeSort === SortOrder.Latest ? (
+            <span>Newest within the bounded relevance window, not the entire archive.</span>
+          ) : null}
           <button
             type="button"
             className="lane-toggle"
@@ -192,41 +264,147 @@ export function App(): ReactElement {
 
       <SearchBody
         query={query}
+        lane={lane}
         error={error}
         shown={shown}
         searching={searching}
         canVote={canVote}
+        latencyMs={latencyMs}
+        baselineStatus={lane === "baseline" ? baselineStatus : null}
+        onLoadMore={loadMoreBaseline}
         onPick={pickQuery}
       />
+      {query === "" ? <ArrivalFeed /> : null}
 
       <footer className="colophon">
-        <p>corpus: 62 seed timelines plus related posts, archived 2026-09-03. served by Convex.</p>
+        <p>archived timelines and related posts. served by Convex.</p>
       </footer>
     </div>
   );
 }
 
+function InterpretControl({ query, onApply }: { query: string; onApply: (query: string) => void }) {
+  const request = useAction(api.interpret.request);
+  const [result, setResult] = useState<FunctionReturnType<typeof api.interpret.request> | null>(
+    null,
+  );
+  const [pending, setPending] = useState(false);
+  if (query === "") return null;
+  async function interpret() {
+    setPending(true);
+    setResult(null);
+    try {
+      setResult(await request({ raw: query }));
+    } catch {
+      setResult({
+        status: "error",
+        message: "Interpretation unavailable. Your original search is unchanged.",
+      });
+    } finally {
+      setPending(false);
+    }
+  }
+  return (
+    <section aria-label="Query interpretation">
+      <button type="button" disabled={pending} onClick={() => void interpret()}>
+        {pending ? "Interpreting…" : "Interpret with AI"}
+      </button>
+      <p>Optional query rewrite only. Never runs while typing; review before applying.</p>
+      {result?.status === "ready" ? (
+        <div>
+          <p>
+            Suggested search: <code>{result.query}</code>
+          </p>
+          <button type="button" onClick={() => onApply(result.query)}>
+            Apply interpretation
+          </button>
+        </div>
+      ) : result !== null ? (
+        <p role="status">{result.message}</p>
+      ) : null}
+    </section>
+  );
+}
+
+function ArrivalFeed() {
+  const [enabled, setEnabled] = useState(false);
+  const rows = useQuery(api.feed.recent, enabled ? {} : "skip");
+  return (
+    <section aria-label="Live arrivals">
+      <h2>Live arrivals</h2>
+      <p>
+        Newly ingested archive posts, updated by Convex subscriptions. This is not an X firehose. No
+        new collection starts here.
+      </p>
+      <button type="button" onClick={() => setEnabled(!enabled)}>
+        {enabled ? "Pause arrivals" : "Watch arrivals"}
+      </button>
+      {enabled && rows === undefined ? <p role="status">Connecting to arrivals…</p> : null}
+      {enabled && rows?.length === 0 ? <p>No posts ingested yet. Waiting for arrivals.</p> : null}
+      {enabled && rows !== undefined ? (
+        <ol className="results">
+          {rows.map((tweet) => (
+            <li key={tweet._id}>
+              <ResultRow tweet={tweet} terms={[]} queryKey={null} />
+            </li>
+          ))}
+        </ol>
+      ) : null}
+    </section>
+  );
+}
+
 interface SearchBodyProps {
   query: string;
+  lane: Lane;
   error: string | null | undefined;
   shown: Shown | undefined;
   searching: boolean;
   canVote: boolean;
+  latencyMs: number | null;
+  baselineStatus: "CanLoadMore" | "LoadingMore" | "Exhausted" | "LoadingFirstPage" | null;
+  onLoadMore: () => void;
   onPick: (query: string) => void;
 }
 
 function SearchBody({
   query,
+  lane,
   error,
   shown,
   searching,
   canVote,
+  latencyMs,
+  baselineStatus,
+  onLoadMore,
   onPick,
 }: SearchBodyProps): ReactElement {
   if (query === "") return <Intro onPick={onPick} />;
-  if (error) return <p role="alert">{error}</p>;
+  if (error !== null && error !== undefined)
+    return (
+      <>
+        <p role="alert">{error}</p>
+        {canVote ? <QueryReport query={query} lane={lane} reason="error" /> : null}
+      </>
+    );
   if (shown === undefined) return <SkeletonList />;
-  if (shown.results.length === 0) return <EmptyState query={query} onPick={onPick} />;
+  if (shown.results.length === 0 && baselineStatus === "CanLoadMore") {
+    return (
+      <main>
+        <p>No exact matches in this candidate page.</p>
+        <button type="button" onClick={onLoadMore}>
+          Search next page
+        </button>
+      </main>
+    );
+  }
+  if (shown.results.length === 0)
+    return (
+      <>
+        <EmptyState query={query} onPick={onPick} />
+        {canVote ? <QueryReport query={query} lane={lane} reason="no-results" /> : null}
+      </>
+    );
 
   const count = shown.results.length;
   let countLabel = `${count} posts`;
@@ -243,6 +421,10 @@ function SearchBody({
       <p className="count-line">
         {countLabel}
         {notice}
+        {shown.refined !== null
+          ? ` — interpretation refined (${shown.refined.source}): ${shown.refined.filled.join(", ")}`
+          : ""}
+        {latencyMs === null ? "" : ` — ${Math.round(latencyMs)} ms client`}
       </p>
       <ol className="results">
         {shown.results.map((tweet) => (
@@ -255,7 +437,47 @@ function SearchBody({
           </li>
         ))}
       </ol>
+      {baselineStatus === "CanLoadMore" || baselineStatus === "LoadingMore" ? (
+        <button type="button" disabled={baselineStatus === "LoadingMore"} onClick={onLoadMore}>
+          {baselineStatus === "LoadingMore" ? "Loading more…" : "Load more"}
+        </button>
+      ) : null}
+      {canVote ? <QueryReport query={query} lane={lane} reason="bad-results" /> : null}
     </main>
+  );
+}
+
+function QueryReport({
+  query,
+  lane,
+  reason,
+}: {
+  query: string;
+  lane: Lane;
+  reason: "bad-results" | "no-results" | "error";
+}) {
+  const report = useMutation(api.feedback.reportQuery);
+  const [status, setStatus] = useState<"idle" | "sending" | "recorded" | "failed">("idle");
+  async function send() {
+    setStatus("sending");
+    try {
+      await report({ raw: query, lane, reason });
+      setStatus("recorded");
+    } catch {
+      setStatus("failed");
+    }
+  }
+  return (
+    <div>
+      <button type="button" disabled={status !== "idle"} onClick={() => void send()}>
+        {status === "recorded"
+          ? "Search reported"
+          : status === "sending"
+            ? "Reporting…"
+            : "Report bad search"}
+      </button>
+      {status === "failed" ? <span role="alert">Could not report this search.</span> : null}
+    </div>
   );
 }
 
@@ -382,7 +604,7 @@ function ResultRow({ tweet, terms, queryKey }: ResultRowProps): ReactElement {
       <div className="byline">
         <span className="name">
           {name}
-          {tweet.author?.verified ? (
+          {tweet.author?.verified === true ? (
             <svg className="verified" viewBox="0 0 24 24" aria-label="verified" role="img">
               <path d="M12 2l2.4 2.4 3.4-.5 1 3.3 3 1.7-1.2 3.1 1.2 3.1-3 1.7-1 3.3-3.4-.5L12 22l-2.4-2.4-3.4.5-1-3.3-3-1.7L3.4 12 2.2 8.9l3-1.7 1-3.3 3.4.5L12 2zm-1.3 13.6l5.4-5.4-1.2-1.2-4.2 4.2-1.8-1.8-1.2 1.2 3 3z" />
             </svg>

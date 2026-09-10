@@ -192,8 +192,9 @@ there is no "call the parser yourself" endpoint to misuse.
 
 ## Open questions and risks
 
-- Should `suggest` blend author handles with terms (two range reads instead of one)?
-  Leaning yes; costs one read.
+- ~~Should `suggest` blend author handles with terms (two range reads instead of one)?~~
+  Resolved yes (fixed 70/30 split, handles ranked by authority, completing to
+  `from:@handle`); costs one bounded range read on `authors.by_handle`.
 - Is 1000 the right per-term posting cap for a 1–10M corpus, or should it scale with
   df (e.g. min(1000, df/10))? Needs measurement against the eval set.
 - Feedback clamp ±5: right bound? Revisit once real votes exist.

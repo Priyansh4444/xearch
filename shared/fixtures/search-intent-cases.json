@@ -1,0 +1,158 @@
+{
+  "comment": "Query-understanding cases derived from seeded random samples of 20 among the newest 200 and 40 among the newest 400 prod rows on 2026-09-09 and 2026-09-10. The fixture records generic query shapes, not copied post text or personal data.",
+  "cases": [
+    {
+      "raw": "convex avoiding circular dependencies",
+      "expect": {
+        "must": ["convex", "avoiding", "circular", "dependencies"],
+        "intent": "topic",
+        "authorId": null
+      },
+      "note": "technical phrase remains literal; no speculative query expansion"
+    },
+    {
+      "raw": "convex free cloud deployment",
+      "expect": {
+        "must": ["convex", "cloud", "deployment"],
+        "should": ["free"],
+        "aspects": ["~price"],
+        "intent": "topic",
+        "authorId": null
+      },
+      "note": "weak price term boosts but does not gate"
+    },
+    {
+      "raw": "convex updated tos",
+      "expect": {
+        "must": ["convex", "updated", "tos"],
+        "intent": "topic",
+        "authorId": null
+      },
+      "note": "case-folded acronym remains searchable"
+    },
+    {
+      "raw": "what did convex say about full table scans",
+      "expect": {
+        "must": ["full", "table", "scans"],
+        "intent": "question",
+        "authorId": "convex-author"
+      },
+      "note": "explicit speech attribution resolves the speaker, not the topic"
+    },
+    {
+      "raw": "height of theo",
+      "expect": {
+        "must": ["theo"],
+        "should": ["height"],
+        "aspects": ["~spec"],
+        "intent": "question",
+        "authorId": null
+      },
+      "note": "Theo is the subject, not an implicit author filter"
+    },
+    {
+      "raw": "conevx full table scans",
+      "expect": {
+        "must": ["conevx", "full", "table", "scans"],
+        "intent": "topic",
+        "authorId": null
+      },
+      "note": "misspelling stays literal; a future suggestion must be explicit and user-applied"
+    },
+    {
+      "raw": "from:@convex full table scans",
+      "expect": {
+        "must": ["full", "table", "scans"],
+        "intent": "topic",
+        "authorId": "convex-author"
+      },
+      "note": "explicit from operator is preserved"
+    },
+    {
+      "raw": "😍",
+      "expect": {
+        "must": ["😍"],
+        "intent": "topic",
+        "authorId": null
+      },
+      "note": "emoji query remains a literal token"
+    },
+    {
+      "raw": "supabase vs convex vs appwrite",
+      "expect": {
+        "must": ["supabase", "convex", "appwrite"],
+        "aspects": ["~compare"],
+        "intent": "compare",
+        "authorId": null
+      },
+      "note": "mention-heavy product comparison keeps all products and strips comparison glue"
+    },
+    {
+      "raw": "what happens when you push to convex",
+      "expect": {
+        "must": ["happens", "push", "convex"],
+        "intent": "question",
+        "authorId": null
+      },
+      "note": "question about a product does not become an author filter"
+    },
+    {
+      "raw": "fast reliable rail connection",
+      "expect": {
+        "must": ["rail", "connection"],
+        "should": ["fast", "reliable"],
+        "aspects": ["~perf", "~quality"],
+        "intent": "topic",
+        "authorId": null
+      },
+      "note": "two weak aspect words boost performance and quality without gating"
+    },
+    {
+      "raw": "convex slow queries errors with ai",
+      "expect": {
+        "must": ["convex", "queries", "errors", "ai"],
+        "should": ["slow"],
+        "aspects": ["~perf"],
+        "intent": "topic",
+        "authorId": null
+      },
+      "note": "performance wording does not erase the concrete failure terms"
+    },
+    {
+      "raw": "\"shift enter\" terminal prompts",
+      "expect": {
+        "must": ["terminal", "prompts"],
+        "intent": "topic",
+        "authorId": null
+      },
+      "note": "quoted keyboard phrase remains separate from literal topic terms"
+    },
+    {
+      "raw": "from:@theo terminal prompts",
+      "expect": {
+        "must": ["terminal", "prompts"],
+        "intent": "topic",
+        "authorId": "theo-author"
+      },
+      "note": "explicit account filter survives a reply-heavy topic"
+    },
+    {
+      "raw": "codvex",
+      "expect": {
+        "must": ["codvex"],
+        "intent": "topic",
+        "authorId": null
+      },
+      "note": "sampled misspelling stays literal instead of silently becoming convex"
+    },
+    {
+      "raw": "backup retention replication log",
+      "expect": {
+        "must": ["backup", "retention", "replication", "log"],
+        "intent": "topic",
+        "authorId": null
+      },
+      "note": "storage discussion remains literal and does not infer an incident window"
+    }
+  ]
+}
