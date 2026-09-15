@@ -94,6 +94,8 @@ function pushToken(tokens: Term[], keepStopwords: boolean, t: string): void {
   if (t.length > 0 && (keepStopwords || !STOP.has(t))) tokens.push(t as Term);
 }
 
+export { adjacentBigrams, isBigramTerm } from "./bigrams";
+
 function isCjkChar(c: string): boolean {
   return CJK_RE.test(c);
 }

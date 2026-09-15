@@ -6,8 +6,10 @@
 import { SortOrder, type XQuery } from "./xquery";
 import type { AuthorId, Term } from "../contracts/ids";
 import { tokenize } from "./tokenize";
+import { adjacentBigrams } from "./bigrams";
 
 export const PER_TERM_CAP = 500; // 12 query terms + 5 PRF terms, cached across levels
+export const SEED_CAP = 1500; // multi-gate AND reads this many of the rarest term
 export const MIN_RESULTS = 10; // ladder escalation threshold (§5.2)
 export const RERANK_CANDIDATES = 200;
 
@@ -81,10 +83,20 @@ export function planL0(xq: XQuery, dfs: Map<Term, number>): ReadPlan {
   const gateTerms = rarestFirst(uniqueTerms(xq.must, xq.aspects, phraseTerms(xq)), dfs);
   const gates: PostingsRead[] = [];
   for (const term of gateTerms) gates.push(readFor(term, xq));
+  // Bigrams recover adjacent hits outside the unigram impact window. They are
+  // unions, never AND gates: unquoted "apple tree" must still match
+  // "apple grows on tree" (AND, not adjacency). Empty-must OR queries use
+  // should-terms as the L0 union so they stay exact rather than L2-related.
+  const unionTerms = rarestFirst(
+    uniqueTerms(indexedBigrams(xq, dfs), gates.length === 0 ? xq.should : []),
+    dfs,
+  );
+  const unions: PostingsRead[] = [];
+  for (const term of unionTerms) unions.push(readFor(term, xq));
   return {
     level: LadderLevel.L0,
     gates,
-    unions: [],
+    unions,
     excludes: [...xq.exclude],
     postFilters: postFiltersOf(xq),
   };
@@ -215,7 +227,10 @@ export function escalate(
 }
 
 function escalateToL2(xq: XQuery, dfs: Map<Term, number>): ReadPlan | null {
-  const unionTerms = rarestFirst(uniqueTerms(xq.must, xq.should, xq.aspects, phraseTerms(xq)), dfs);
+  const unionTerms = rarestFirst(
+    uniqueTerms(xq.must, xq.should, xq.aspects, phraseTerms(xq), indexedBigrams(xq, dfs)),
+    dfs,
+  );
   if (unionTerms.length === 0) return null;
   const unions: PostingsRead[] = [];
   for (const t of unionTerms) unions.push(readFor(t, xq));
@@ -231,4 +246,31 @@ function escalateToL2(xq: XQuery, dfs: Map<Term, number>): ReadPlan | null {
 /** Stopwords stay in phrase verification, but have no index postings. */
 export function phraseTerms(xq: XQuery): Term[] {
   return xq.phrases.flatMap((phrase) => tokenize(phrase.join(" ")).tokens);
+}
+
+/**
+ * Adjacent-token postings that actually exist in this corpus. Unknown bigrams
+ * must not enter the gate list: df 0 would sort rarest and seed an empty read.
+ */
+export function indexedBigrams(xq: XQuery, dfs: Map<Term, number>): Term[] {
+  const out: Term[] = [];
+  const seen = new Set<Term>();
+  const add = (tokens: Term[]) => {
+    for (const bg of adjacentBigrams(tokens)) {
+      if (seen.has(bg) || (dfs.get(bg) ?? 0) <= 0) continue;
+      seen.add(bg);
+      out.push(bg);
+    }
+  };
+  add(xq.must);
+  for (const phrase of xq.phrases) add(tokenize(phrase.join(" ")).tokens);
+  return out;
+}
+
+/** Query-side bigram candidates (existence unknown until a df probe). */
+export function queryBigrams(xq: XQuery): Term[] {
+  return uniqueTerms(
+    adjacentBigrams(xq.must),
+    ...xq.phrases.map((phrase) => adjacentBigrams(tokenize(phrase.join(" ")).tokens)),
+  );
 }

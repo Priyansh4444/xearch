@@ -110,8 +110,18 @@ body {
 }
 
 .typeahead button:hover,
-.typeahead button:focus-visible {
+.typeahead button:focus-visible,
+.typeahead button.active {
   background: var(--mark);
+}
+
+.related-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 1.4rem 0 0.5rem;
 }
 
 .typeahead .df {

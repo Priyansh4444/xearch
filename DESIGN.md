@@ -494,10 +494,13 @@ filters `{authorId, media:"image"}`.
 - Recency mode ("Latest" tab) reads a time index, then sorts surviving candidates
   by descending timestamp, with composite score and document ID breaking ties.
   Explicit `sort:` operators take precedence over the tab argument.
-- Phrases: intersect indexed terms, then verify normalized token adjacency on
+- Phrases: seed the rarest indexed term (or an adjacent-token bigram posting when
+  present), then verify remaining AND gates and normalized token adjacency on
   candidate text, preserving stopwords. Exclusions and all hard filters use the
   same candidate predicate on every path, including author-only queries.
-  `since` is inclusive and `until` is exclusive.
+  `since` is inclusive and `until` is exclusive. Unquoted multi-word queries are
+  AND, not phrases; adjacent matches get a rerank bonus. Exact (L0) hits always
+  sort above related ladder rescues; the UI splits them with a Related heading.
 - **Reactivity for free:** implement this as a Convex query function and the results
   live-update as the 24/7 indexer inserts matching tweets. This is the demo moment —
   a search results page that grows in real time. Lean on it.
@@ -691,8 +694,8 @@ posting rows; at ~100 B/row × (1 + 5 index copies) ≈ 60–90 GB. Inside a pai
 plan, and — the important part — **per-query work is O(k·N) no matter how big the
 corpus gets**, so latency stays flat as the tables fill. Storage levers, in drop
 order if cost bites: the `by_term_media_score` index (filter media at rerank
-instead), `positions` (skip until phrase queries ship), aspect postings for rare
-aspects.
+instead), adjacent-token bigrams (the phrase posting we ship in place of
+`positions`), aspect postings for rare aspects.
 
 True Twitter scale (1B tweets → 15B posting rows → tens of TB) needs the Earlybird
 realtime/archive split — sealed Tantivy segments on object storage behind a

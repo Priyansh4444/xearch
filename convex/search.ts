@@ -15,14 +15,23 @@ import {
   type ReadPlan,
   MIN_RESULTS,
   PER_TERM_CAP,
+  SEED_CAP,
   RERANK_CANDIDATES,
   phraseTerms,
+  queryBigrams,
   uniqueTerms,
 } from "./engine/plan";
 import { rerank, rrfFuse, type Candidate } from "./engine/rank";
 import { queryKey, emptyXQuery, SortOrder } from "./engine/xquery";
 import type { AuthorId, Term, TweetId } from "./contracts/ids";
-import { matchesConstraints, queryInputError, MAX_QUERY_TERMS } from "./engine/constraints";
+import { isBigramTerm } from "./engine/bigrams";
+import {
+  analyzeTweet,
+  matchesConstraints,
+  matchesGates,
+  queryInputError,
+  MAX_QUERY_TERMS,
+} from "./engine/constraints";
 
 interface Match {
   tf: Map<Term, number>;
@@ -74,11 +83,11 @@ export const search = query({
     const key = queryKey(xq);
 
     // 2. df point reads for every term the planner or reranker will touch.
-    const allTerms = uniqueTerms(xq.must, xq.should, xq.aspects, phraseTerms(xq));
-    if (allTerms.length > MAX_QUERY_TERMS)
+    const userTerms = uniqueTerms(xq.must, xq.should, xq.aspects, phraseTerms(xq));
+    if (userTerms.length > MAX_QUERY_TERMS)
       return invalidSearch("Use at most 12 search terms and aspects.");
     const dfs = new Map<Term, number>();
-    for (const term of allTerms) {
+    for (const term of uniqueTerms(userTerms, queryBigrams(xq))) {
       const row = await ctx.db
         .query("terms")
         .withIndex("by_term", (q) => q.eq("term", term))
@@ -95,15 +104,27 @@ export const search = query({
     async function eligible(
       found: Map<string, Match>,
       via: Candidate["matchedVia"],
+      gateTerms: Term[],
     ): Promise<Map<string, Match>> {
       const accepted = new Map<string, Match>();
-      for (const [id, match] of found) {
+      for (const [id] of found) {
         const tweet = tweets.get(id) ?? (await ctx.db.get(id as Id<"tweets">));
         if (tweet === null) continue;
         tweets.set(id, tweet);
-        if (!matchesConstraints(tweet, xq)) continue;
+        const analysis = analyzeTweet(tweet.text);
+        if (!matchesConstraints(tweet, xq, analysis)) continue;
+        if (gateTerms.length > 0 && !matchesGates(analysis, gateTerms)) continue;
         if (!firstMatched.has(id)) firstMatched.set(id, via);
-        accepted.set(id, match);
+        const tf = new Map<Term, number>();
+        for (const term of userTerms) {
+          const n = analysis.counts.get(term);
+          if (n !== undefined) tf.set(term, n);
+          else if (analysis.present.has(term)) tf.set(term, 1);
+        }
+        for (const term of queryBigrams(xq)) {
+          if (analysis.present.has(term)) tf.set(term, 1);
+        }
+        accepted.set(id, { tf });
       }
       return accepted;
     }
@@ -111,20 +132,24 @@ export const search = query({
     for (let step = 0; step < 5 && plan !== null; step++) {
       const found = await executePlan(ctx, plan, postingCache);
       const via = plan.level === LadderLevel.L5 ? LadderLevel.L4 : plan.level;
-      const accepted = await eligible(found, via);
+      const accepted = await eligible(
+        found,
+        via,
+        plan.gates.map((gate) => gate.term),
+      );
       // Retain prior exact hits when a widened candidate set is truncated.
       for (const [id, match] of accepted) matches.set(id, match);
       level = plan.level;
       let prfTerms: Term[] | undefined;
       if (plan.level === LadderLevel.L2 && matches.size < MIN_RESULTS && matches.size > 0) {
-        prfTerms = await minePrfTerms(ctx, matches, allTerms, dfs, tweets);
+        prfTerms = await minePrfTerms(ctx, matches, userTerms, dfs, tweets);
       }
       plan = escalate(plan, matches.size, xq, dfs, prfTerms);
     }
 
     // Term-less author query ("from:@theo" alone): read the author's timeline
     // directly — the postings index has nothing to gate on.
-    if (allTerms.length === 0 && xq.filters.authorId !== null) {
+    if (userTerms.length === 0 && xq.filters.authorId !== null) {
       const rows = await ctx.db
         .query("tweets")
         .withIndex("by_author_time", (q) => {
@@ -143,6 +168,7 @@ export const search = query({
       matches = await eligible(
         new Map(rows.map((r) => [r._id as string, { tf: new Map<Term, number>() }])),
         LadderLevel.L0,
+        [],
       );
       level = LadderLevel.L0;
     }
@@ -212,14 +238,15 @@ export const search = query({
   },
 });
 
-/** Execute a ReadPlan: bounded postings reads, in-memory intersection/union. */
+/** Execute a ReadPlan: rarest-term seed for AND, union lists fused by RRF. */
 async function executePlan(
   ctx: QueryCtx,
   plan: ReadPlan,
   cache: Map<string, Doc<"postings">[]>,
 ): Promise<Map<string, { tf: Map<Term, number> }>> {
   const read = async (r: PostingsRead) => {
-    const cached = cache.get(r.term);
+    const cacheKey = `${r.term}:${r.limit}:${r.index}`;
+    const cached = cache.get(cacheKey);
     if (cached !== undefined) return cached;
     let q;
     if (r.index === "by_term_author_time") {
@@ -264,25 +291,20 @@ async function executePlan(
         (plan.postFilters.until === undefined || p.createdAt < plan.postFilters.until) &&
         (plan.postFilters.media === undefined || p.mediaType === plan.postFilters.media),
     );
-    cache.set(r.term, filtered);
+    cache.set(cacheKey, filtered);
     return filtered;
   };
 
   const acc = new Map<string, { tf: Map<Term, number> }>();
   if (plan.gates.length > 0) {
-    // Rarest term seeds the map in impact order; every later gate intersects.
+    // Seed from the rarest gate only. Intersecting two truncated posting lists
+    // drops the rare hit when it sits outside the common term's impact window
+    // (RISKS R1). Remaining gates are verified against tweet text in eligible().
     const first = plan.gates[0]!;
-    for (const p of await read(first)) {
+    const seed =
+      plan.gates.length > 1 && first.limit < SEED_CAP ? { ...first, limit: SEED_CAP } : first;
+    for (const p of await read(seed)) {
       if (!acc.has(p.tweetId)) acc.set(p.tweetId, { tf: new Map([[first.term, p.tf]]) });
-    }
-    for (const gate of plan.gates.slice(1)) {
-      const seen = new Map<string, number>();
-      for (const p of await read(gate)) seen.set(p.tweetId, p.tf);
-      for (const [tweetId, entry] of acc) {
-        const tf = seen.get(tweetId);
-        if (tf === undefined) acc.delete(tweetId);
-        else entry.tf.set(gate.term, tf);
-      }
     }
   }
   const lists: string[][] = [];
@@ -351,23 +373,59 @@ function authorByAuthorId(ctx: QueryCtx, authorId: string) {
     .unique();
 }
 
-/** Typeahead over the term dictionary — the "trie" range read (DESIGN §3). */
+export const SuggestKind = {
+  Term: "term",
+  Author: "author",
+} as const;
+export type SuggestKind = (typeof SuggestKind)[keyof typeof SuggestKind];
+
+/** Typeahead over the term dictionary and author handles (DESIGN §3). */
 export const suggest = query({
-  args: { prefix: v.string() },
-  handler: async (ctx, { prefix }) => {
+  args: {
+    prefix: v.string(),
+    mode: v.optional(v.union(v.literal("term"), v.literal("author"), v.literal("both"))),
+  },
+  handler: async (ctx, { prefix, mode }) => {
     if (prefix.length > 64) return [];
     const p = prefix.toLowerCase().trim();
     if (p.length === 0) return [];
-    const terms = await ctx.db
-      .query("terms")
-      .withIndex("by_term", (q) => q.gte("term", p).lt("term", p + "\uffff"))
-      .take(50); // over-fetch, rank by df, return 10
-    return terms
-      .sort((a, b) => b.df - a.df)
-      .slice(0, 10)
-      .map((t) => ({ term: t.term, df: t.df }));
-    // TODO: blend author-handle completions (ARCHITECTURE open question) — one more
-    // range read on authors.by_handle, merged with terms by a fixed 70/30 split.
+    const kind = mode ?? "both";
+    const wantTerms = kind === "term" || kind === "both";
+    const wantAuthors = kind === "author" || kind === "both";
+    const out: Array<{ term: string; df: number; kind: SuggestKind }> = [];
+    if (wantTerms) {
+      const terms = await ctx.db
+        .query("terms")
+        .withIndex("by_term", (q) => q.gte("term", p).lt("term", p + "\uffff"))
+        .take(50);
+      const ranked = terms
+        .filter((t) => !isBigramTerm(t.term) && !t.term.startsWith("~"))
+        .sort((a, b) => b.df - a.df || a.term.localeCompare(b.term));
+      const take = kind === "term" ? 10 : 7;
+      for (const t of ranked.slice(0, take)) {
+        out.push({ term: t.term, df: t.df, kind: SuggestKind.Term });
+      }
+    }
+    if (wantAuthors) {
+      const authors = await ctx.db
+        .query("authors")
+        .withIndex("by_handle", (q) => q.gte("handle", p).lt("handle", p + "\uffff"))
+        .take(20);
+      const ranked = [...authors].sort(
+        (a, b) => b.authority - a.authority || a.handle.localeCompare(b.handle),
+      );
+      const take = kind === "author" ? 10 : 3;
+      const seen = new Set(out.map((row) => row.term));
+      for (const a of ranked.slice(0, take)) {
+        if (seen.has(a.handle)) continue;
+        out.push({
+          term: a.handle,
+          df: Math.max(1, Math.round(a.authority)),
+          kind: SuggestKind.Author,
+        });
+      }
+    }
+    return out;
   },
 });
 

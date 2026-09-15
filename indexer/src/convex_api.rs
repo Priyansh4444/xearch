@@ -49,8 +49,16 @@ impl ConvexClient {
     /// Returns an error when serialization fails, Convex rejects the mutation,
     /// or all retry attempts fail.
     pub fn ingest_batch(&self, batch: &IngestBatch) -> Result<IngestAck> {
-        let args = serde_json::to_value(batch)?;
-        let value = self.mutation("ingest:ingestBatch", &args)?;
+        self.ingest_batch_json(&serde_json::to_value(batch)?)
+    }
+
+    /// Upload a previously serialized `IngestBatch` (offline prepare files).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when Convex rejects the mutation or the ack is malformed.
+    pub fn ingest_batch_json(&self, args: &serde_json::Value) -> Result<IngestAck> {
+        let value = self.mutation("ingest:ingestBatch", args)?;
         serde_json::from_value(value).context("ingestBatch ack shape")
     }
 

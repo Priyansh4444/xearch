@@ -106,7 +106,19 @@ export function tierA(raw: string): { xq: XQuery; trace: ParseTrace } {
     return pre;
   });
 
-  xq.must = tokenize(rest).tokens;
+  // Explicit OR is a union, not a stopword. "apple OR tree" must not AND.
+  if (/(^|\s)or(\s|$)/i.test(rest) && /\s+or\s+/i.test(rest)) {
+    const groups = rest.split(/\s+or\s+/i);
+    for (const group of groups) {
+      for (const tok of tokenize(group).tokens) {
+        if (!xq.should.includes(tok)) xq.should.push(tok);
+      }
+    }
+    trace.consumed["OR"] = "should";
+    xq.must = [];
+  } else {
+    xq.must = tokenize(rest).tokens;
+  }
   const px = xq as XQueryWithPending;
   px.pendingFromHandle = pendingFromHandle;
   px.pendingSince = pendingTime.since;

@@ -225,10 +225,47 @@ export const applyMetrics = internalMutation({
       }),
     ),
   },
-  handler: async (_ctx, _args) => {
-    // TODO(implement): patch tweets; when newScoreBucket present, patch the tweet's
-    // postings via by_tweet (the ONLY code path that ever rewrites postings, §6.1).
-    throw new Error("not implemented: applyMetrics");
+  handler: async (ctx, args) => {
+    let patched = 0;
+    for (const update of args.updates) {
+      const existing = await ctx.db
+        .query("tweets")
+        .withIndex("by_tweetId", (q) => q.eq("tweetId", update.tweetId))
+        .unique();
+      if (existing === null) continue;
+      const patch: {
+        likeCount?: number;
+        retweetCount?: number;
+        replyCount?: number;
+        quoteCount?: number;
+        metricsAt?: number;
+        propagatedBoost?: number;
+      } = {};
+      if (update.metricsAt >= existing.metricsAt) {
+        patch.likeCount = update.metrics.likes;
+        patch.retweetCount = update.metrics.retweets;
+        patch.replyCount = update.metrics.replies;
+        patch.quoteCount = update.metrics.quotes;
+        patch.metricsAt = update.metricsAt;
+      }
+      if (update.propagatedBoost !== undefined) {
+        patch.propagatedBoost = update.propagatedBoost;
+      }
+      if (Object.keys(patch).length > 0) {
+        await ctx.db.patch(existing._id, patch);
+        patched += 1;
+      }
+      if (update.newScoreBucket !== undefined) {
+        const postings = await ctx.db
+          .query("postings")
+          .withIndex("by_tweet", (q) => q.eq("tweetId", existing._id))
+          .take(64);
+        for (const posting of postings) {
+          await ctx.db.patch(posting._id, { scoreBucket: update.newScoreBucket });
+        }
+      }
+    }
+    return { patched };
   },
 });
 
