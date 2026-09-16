@@ -149,12 +149,15 @@ export default defineSchema({
     createdAt: v.number(),
   }).index("by_query", ["queryKey"]),
 
-  // Which config indexed this corpus (RISKS O4). One row per ingest run.
+  // Which config indexed this corpus (RISKS O4). ONE active-config row.
   meta: defineTable({
     key: v.string(), // e.g. "activeConfig"
     configHash: v.string(),
     lexiconVersion: v.number(),
     tokenizerVersion: v.number(),
     updatedAt: v.number(),
+    // Configs that contributed tweets additively under --allow-config-drift
+    // (new tweets only; the active config above is preserved).
+    driftedConfigHashes: v.optional(v.array(v.string())),
   }).index("by_key", ["key"]),
 });

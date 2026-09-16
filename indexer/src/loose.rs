@@ -57,6 +57,9 @@ pub fn parse_line(line: &str) -> Result<ParsedLine, String> {
         .clone()
         .or_else(|| nested.and_then(|author| author.screen_name.clone()))
         .unwrap_or_else(|| author_id.clone());
+    // FxTwitter status dumps carry `created_at` as a human string alongside the
+    // numeric `created_timestamp`; the string is ignored in favor of the
+    // numeric value instead of failing the whole record.
     let created_at = to_epoch_ms(
         raw.created_at
             .or(raw.created_timestamp)
@@ -138,6 +141,15 @@ impl ParsedLine {
     }
 }
 
+/// Epoch-ms when the value is numeric; provider-formatted strings are ignored
+/// (the numeric sibling `created_timestamp` is the authoritative value).
+fn timestamp_ms<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<i64>, D::Error> {
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value.and_then(|v| v.as_i64()))
+}
+
 #[derive(Debug, Deserialize)]
 struct LooseTweet {
     #[serde(default)]
@@ -150,7 +162,7 @@ struct LooseTweet {
     author_id: Option<String>,
     #[serde(default, alias = "authorHandle")]
     author_handle: Option<String>,
-    #[serde(default, alias = "createdAt")]
+    #[serde(default, alias = "createdAt", deserialize_with = "timestamp_ms")]
     created_at: Option<i64>,
     #[serde(default)]
     created_timestamp: Option<i64>,
@@ -322,6 +334,18 @@ mod tests {
             panic!("expected ingress tweet");
         };
         assert_eq!(tweet.id, "t1");
+    }
+
+    #[test]
+    fn fxtwitter_status_tolerates_a_string_created_at() {
+        // Real status dumps carry `created_at` as a human string; the numeric
+        // `created_timestamp` is authoritative and the string must not reject
+        // the whole record.
+        let line = r#"{"type":"status","id":"1002","text":"hello","created_at":"Tue Dec 05 09:53:20 +0000 2023","created_timestamp":1701769200,"author":{"id":"100","screen_name":"seed"}}"#;
+        let ParsedLine::Tweet { tweet, .. } = parse_line(line).unwrap() else {
+            panic!("expected loose tweet");
+        };
+        assert_eq!(tweet.created_at, 1_701_769_200_000);
     }
 
     #[test]

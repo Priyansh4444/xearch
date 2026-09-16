@@ -227,6 +227,42 @@ describe("search serving flow", () => {
     expect(result.appliedQuery.must).toEqual([]);
   });
 
+  test("config drift is rejected by default and additive with the flag", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(
+      internal.ingest.ingestBatch,
+      batch([tweet("first", "apple tree", ["apple", "tree"])], "old-config"),
+    );
+    const drifted = batch([tweet("second", "pear tree", ["pear", "tree"])], "new-config");
+    await expect(t.mutation(internal.ingest.ingestBatch, drifted)).rejects.toThrow(
+      /configuration mismatch/,
+    );
+
+    const ack = await t.mutation(internal.ingest.ingestBatch, {
+      ...drifted,
+      allowConfigDrift: true,
+    });
+    expect(ack.inserted).toBe(1);
+    const meta = await t.run(async (ctx) => await ctx.db.query("meta").first());
+    expect(meta?.configHash).toBe("old-config");
+    expect(meta?.driftedConfigHashes).toEqual(["new-config"]);
+    // Existing tweets keep their postings and their original config's snapshot.
+    const result = await t.query(api.search.search, { raw: "apple", sort: "top" });
+    expect(result.results.map((row) => row.tweetId)).toContain("first");
+  });
+
+  test("OR branches drop glue and temporal words the same way must does", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(internal.ingest.ingestBatch, batch());
+    const result = await t.query(api.search.search, {
+      raw: "apple OR what is rust today",
+      sort: "top",
+    });
+    expect(result.appliedQuery.union).toBe(true);
+    expect(result.appliedQuery.should.sort()).toEqual(["apple", "rust"]);
+    expect(result.appliedQuery.filters.since).not.toBeNull();
+  });
+
   test("quoted OR branches stay adjacency-verified alternatives", async () => {
     const t = convexTest(schema, modules);
     await t.mutation(

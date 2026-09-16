@@ -260,6 +260,9 @@ export async function tierB(
     "someone",
   ]);
   const tokensWithoutGlue = xq.must.filter((token) => !GLUE.has(token));
+  // Explicit-OR branches are stripped the same way: `apple OR what is rust`
+  // must not keep "what"/"is" as alternatives.
+  xq.should = xq.should.filter((token) => !GLUE.has(token));
   // Aspect detection intentionally sees glue words such as "vs" before
   // retrieval removes them, and sees every explicit-OR branch: an aspect
   // signal in a should term or quoted branch is the same signal as in must
@@ -490,6 +493,9 @@ function applyTemporalLexicon(
 function stripTokens(xq: XQuery, fragment: string) {
   const toks = new Set(tokenize(fragment).tokens);
   xq.must = xq.must.filter((t) => !toks.has(t));
+  // Union branches carry the same words ("apple OR tree today"); the temporal
+  // fragment must not survive as an alternative either.
+  xq.should = xq.should.filter((t) => !toks.has(t));
 }
 
 /**

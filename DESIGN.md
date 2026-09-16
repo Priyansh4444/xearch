@@ -290,10 +290,11 @@ downstream ever sees the raw string:
 ```ts
 type XQuery = {
   v: 1;
-  intent: "topic" | "person" | "person_topic" | "media" | "question" | "event";
+  intent: "topic" | "person" | "person_topic" | "media" | "question" | "compare" | "event";
   must: string[];        // AND terms, tokenized identically to the indexer
-  should: string[];      // soft expansions: completions, synonyms, #hashtag variants
+  should: string[];      // soft expansions; for union queries, the bare OR branches
   phrases: string[][];   // exact adjacency groups from "quoted strings"
+  union?: true;          // explicit `or`: should/phrases become alternatives, aspects stay gates
   exclude: string[];     // -term
   filters: {
     authorId?: string;
@@ -474,8 +475,9 @@ filters `{authorId, media:"image"}`.
 ```
 1. Look up df for each `must` term (and aspect token) in `terms`.  (k point reads)
 2. Sort terms rarest-first.
-3. Read postings for the RAREST term (or an adjacent-token bigram posting when
-   present) via the matching compound index, ordered by scoreBucket desc, capped at N=1,500.
+3. Read postings for the RAREST term via the matching compound index, ordered by
+   scoreBucket desc, capped at N=1,500. Adjacent-token bigram postings, when the
+   corpus has them, are read as union wideners — never as gates.
 4. For remaining AND gates, aspects, and phrase adjacency, verify them directly
    against candidate tweet text instead of intersecting truncated posting lists.
 5. Hand survivors (≤ ~200) to the reranker (§6).
@@ -484,19 +486,21 @@ filters `{authorId, media:"image"}`.
 
 - Requests are limited to 512 characters and 12 input tokens, with at most 12
   indexed terms/aspects after parsing. L3 adds at most 5 PRF terms. Posting reads
-  are cached across all five executions: at most 8,500 posting rows, 1,000 candidate
-  hydrations, 20 PRF hydrations, and 200 each of author/feedback-total lookups.
+  are cached across all five executions: at most 1,500 rows on the seed read plus
+  500 per remaining gate and union read, 200 candidate hydrations, 20 PRF
+  hydrations, and 200 each of author/feedback-total lookups.
   Retrieval is approximate within these caps, not exhaustive corpus search.
 - The cap is principled, not a hack: postings are read in `scoreBucket` order, so this
   is **impact-ordered early termination** — the same family as MAXSCORE / WAND /
-  Block-Max WAND that Lucene 8 and Weaviate ship (§8). Truncating a common term's list
-  at 500 omits lower static-score candidates that could still rerank well.
+  Block-Max WAND that Lucene 8 and Weaviate ship (§8). Truncating a common term's
+  list at 500 (1,500 for the single seed) omits lower static-score candidates that
+  could still rerank well.
 - Recency mode ("Latest" tab) reads a time index, then sorts surviving candidates
   by descending timestamp, with composite score and document ID breaking ties.
   Explicit `sort:` operators take precedence over the tab argument.
-- Phrases: seed the rarest indexed term (or an adjacent-token bigram posting when
-  present), then verify remaining AND gates and normalized token adjacency on
-  candidate text, preserving stopwords. Exclusions and all hard filters use the
+- Phrases: seed the rarest indexed unigram term; indexed adjacent-token bigrams
+  widen the union, then remaining AND gates and normalized token adjacency are
+  verified on candidate text, preserving stopwords. Exclusions and all hard filters use the
   same candidate predicate on every path, including author-only queries.
   `since` is inclusive and `until` is exclusive. Unquoted multi-word queries are
   AND, not phrases; adjacent matches get a rerank bonus. Exact (L0) hits always
@@ -513,6 +517,8 @@ fewer than M (≈10) hits, relax stepwise — every level still bounded reads:
 ```
 L0 exact:    AND(must + aspects) + filters                     (§5.1)
 L1 relax:    drop lowest-idf must not protected by phrase/aspect (≤ 2 drops)
+             (skipped entirely for explicit-OR queries and for queries with fewer
+             than two distinct lexical terms — their result sets are complete)
 L2 union:    per-term top-N lists for must ∪ should, RRF-fuse  (OR semantics)
 L3 PRF:      pseudo-relevance feedback, RM3-style, no LLM — mine the top ~20
              docs found so far for high-idf co-occurring terms, add as should,
@@ -538,7 +544,9 @@ L5 repair:   still nothing → "did you mean": edit-distance-1 + prefix completi
 Two phases, because the expensive signals only need to run on candidates that can win:
 
 **Phase 1 — retrieval order (baked into the index).** `scoreBucket` = quantized
-(0–255) snapshot of `w1·log1p(likes + 3·retweets + 4·quotes) + w2·recencyBucket(day)`.
+(0–255, log-spaced) snapshot of
+`ln1p(w_like·likes + w_reply·replies + w_rt·retweets + w_quote·quotes)` plus a
+linear recency term (days since the recency epoch, capped at 730, 1/30 per day).
 Computed by the Rust indexer at ingest. Postings sort by it; that's what makes the
 caps safe.
 
@@ -636,13 +644,14 @@ Pipeline per batch of tweets:
    Emit **aspect tokens** from the shared lexicon (§4.6). Optional: light stemmer
    (`rust-stemmers`, English only) — same function on the query side; skip for v1 if
    time is short.
-2. **Score**: compute raw static score `w1·log1p(likes + 2·retweets) +
-   w2·recencyBucket(createdAt)`, quantize to `scoreBucket` (0–255). A periodic refresh
-   pass re-buckets tweets whose live engagement drifted a full bucket — cheap because
-   bucket crossings are rare by construction.
+2. **Score**: compute raw static score `w1·ln1p(likes + 2·replies + 3·retweets +
+   4·quotes) + w2·recency(days)`, quantize to `scoreBucket` (0–255). A periodic
+   refresh pass re-buckets tweets whose live engagement drifted a full bucket —
+   cheap because bucket crossings are rare by construction.
 3. **Embed** (§11): tweet text → 384-dim sentence embedding; images → SigLIP/CLIP —
    both via ONNX Runtime (`ort` crate). Skip gracefully when models aren't wired up.
-   The refresh mode also runs **Tweepcred** (§6.2) and **boost propagation** (§6.1)
+   The refresh mode currently re-buckets, applies metric recrawls, and runs
+   **boost propagation** (§6.1); **Tweepcred** (§6.2) and embeddings are not wired yet
    batch jobs.
 4. **Emit** `(tweet, postings[], termDeltas[], embeddings[])` and POST to a Convex
    **internal mutation** via the HTTP API, batched (~100 tweets / call), idempotent on

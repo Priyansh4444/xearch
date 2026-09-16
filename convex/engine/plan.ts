@@ -200,6 +200,12 @@ export function escalate(
 ): ReadPlan | null {
   if (survivors >= MIN_RESULTS) return null;
 
+  // An explicit-OR query is already its complete branch union. Relaxing it
+  // would OR in PRF topics no branch asked for, and L2 would also turn the
+  // aspect gates into union terms — the query would mean different things at
+  // different levels.
+  if (xq.union) return null;
+
   // L0/L1 -> L1: drop the lowest-idf (= highest-df) gate, at most twice, and only
   // while more than one gate remains. Filters ride along untouched (invariant 2).
   if (executed.level === LadderLevel.L0 || executed.level === LadderLevel.L1) {
