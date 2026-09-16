@@ -31,6 +31,8 @@ function response(error: string | null = null) {
     trace: { consumed: {} },
     candidateCount: error === null ? 1 : 0,
     asOf: 1_700_000_000_000,
+    nextPrefix: [],
+    prefixDropped: false,
     results:
       error === null
         ? [
@@ -147,7 +149,13 @@ test("load more grows the page and keeps the previous rows while loading", async
       tweetId: `${offset + i}`,
       text: `apple ${offset + i}`,
     }));
-  full = { ...response(), results: rows(20), candidateCount: 60 };
+  const refs = rows(20).map((row, i) => ({
+    id: `t-${i}`,
+    matchedVia: "L0" as const,
+    score: 1 + i,
+    parts: { rel: 1 },
+  }));
+  full = { ...response(), results: rows(20), candidateCount: 60, nextPrefix: refs };
   await render();
   expect(container.textContent).toContain("20 of 60 posts");
   expect(container.querySelector(".load-more")?.textContent).toContain("40 left");
@@ -158,19 +166,117 @@ test("load more grows the page and keeps the previous rows while loading", async
   expect(container.querySelectorAll(".results li").length).toBe(20);
   expect(container.querySelector(".load-more")?.textContent).toContain("Loading");
   const searchArgs = mocks.query.mock.calls
-    .map(([, args]) => args as { raw?: string; limit?: number; asOf?: number } | undefined)
+    .map(
+      ([, args]) =>
+        args as
+          | {
+              raw?: string;
+              limit?: number;
+              asOf?: number;
+              prefix?: { id: string; matchedVia: string; score: number; parts: unknown }[];
+              prefixQueryKey?: string;
+            }
+          | undefined,
+    )
     .filter((args) => args?.raw === "apple");
-  // The first page omits asOf (server clock); load more echoes the response's
-  // snapshot so the rows already shown keep their order.
+  // The first page omits asOf/prefix; load more echoes the response's snapshot
+  // and the displayed rows so nothing already shown can move.
   expect(searchArgs[0]?.asOf).toBeUndefined();
-  expect(searchArgs.some((args) => args?.limit === 40 && args?.asOf === 1_700_000_000_000)).toBe(
-    true,
-  );
+  expect(searchArgs[0]?.prefix).toBeUndefined();
+  const continuation = searchArgs.find((args) => args?.limit === 40);
+  expect(continuation?.asOf).toBe(1_700_000_000_000);
+  expect(continuation?.prefix).toEqual(refs);
+  // The prefix is bound to the query interpretation that minted it.
+  expect(continuation?.prefixQueryKey).toBe("0000000000000001");
 
-  full = { ...response(), results: rows(40), candidateCount: 60 };
+  full = { ...response(), results: rows(40), candidateCount: 60, nextPrefix: refs };
   await render();
   expect(container.textContent).toContain("40 of 60 posts");
   expect(container.querySelectorAll(".results li").length).toBe(40);
+});
+
+test("paged results keep first-page metadata and drop chain duplicates", async () => {
+  const rows = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      ...(response().results[0] as object),
+      _id: `t-${i}`,
+      tweetId: `${i}`,
+      text: `apple ${i}`,
+    }));
+  const refs = rows(20).map((row, i) => ({
+    id: `t-${i}`,
+    matchedVia: "L0" as const,
+    score: 1,
+    parts: { rel: 1 },
+  }));
+  full = {
+    ...response(),
+    ladder: LadderLevel.L2,
+    results: rows(20),
+    candidateCount: 60,
+    nextPrefix: refs,
+  };
+  await render();
+  expect(container.textContent).toContain("widened to related posts (L2)");
+
+  // Open the prefix sequence (this is what freezes page-one metadata), then let
+  // page two arrive: prefix rows first (same order), a chain duplicate of row
+  // 0, and one genuinely new row in the live tail.
+  await click("Load more (40 left)");
+  full = {
+    ...response(),
+    ladder: LadderLevel.L0,
+    results: [
+      ...rows(20),
+      { ...(response().results[0] as object), _id: "dup", tweetId: "0", quotedTweetId: "0" },
+      { ...(response().results[0] as object), _id: "new", tweetId: "999", text: "apple new" },
+    ],
+    candidateCount: 60,
+    nextPrefix: refs,
+  };
+  await render();
+  // The duplicate chain is filtered; the new tail row renders.
+  expect(container.querySelectorAll(".results li").length).toBe(21);
+  expect(container.textContent).toContain("apple new");
+  // The widened notice still describes the pinned page, not the re-parse.
+  expect(container.textContent).toContain("widened to related posts (L2)");
+});
+
+test("a dropped prefix falls back to the fresh ranking metadata", async () => {
+  const rows = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      ...(response().results[0] as object),
+      _id: `t-${i}`,
+      tweetId: `${i}`,
+      text: `apple ${i}`,
+    }));
+  const refs = rows(20).map((row, i) => ({
+    id: `t-${i}`,
+    matchedVia: "L0" as const,
+    score: 1,
+    parts: { rel: 1 },
+  }));
+  full = {
+    ...response(),
+    ladder: LadderLevel.L2,
+    results: rows(20),
+    candidateCount: 60,
+    nextPrefix: refs,
+  };
+  await render();
+  expect(container.textContent).toContain("widened to related posts (L2)");
+
+  await click("Load more (40 left)");
+  full = {
+    ...response(),
+    ladder: LadderLevel.L0,
+    prefixDropped: true,
+    results: rows(20),
+    candidateCount: 20,
+    nextPrefix: [],
+  };
+  await render();
+  expect(container.textContent).not.toContain("widened to related posts (L2)");
 });
 
 test("stopword-only phrases and exclude-only queries also offer the literal lane", async () => {

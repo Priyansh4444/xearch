@@ -11,7 +11,16 @@ import {
   MIN_RESULTS,
   PER_TERM_CAP,
 } from "../convex/engine/plan";
-import { rerank, WEIGHTS, type Candidate } from "../convex/engine/rank";
+import {
+  chainKeyOf,
+  mergePinned,
+  normalizePinned,
+  rerank,
+  WEIGHTS,
+  type Candidate,
+  type PinnedRef,
+  type Scored,
+} from "../convex/engine/rank";
 import { emptyXQuery } from "../convex/engine/xquery";
 import { SortOrder, type MediaFilter, type XQueryFilters } from "../convex/engine/xquery";
 import type { AuthorId, Term, TweetId } from "../convex/contracts/ids";
@@ -643,4 +652,79 @@ describe("plan/rerank strong permutations (seeded properties)", () => {
       }
     },
   );
+});
+
+describe("pinned prefix paging", () => {
+  const scored = (id: string, score: number): Scored => ({
+    tweetId: id,
+    score,
+    matchedVia: "L0",
+    parts: { rel: score },
+  });
+  const pin = (id: string, score: number): PinnedRef => ({
+    id,
+    matchedVia: "L0",
+    score,
+    parts: { rel: score },
+  });
+
+  it("chainKeyOf prefers retweet, then quote, then source, then the id", () => {
+    expect(
+      chainKeyOf({ retweetOfTweetId: t("r"), quotedTweetId: t("q"), sourceTweetId: t("s") }, "x"),
+    ).toBe("r");
+    expect(chainKeyOf({ quotedTweetId: t("q"), sourceTweetId: t("s") }, "x")).toBe("q");
+    expect(chainKeyOf({ sourceTweetId: t("s") }, "x")).toBe("s");
+    expect(chainKeyOf({}, "x")).toBe("x");
+  });
+
+  it("normalizePinned keeps first occurrences and clamps the window", () => {
+    const refs = [pin("a", 1), pin("b", 2), pin("a", 3)];
+    expect(normalizePinned(refs, 200).map((ref) => ref.id)).toEqual(["a", "b"]);
+    expect(normalizePinned(refs, 1).map((ref) => ref.id)).toEqual(["a"]);
+    expect(normalizePinned([], 200)).toEqual([]);
+  });
+
+  it("mergePinned keeps the prefix in order even when the tail outranks it", () => {
+    const { ordered, candidateCount } = mergePinned(
+      [pin("p1", 0.1), pin("p2", 0.2)],
+      [scored("hot", 9), scored("p1", 9), scored("p3", 3)],
+      new Set(),
+      (id) => id,
+      10,
+    );
+    expect(ordered.map((row) => row.tweetId)).toEqual(["p1", "p2", "hot", "p3"]);
+    // The frozen row keeps its echoed ranking inputs, not the live recompute.
+    expect(ordered[0]!.parts).toEqual({ rel: 0.1 });
+    expect(ordered[0]!.score).toBe(0.1);
+    expect(candidateCount).toBe(4);
+  });
+
+  it("mergePinned drops duplicate ids and chain siblings from the tail", () => {
+    const { ordered } = mergePinned(
+      [pin("quote", 1)],
+      [scored("quote", 5), scored("original", 4), scored("other", 3)],
+      new Set(["original"]),
+      (id) => id,
+      10,
+    );
+    expect(ordered.map((row) => row.tweetId)).toEqual(["quote", "other"]);
+  });
+
+  it("mergePinned never reports more candidates than the loadable window", () => {
+    const pinned = Array.from({ length: 20 }, (_, i) => pin(`p${i}`, 1));
+    const tail = Array.from({ length: 200 }, (_, i) => scored(`t${i}`, 1));
+    const capped = mergePinned(pinned, tail, new Set(), (id) => id, 200);
+    expect(capped.candidateCount).toBe(200);
+    expect(capped.ordered).toHaveLength(200);
+  });
+
+  it("mergePinned slices to the limit; an empty prefix is the identity", () => {
+    const tail = [scored("a", 3), scored("b", 2), scored("c", 1)];
+    const identity = mergePinned([], tail, new Set(), (id) => id, 2);
+    expect(identity.ordered.map((row) => row.tweetId)).toEqual(["a", "b"]);
+    expect(identity.candidateCount).toBe(3);
+    const pinnedFirst = mergePinned([pin("p", 1)], tail, new Set(), (id) => id, 2);
+    expect(pinnedFirst.ordered.map((row) => row.tweetId)).toEqual(["p", "a"]);
+    expect(pinnedFirst.candidateCount).toBe(4);
+  });
 });

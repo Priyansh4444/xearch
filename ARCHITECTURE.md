@@ -26,11 +26,12 @@ const serp = useQuery(api.search.search, {
   raw: "linux box cheap from:@theo",
   sort: "top",            // "top" | "latest"
   limit: 20,              // page size; "Load more" grows it, capped at 200
-  asOf: undefined,        // optional ranking snapshot; echo the first response's asOf for later pages
-                          // (stable order for shown rows; the candidate set stays reactive)
+  asOf: undefined,        // optional ranking clock; echo the first response's asOf on later pages
+  prefix: undefined,      // continuation: echo the first response's nextPrefix on "Load more"
 });
-// serp: { results: Result[], candidateCount, asOf, appliedQuery: XQueryPublic, ladder: "L0"|"L1"|..., trace }
-// candidateCount is the whole ranked window; results.length < candidateCount means "more to load".
+// serp: { results: Result[], candidateCount, asOf, nextPrefix, appliedQuery, ladder: "L0"|"L1"|..., trace }
+// nextPrefix pins the displayed rows in order on later pages; candidateCount is the
+// whole ranked window and results.length < candidateCount means "more to load".
 
 const hints = useQuery(api.search.suggest, { prefix: "conv" });      // typeahead
 

@@ -21,7 +21,14 @@ import {
   queryBigrams,
   uniqueTerms,
 } from "./engine/plan";
-import { rerank, rrfFuse, type Candidate } from "./engine/rank";
+import {
+  chainKeyOf,
+  mergePinned,
+  normalizePinned,
+  rerank,
+  rrfFuse,
+  type Candidate,
+} from "./engine/rank";
 import { queryKey, emptyXQuery, SortOrder } from "./engine/xquery";
 import type { AuthorId, Term, TweetId } from "./contracts/ids";
 import { isBigramTerm } from "./engine/bigrams";
@@ -47,6 +54,8 @@ function invalidSearch(error: string) {
     results: [] as never[],
     candidateCount: 0,
     asOf: 0, // invalid queries never rank
+    nextPrefix: [],
+    prefixDropped: false,
   };
 }
 
@@ -64,10 +73,25 @@ const TOTAL_DOCS_ESTIMATE = 165_000;
 const AVG_TOKEN_COUNT_ESTIMATE = 30;
 
 /**
- * SERP page size. "Load more" grows `limit`; results are a stable prefix of the
- * reranked candidate window, so paging never duplicates or reorders a row.
+ * SERP page size. "Load more" grows `limit` and echoes the displayed rows back
+ * as `prefix`; pinned rows keep their order, score, and parts, and only the
+ * live tail below them is re-ranked. Rows already shown cannot move or drop.
  */
 export const DEFAULT_RESULT_LIMIT = 20;
+
+/** One displayed row echoed back by the client so "Load more" cannot move it. */
+const pinnedRef = v.object({
+  id: v.id("tweets"),
+  matchedVia: v.union(
+    v.literal(LadderLevel.L0),
+    v.literal(LadderLevel.L1),
+    v.literal(LadderLevel.L2),
+    v.literal(LadderLevel.L3),
+    v.literal(LadderLevel.L4),
+  ),
+  score: v.number(),
+  parts: v.record(v.string(), v.number()),
+});
 
 export const search = query({
   args: {
@@ -80,14 +104,27 @@ export const search = query({
     // the recency term (and relative dates) stay fixed across pages. A new
     // query omits it and gets "now".
     asOf: v.optional(v.number()),
+    // Continuation: the rows already displayed, echoed verbatim from the
+    // previous response. Pinned rows keep their order, score, and parts; the
+    // rest of the page is a fresh rerank of the live window. Omit for a new
+    // search.
+    prefix: v.optional(v.array(pinnedRef)),
+    // The queryKey the prefix was minted under. A different (or missing) key
+    // means the raw text now parses differently; the sequence restarts instead
+    // of pinning rows under the wrong interpretation.
+    prefixQueryKey: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const now = snapshotTime(args.asOf);
+    const limit = resultLimit(args.limit);
     // 0. Tier C refinement merge lands when tierC.ts exists; the reactive re-run
     //    machinery is already in place because this is a plain Convex query.
-    // 1. Parse.
+    // 1. Parse (DB-free checks first: an invalid request must not cost reads).
     const inputError = queryInputError(args.raw);
     if (inputError !== null) return invalidSearch(inputError);
+    if (args.prefix !== undefined && args.prefix.length > RERANK_CANDIDATES) {
+      return invalidSearch("Too many pinned rows.");
+    }
     const parsed = await tierB(tierA(args.raw), deps(ctx, now));
     const xq = parsed.xq;
     if (!Object.values(parsed.trace.consumed).includes("sort")) xq.sort = args.sort;
@@ -96,7 +133,52 @@ export const search = query({
       return invalidSearch(`Unknown author: ${unknownAuthor.slice(5)}.`);
     const key = queryKey(xq);
 
-    // 2. df point reads for every term the planner or reranker will touch.
+    // 2. Continuation rows, bound to THIS query. A prefix minted under another
+    //    interpretation (df/entity drift, or a forged caller) is dropped whole;
+    //    individual rows are dropped unless they satisfy the same predicate as
+    //    a retrieved candidate (constraints plus the AND gates).
+    const prefixDrift =
+      args.prefix !== undefined && args.prefix.length > 0 && args.prefixQueryKey !== key;
+    const pinned = prefixDrift ? [] : normalizePinned(args.prefix ?? [], RERANK_CANDIDATES);
+    const gateTermsForPins = uniqueTerms(xq.must, xq.aspects, phraseTerms(xq));
+    const authors = new Map<string, Doc<"authors"> | null>();
+    // Pinned rows are hydrated by doc id (≤ RERANK_CANDIDATES point gets), so a
+    // row the user already saw survives leaving the live candidate window.
+    const pinnedDocs = new Map<string, Doc<"tweets">>();
+    for (const ref of pinned) {
+      const doc = await ctx.db.get(ref.id);
+      if (doc === null) continue;
+      const analysis = analyzeTweet(doc.text);
+      if (!matchesConstraints(doc, xq, analysis)) continue;
+      // Gates bind L0 rows only: rows surfaced by ladder widening (L1+) may
+      // satisfy just the relaxed gates, and dropping them would delete a row
+      // the user already saw.
+      if (
+        ref.matchedVia === LadderLevel.L0 &&
+        gateTermsForPins.length > 0 &&
+        !matchesGates(analysis, gateTermsForPins)
+      ) {
+        continue;
+      }
+      pinnedDocs.set(ref.id, doc);
+    }
+    const pinnedLive = pinned.filter((ref) => pinnedDocs.has(ref.id));
+    const pinnedChainKeys = new Set<string>();
+    for (const ref of pinnedLive) {
+      const doc = pinnedDocs.get(ref.id)!;
+      pinnedChainKeys.add(
+        chainKeyOf(
+          {
+            retweetOfTweetId: doc.retweetOfTweetId,
+            quotedTweetId: doc.quotedTweetId,
+            sourceTweetId: doc.tweetId,
+          },
+          doc._id as string,
+        ),
+      );
+    }
+
+    // 3. df point reads for every term the planner or reranker will touch.
     const userTerms = uniqueTerms(xq.must, xq.should, xq.aspects, phraseTerms(xq));
     if (userTerms.length > MAX_QUERY_TERMS)
       return invalidSearch("Use at most 12 search terms and aspects.");
@@ -109,7 +191,7 @@ export const search = query({
       if (row !== null) dfs.set(term, row.df);
     }
 
-    // 3. Ladder: execute -> escalate while survivors < MIN_RESULTS (bounded loop).
+    // 4. Ladder: execute -> escalate while survivors < MIN_RESULTS (bounded loop).
     let plan: ReadPlan | null = planL0(xq, dfs);
     let matches = new Map<string, Match>();
     const postingCache = new Map<string, Doc<"postings">[]>();
@@ -187,9 +269,8 @@ export const search = query({
       level = LadderLevel.L0;
     }
 
-    // 4. Hydrate candidates, with one exact feedback-total lookup per candidate.
+    // 5. Hydrate candidates, with one exact feedback-total lookup per candidate.
     const ids = [...matches.keys()].slice(0, RERANK_CANDIDATES);
-    const authors = new Map<string, Doc<"authors"> | null>();
     const candidates: Candidate[] = [];
     for (const tweetId of ids) {
       // Postings denormalize the Convex doc id — hydration is a plain get.
@@ -222,16 +303,43 @@ export const search = query({
       });
     }
 
-    // 5. Rerank, then return a prefix of the candidate window for the SERP.
+    // 6. Rerank, pin the echoed prefix in front of the live tail, and return
+    //    the requested page.
     const scored = rerank(
       xq,
       candidates,
       { totalDocs: TOTAL_DOCS_ESTIMATE, avgTokenCount: AVG_TOKEN_COUNT_ESTIMATE, dfs },
       now,
     );
-    const limit = resultLimit(args.limit);
-    const results = scored.slice(0, limit).map((s) => {
-      const t = tweets.get(s.tweetId)!;
+    const chainKeyOfTail = (tweetId: string): string => {
+      const doc = tweets.get(tweetId);
+      if (doc === undefined) return tweetId;
+      return chainKeyOf(
+        {
+          retweetOfTweetId: doc.retweetOfTweetId,
+          quotedTweetId: doc.quotedTweetId,
+          sourceTweetId: doc.tweetId,
+        },
+        tweetId,
+      );
+    };
+    const { ordered, candidateCount } = mergePinned(
+      pinnedLive,
+      scored,
+      pinnedChainKeys,
+      chainKeyOfTail,
+      limit,
+    );
+    // Pinned rows can sit outside the hydrated window; make sure their authors
+    // resolve for display.
+    for (const ref of pinnedLive) {
+      const doc = pinnedDocs.get(ref.id)!;
+      if (!authors.has(doc.authorId)) {
+        authors.set(doc.authorId, await authorByAuthorId(ctx, doc.authorId));
+      }
+    }
+    const results = ordered.map((s) => {
+      const t = pinnedDocs.get(s.tweetId) ?? tweets.get(s.tweetId)!;
       const a = authors.get(t.authorId) ?? null;
       return {
         ...t,
@@ -249,10 +357,20 @@ export const search = query({
       appliedQuery: xq,
       trace: parsed.trace,
       results,
-      // Everything reranked for this query; `results.length < candidateCount`
+      // Everything ranked for this request; `results.length < candidateCount`
       // means "Load more" has another page.
-      candidateCount: scored.length,
+      candidateCount,
       asOf: now,
+      // The continuation token: these rows, in this order, exactly as displayed.
+      nextPrefix: results.map((row) => ({
+        id: row._id,
+        matchedVia: row.matchedVia,
+        score: row.score,
+        parts: row.parts,
+      })),
+      // True when the echoed prefix was minted under a different interpretation
+      // and was dropped; the client refreshes its frozen metadata.
+      prefixDropped: prefixDrift,
     };
   },
 });

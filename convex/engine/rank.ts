@@ -4,7 +4,7 @@
 import { MediaType } from "../contracts/media";
 import type { Term, TweetId } from "../contracts/ids";
 import { isBigramTerm } from "./bigrams";
-import { LadderLevel } from "./plan";
+import { LadderLevel, RERANK_CANDIDATES } from "./plan";
 import { Intent, SortOrder, type XQuery } from "./xquery";
 
 export const WEIGHTS = {
@@ -162,7 +162,7 @@ export function rerank(
   const best = new Map<string, Scored>();
   for (const s of scored) {
     const c = byId.get(s.tweetId)!;
-    const key = c.retweetOfTweetId ?? c.quotedTweetId ?? c.sourceTweetId ?? s.tweetId;
+    const key = chainKeyOf(c, s.tweetId);
     const prior = best.get(key);
     if (prior === undefined || compare(s, prior) < 0) best.set(key, s);
   }
@@ -234,4 +234,91 @@ export function rrfFuse(lists: string[][], k = 60): Map<string, number> {
     });
   }
   return scores;
+}
+
+/** One row from an earlier SERP page, exactly as it was displayed. */
+export interface PinnedRef {
+  /** Convex doc id (the `Candidate.tweetId` space). */
+  id: string;
+  matchedVia: Candidate["matchedVia"];
+  score: number;
+  parts: Record<string, number>;
+}
+
+/**
+ * One-hop chain key for K5 dedup, shared by `rerank` and prefix pinning so the
+ * two views of "same chain" cannot drift apart.
+ */
+export function chainKeyOf(
+  edges: {
+    retweetOfTweetId?: string | undefined;
+    quotedTweetId?: string | undefined;
+    sourceTweetId?: string | undefined;
+  },
+  fallbackId: string,
+): string {
+  return edges.retweetOfTweetId ?? edges.quotedTweetId ?? edges.sourceTweetId ?? fallbackId;
+}
+
+/**
+ * Dedupe a client-echoed prefix by id (first occurrence = displayed position)
+ * and clamp it to the rerank window. The argument validator bounds the id space;
+ * this bounds the work.
+ */
+export function normalizePinned<T extends { id: string }>(refs: readonly T[], cap: number): T[] {
+  const seen = new Set<string>();
+  const out: T[] = [];
+  for (const ref of refs) {
+    if (seen.has(ref.id)) continue;
+    seen.add(ref.id);
+    out.push(ref);
+    if (out.length >= cap) break;
+  }
+  return out;
+}
+
+/**
+ * Rebuild the SERP from a frozen prefix plus the fresh rerank of the live
+ * window. A "Load more" must not move or drop a row the user has already seen.
+ *
+ * Invariants:
+ *  1. the first `pinned.length` rows are exactly `pinned`, in that order;
+ *  2. no id appears twice (pinned ids are removed from the tail);
+ *  3. a tail row whose chain key collides with a pinned row is dropped — its
+ *     pinned representative already occupies the chain;
+ *  4. `candidateCount` = pinned + kept tail; `ordered` is sliced to `limit`.
+ *
+ * With an empty prefix this is the identity (a fresh search is unchanged).
+ */
+export function mergePinned(
+  pinned: readonly PinnedRef[],
+  tail: readonly Scored[],
+  pinnedChainKeys: ReadonlySet<string>,
+  chainKeyOfTail: (tweetId: string) => string,
+  limit: number,
+): { ordered: Scored[]; candidateCount: number } {
+  const pinnedIds = new Set<string>();
+  const pinnedScored: Scored[] = [];
+  for (const ref of pinned) {
+    pinnedIds.add(ref.id);
+    pinnedScored.push({
+      tweetId: ref.id,
+      score: ref.score,
+      matchedVia: ref.matchedVia,
+      parts: ref.parts,
+    });
+  }
+  const kept: Scored[] = [];
+  for (const row of tail) {
+    if (pinnedIds.has(row.tweetId)) continue;
+    if (pinnedChainKeys.has(chainKeyOfTail(row.tweetId))) continue;
+    kept.push(row);
+  }
+  // The loadable window itself is capped at RERANK_CANDIDATES: reporting more
+  // than can ever be returned would leave a "Load more" button that cannot
+  // advance.
+  return {
+    ordered: [...pinnedScored, ...kept].slice(0, Math.max(0, limit)),
+    candidateCount: Math.min(pinnedScored.length + kept.length, RERANK_CANDIDATES),
+  };
 }

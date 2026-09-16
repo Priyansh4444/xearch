@@ -486,10 +486,11 @@ filters `{authorId, media:"image"}`.
    200-candidate rerank window) from the ranked list.
 ```
 
-- Paging keeps a fixed ranking snapshot (`asOf` echoed from the first page), so
-  rows already shown do not move. The candidate set itself stays reactive: a
-  newly indexed matching post can enter a later page — that is the live-SERP
-  behavior (§5.3), not a paging bug.
+- Paging pins what the user has seen: "Load more" echoes the displayed rows as
+  `prefix` and the server keeps their order, score, and parts while reranking
+  the live window below them, so a newly indexed matching post can only grow
+  the tail, never move or drop a shown row. Fresh searches and the unpinned
+  first page stay fully reactive (the live-SERP behavior).
 - Requests are limited to 512 characters and 12 input tokens, with at most 12
   indexed terms/aspects after parsing. L3 adds at most 5 PRF terms. Posting reads
   are cached across all five executions: at most 1,500 rows on the seed read plus

@@ -32,6 +32,9 @@ interface Shown {
 /** Rows per "Load more" click; the server clamps to the rerank window. */
 const PAGE_SIZE = 20;
 
+/** First-page metadata kept frozen while a prefix sequence is open. */
+type PageMeta = Pick<SearchReturn, "queryKey" | "ladder" | "appliedQuery" | "trace">;
+
 /** Known-dense corpus topics — each returns real posts from the archived run. */
 const DEMO_QUERIES = ["bun", "pricing", "rust", "react server components", "agents"];
 
@@ -54,15 +57,22 @@ function useSearchPage() {
   // One page state per request identity: a new query/sort/lane derives PAGE_SIZE
   // during render instead of resetting through an effect.
   const requestKey = `${query}\u0000${sort}\u0000${lane}`;
-  const [page, setPage] = useState<{ key: string; limit: number; asOf?: number }>({
-    key: requestKey,
-    limit: PAGE_SIZE,
-  });
+  const [page, setPage] = useState<{
+    key: string;
+    limit: number;
+    asOf?: number;
+    prefix?: SearchReturn["nextPrefix"];
+    snapshot?: PageMeta;
+  }>({ key: requestKey, limit: PAGE_SIZE });
   const limit = page.key === requestKey ? page.limit : PAGE_SIZE;
   // A ranking snapshot exists only after the server answered the first page:
   // new searches omit `asOf` (server clock), load-more echoes the response so
   // rows already shown keep their order. Client clocks never rank.
   const asOf = page.key === requestKey ? page.asOf : undefined;
+  // "Load more" echoes the displayed rows so the server cannot move or drop
+  // one; the first page's query/trace metadata stays frozen for the sequence.
+  const prefix = page.key === requestKey ? page.prefix : undefined;
+  const snapshot = page.key === requestKey ? page.snapshot : undefined;
 
   // Keep the query shareable: /?q=...&sort=...&lane=... mirrors the controls.
   useEffect(() => {
@@ -80,7 +90,15 @@ function useSearchPage() {
     api.search.search,
     query === "" || inputError !== null || lane !== "xearch"
       ? "skip"
-      : { raw: query, sort, limit, ...(asOf === undefined ? {} : { asOf }) },
+      : {
+          raw: query,
+          sort,
+          limit,
+          ...(asOf === undefined ? {} : { asOf }),
+          ...(prefix === undefined
+            ? {}
+            : { prefix, ...(snapshot === undefined ? {} : { prefixQueryKey: snapshot.queryKey }) }),
+        },
   );
   const baseline = useQuery(
     api.search.searchBaseline,
@@ -98,22 +116,39 @@ function useSearchPage() {
   const effectiveFull = full ?? (lastFull?.key === requestKey ? lastFull.data : undefined);
   const loadingMore = full === undefined && effectiveFull !== undefined && query !== "";
 
-  const current = presentResults(lane, query, effectiveFull, baseline);
+  // Frozen metadata describes the rows on screen. A dropped prefix means the
+  // response carries the replacement parse (including any sort: operator), so
+  // use it directly instead of hiding the metadata.
+  const meta =
+    snapshot !== undefined && effectiveFull?.prefixDropped !== true ? snapshot : effectiveFull;
+  const current = presentResults(lane, query, effectiveFull, baseline, meta);
 
   const shown = input.trim() === query ? current : undefined;
   const error = inputError ?? shown?.error;
   const searching = input.trim() !== "" && !error && shown === undefined;
-  const operatorSort =
-    effectiveFull !== undefined && Object.values(effectiveFull.trace.consumed).includes("sort");
-  const activeSort = effectiveFull?.appliedQuery.sort ?? sort;
-  const loadMore = () =>
+  const operatorSort = meta !== undefined && Object.values(meta.trace.consumed).includes("sort");
+  const activeSort = meta?.appliedQuery.sort ?? sort;
+  const loadMore = () => {
+    if (effectiveFull === undefined || effectiveFull.asOf <= 0) return;
+    // A dropped prefix means the query re-parsed differently: replace the
+    // frozen metadata instead of keeping it in force.
+    const frozen: PageMeta =
+      snapshot !== undefined && !effectiveFull.prefixDropped
+        ? snapshot
+        : {
+            queryKey: effectiveFull.queryKey,
+            ladder: effectiveFull.ladder,
+            appliedQuery: effectiveFull.appliedQuery,
+            trace: effectiveFull.trace,
+          };
     setPage({
       key: requestKey,
       limit: Math.min(limit + PAGE_SIZE, RERANK_CANDIDATES),
-      ...(effectiveFull !== undefined && effectiveFull.asOf > 0
-        ? { asOf: effectiveFull.asOf }
-        : {}),
+      asOf: effectiveFull.asOf,
+      ...(effectiveFull.nextPrefix.length > 0 ? { prefix: effectiveFull.nextPrefix } : {}),
+      snapshot: frozen,
     });
+  };
 
   const pickQuery = (next: string) => {
     setInput(next);
@@ -148,6 +183,7 @@ function presentResults(
   query: string,
   full: SearchReturn | undefined,
   baseline: BaselineResults | undefined,
+  meta: PageMeta | undefined,
 ): Shown | undefined {
   if (lane === "baseline") {
     return baseline === undefined
@@ -163,7 +199,10 @@ function presentResults(
         };
   }
   if (full === undefined) return undefined;
-  const q = full.appliedQuery;
+  // While a prefix sequence is open, the first page's parse stays in force:
+  // highlighting, vote keys, and the widened-ladder notice must describe the
+  // rows on screen, not a later re-parse.
+  const q = meta?.appliedQuery ?? full.appliedQuery;
   const f = q.filters;
   // Termless means the posting lane has nothing to read: no indexed tokens in
   // must/should/aspects, no quoted phrase carrying indexed tokens, and no
@@ -175,11 +214,20 @@ function presentResults(
     q.aspects.length > 0 ||
     q.phrases.some((phrase) => tokenize(phrase.join(" ")).tokens.length > 0);
   const termless = !hasIndexedContent && f.authorId === null;
+  // Defense in depth: the server already collapses RT/quote chains, but a
+  // forged or stale prefix must never render the same chain twice.
+  const seenChains = new Set<string>();
+  const results = full.results.filter((row) => {
+    const chain = row.retweetOfTweetId ?? row.quotedTweetId ?? row.tweetId;
+    if (seenChains.has(chain)) return false;
+    seenChains.add(chain);
+    return true;
+  });
   return {
     error: full.error,
-    results: full.results,
-    ladder: full.ladder,
-    queryKey: full.queryKey,
+    results,
+    ladder: meta?.ladder ?? full.ladder,
+    queryKey: meta?.queryKey ?? full.queryKey,
     terms: [...q.must, ...q.should, ...q.phrases.flat(), ...q.exclude.map((term) => `-${term}`)],
     termless,
     candidateCount: full.candidateCount,
