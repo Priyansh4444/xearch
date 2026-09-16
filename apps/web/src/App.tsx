@@ -5,6 +5,7 @@ import type { FunctionReturnType } from "convex/server";
 import { api } from "../../../convex/_generated/api";
 import { MediaType } from "../../../convex/contracts/media";
 import { queryInputError } from "../../../convex/engine/constraints";
+import { tokenize } from "../../../convex/engine/tokenize";
 import { LadderLevel } from "../../../convex/engine/plan";
 import { SortOrder } from "../../../convex/engine/xquery";
 
@@ -121,18 +122,16 @@ function presentResults(
   if (full === undefined) return undefined;
   const q = full.appliedQuery;
   const f = q.filters;
-  const termless =
-    q.must.length === 0 &&
-    q.should.length === 0 &&
-    q.phrases.length === 0 &&
-    q.exclude.length === 0 &&
-    q.aspects.length === 0 &&
-    f.authorId === null &&
-    f.since === null &&
-    f.until === null &&
-    f.media === null &&
-    f.minLikes === null &&
-    f.lang === null;
+  // Termless means the posting lane has nothing to read: no indexed tokens in
+  // must/should/aspects, no quoted phrase carrying indexed tokens, and no
+  // author timeline to fall back on. Stopword-only phrases, excludes, and
+  // termless filters (date/media/min-likes/lang) retrieve nothing at all.
+  const hasIndexedContent =
+    q.must.length > 0 ||
+    q.should.length > 0 ||
+    q.aspects.length > 0 ||
+    q.phrases.some((phrase) => tokenize(phrase.join(" ")).tokens.length > 0);
+  const termless = !hasIndexedContent && f.authorId === null;
   return {
     error: full.error,
     results: full.results,
@@ -312,8 +311,9 @@ function EmptyState({
     return (
       <div className="empty-state">
         <p>
-          Every word in <span className="query-echo">{query}</span> is dropped by the posting index,
-          so this lane has nothing to retrieve on. The literal lane searches those words directly:
+          Every word in <span className="query-echo">{query}</span> is dropped by the posting index
+          or consumed as an operator, so this lane has nothing to retrieve on. The literal lane
+          searches it as typed:
         </p>
         <button type="button" className="lane-toggle" onClick={onUseLiteral}>
           search the literal lane

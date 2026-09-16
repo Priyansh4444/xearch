@@ -64,15 +64,18 @@ fixture, `ingest.ingestBatch` + the Rust `backfill` loop have loaded the full
 archived corpus (164,959 posts), and the full `search` query runs Tier A+B
 parsing (operators, dates, entities, aspects, glue), the L0–L3 recall ladder
 with bounded reads, and the deterministic reranker with live feedback votes.
-`apps/web` is the SERP: Top/Latest tabs, typeahead, votes, and an A/B lane
-toggle against Convex full-text baseline. Remaining build list: tierC →
-vectors/answers → indexer tail/refresh (Tweepcred, boost propagation).
+`apps/web` is the SERP: Top/Latest tabs, typeahead, exact/related sections, and
+an A/B lane toggle against Convex full-text baseline. `refresh` re-buckets
+scores, applies metric re-crawls, and propagates quote/RT boosts. Remaining
+build list: tierC → vectors/answers → indexer tail → Tweepcred/embeddings.
 
-The branch's review fixes are documented in [docs/SEARCH-REVIEW.md](docs/SEARCH-REVIEW.md).
-They have not been deployed. Voting now requires trusted Convex identity; no auth
-provider is configured, so anonymous users have no voting controls. Corrected
-aspect mapping changes the indexer config hash and requires a deliberate reindex
-in a separate deployment, not a checkpoint deletion against the existing corpus.
+Master has not been deployed to prod; the live deployment runs an earlier
+branch. Voting requires trusted Convex identity; no auth provider is
+configured, so anonymous users have no voting controls. The bigram index config
+changed the indexer config hash, so a corpus reindex (or additive
+`--allow-config-drift` ingest, which only adds new tweets and leaves existing
+postings alone) is required — never a checkpoint deletion against the existing
+corpus.
 
 ## Running
 
@@ -105,6 +108,13 @@ indexer/target/release/xearch-indexer upload --batch-dir ./batches
 # ingest tweets directly (ingress JSONL or loose/FxTwitter status lines):
 indexer/target/release/xearch-indexer ingest-tweets tweets.jsonl
 indexer/target/release/xearch-indexer ingest-tweets --out-dir ./batches tweets.jsonl
+
+# additive ingest into a corpus indexed under an older config: new tweets only,
+# existing postings untouched, the active config preserved (rate-limit friendly):
+indexer/target/release/xearch-indexer --allow-config-drift ingest-tweets tweets.jsonl
+
+# re-bucket scores + metric re-crawls + quote/RT boost propagation:
+indexer/target/release/xearch-indexer --data-dir data/old/<run-id>/ingress refresh
 pnpm typecheck                  # offline tsc over apps/, convex/, tests/ (no deployment needed)
 cd indexer && cargo test        # Rust golden tests (same fixture)
 ```

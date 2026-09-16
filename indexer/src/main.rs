@@ -39,6 +39,10 @@ struct Cli {
     /// Stop after ingesting this many tweets (slice loads for inspection).
     #[arg(long)]
     limit: Option<u64>,
+    /// Additive ingest into a corpus indexed under a different config: new
+    /// tweets only, existing postings untouched, the active config preserved.
+    #[arg(long)]
+    allow_config_drift: bool,
 }
 
 #[derive(Subcommand)]
@@ -79,7 +83,7 @@ fn main() -> Result<()> {
         Mode::Tail => Err(color_eyre::eyre::eyre!("tail mode is not implemented yet")),
         Mode::Refresh => refresh(&cli),
         Mode::Prepare { out_dir } => backfill(&cli, Some(out_dir)),
-        Mode::Upload { batch_dir } => upload(batch_dir),
+        Mode::Upload { batch_dir } => upload(batch_dir, cli.allow_config_drift),
         Mode::IngestTweets { files, out_dir } => ingest_tweets(&cli, files, out_dir.as_ref()),
     }
 }
@@ -93,8 +97,10 @@ enum Destination {
 }
 
 impl Destination {
-    fn convex() -> Result<Self> {
-        Ok(Self::Convex(ConvexClient::from_env()?))
+    fn convex(allow_config_drift: bool) -> Result<Self> {
+        Ok(Self::Convex(
+            ConvexClient::from_env()?.allowing_config_drift(allow_config_drift),
+        ))
     }
 
     fn dir_resuming(path: PathBuf, checkpoint_next: u64) -> Self {
@@ -162,7 +168,7 @@ fn backfill(cli: &Cli, out_dir: Option<&PathBuf>) -> Result<()> {
     checkpoint.config_hash.clone_from(&cfg.config_hash);
     let mut dest = match out_dir {
         Some(path) => Destination::dir_resuming(path.clone(), checkpoint.next_batch),
-        None => Destination::convex()?,
+        None => Destination::convex(cli.allow_config_drift)?,
     };
 
     let mut files: Vec<PathBuf> = std::fs::read_dir(&cli.data_dir)
@@ -338,7 +344,7 @@ fn ingest_tweets(cli: &Cli, files: &[PathBuf], out_dir: Option<&PathBuf>) -> Res
     checkpoint.config_hash.clone_from(&cfg.config_hash);
     let mut dest = match out_dir {
         Some(path) => Destination::dir_resuming(path.clone(), checkpoint.next_batch),
-        None => Destination::convex()?,
+        None => Destination::convex(cli.allow_config_drift)?,
     };
     let mut builder = BatchBuilder::new(cfg);
     let mut stats = Stats::default();
@@ -433,9 +439,10 @@ fn ingest_tweets(cli: &Cli, files: &[PathBuf], out_dir: Option<&PathBuf>) -> Res
             flush_ctx.flush(&key, next_offset)?;
         }
         if key != "stdin" {
-            if allow_legacy {
-                flush_ctx.checkpoint.offsets.remove(&name);
-            }
+            // Retire the legacy basename key even when it was too ambiguous to
+            // use: leaving it behind lets a later run on an unrelated
+            // same-basename file inherit its offset and skip records.
+            flush_ctx.checkpoint.offsets.remove(&name);
             flush_ctx.checkpoint.offsets.insert(key, next_offset);
             flush_ctx.checkpoint.store(&cli.checkpoint)?;
         }
@@ -579,8 +586,8 @@ fn refresh(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
-fn upload(batch_dir: &Path) -> Result<()> {
-    let client = ConvexClient::from_env()?;
+fn upload(batch_dir: &Path, allow_config_drift: bool) -> Result<()> {
+    let client = ConvexClient::from_env()?.allowing_config_drift(allow_config_drift);
     let mut files: Vec<PathBuf> = std::fs::read_dir(batch_dir)
         .with_context(|| format!("reading batch dir {}", batch_dir.display()))?
         .filter_map(|entry| entry.ok().map(|e| e.path()))

@@ -182,6 +182,18 @@ describe("planL0 permutations", () => {
     expect(escalate(planL0(aspected, dfs), 0, aspected, dfs)).toBeNull();
   });
 
+  it("explicit-OR queries never escalate (their branches are complete)", () => {
+    const union = xqWith({ should: [t("linux"), t("box")], union: true });
+    expect(escalate(planL0(union, dfs), 0, union, dfs)).toBeNull();
+    // Even with an aspect gate, escalation would turn it into a union term.
+    const withAspect = xqWith({
+      should: [t("linux"), t("box")],
+      aspects: [t("~price")],
+      union: true,
+    });
+    expect(escalate(planL0(withAspect, dfs), 0, withAspect, dfs)).toBeNull();
+  });
+
   it("uniqueTerms dedups in first-seen order across input permutations", () => {
     expect(uniqueTerms([t("a"), t("b")], [t("b"), t("c")], [t("a")])).toEqual([
       t("a"),

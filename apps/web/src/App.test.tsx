@@ -137,6 +137,25 @@ test("all-stopword queries offer the literal lane instead of a dead end", async 
   expect(container.querySelector(".lane-toggle")?.textContent).toContain("lane: baseline");
 });
 
+test("stopword-only phrases and exclude-only queries also offer the literal lane", async () => {
+  for (const appliedQuery of [
+    { ...emptyXQuery(), phrases: [["the", "and"]] },
+    { ...emptyXQuery(), exclude: ["apple"] },
+  ]) {
+    full = { ...response(), appliedQuery, results: [] };
+    await render();
+    expect(container.textContent).toContain("dropped by the posting index");
+  }
+  // A from:-only query reads the author timeline, so it keeps the normal copy.
+  full = {
+    ...response(),
+    appliedQuery: { ...emptyXQuery(), filters: { ...emptyXQuery().filters, authorId: "a" } },
+    results: [],
+  };
+  await render();
+  expect(container.textContent).not.toContain("dropped by the posting index");
+});
+
 test("unknown author errors are recoverable in the search screen", async () => {
   full = response("Unknown author: missing.");
   await render();

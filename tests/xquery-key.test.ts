@@ -34,6 +34,15 @@ describe("query key stability", () => {
     }
   });
 
+  it("duplicate terms fold into one key", () => {
+    const once = { ...emptyXQuery(), must: [t("linux"), t("box")] };
+    const twice = { ...emptyXQuery(), must: [t("linux"), t("box"), t("linux")] };
+    expect(queryKey(twice)).toBe(queryKey(once));
+    expect(queryKey({ ...emptyXQuery(), exclude: [t("x"), t("x")] })).toBe(
+      queryKey({ ...emptyXQuery(), exclude: [t("x")] }),
+    );
+  });
+
   it("union is serialized only when set, and changes the key when it is", () => {
     const base = emptyXQuery();
     const union = { ...base, union: true, should: [t("apple"), t("tree")] };

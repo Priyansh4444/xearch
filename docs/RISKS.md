@@ -8,7 +8,7 @@ that's a design conversation, not a patch.
 
 | # | What goes wrong | When it bites | Compromise we take |
 |---|---|---|---|
-| R1 | **Capped intersection misses a good doc** — impact-ordered caps drop a tweet that's mediocre for one term but great overall | Common-term + common-term queries (`ai agents`) on a large corpus | Do not intersect two truncated posting lists. Seed the rarest term (up to 1500 rows) and verify remaining gates against tweet text. Adjacent token pairs are extra postings so a two-word phrase can seed a rare list. L2 union still catches near-misses. We do NOT scan full common-term lists |
+| R1 | **Capped intersection misses a good doc** — impact-ordered caps drop a tweet that's mediocre for one term but great overall | Common-term + common-term queries (`ai agents`) on a large corpus | Do not intersect two truncated posting lists. Seed the rarest term (up to 1500 rows) and verify remaining gates against tweet text. Adjacent token pairs are extra postings that widen the union, so two common words that actually sit together stay findable even when both unigram windows miss them. L2 union still catches near-misses. We do NOT scan full common-term lists |
 | R2 | **Hot terms during live demo** — trending term's postings churn while thousands read | Demo day, ingest running | Convex OCC retries mutations; readers never block (MVCC). Accept transient extra mutation latency; df counters drift slightly (advisory only) |
 | R3 | **Index bloat: 5 indexes on postings ≈ 5× storage** | >5M tweets on a paid plan | Pay it until it hurts, then drop `by_term_media_score` → media filtering moves to rerank. Ordered drop list in DESIGN §9 |
 | R4 | **Deletes/edits leave dangling postings** | Ingesting takedowns/edits | `by_tweet` index + O(terms) cleanup mutation; accept eventual consistency (a deleted tweet can flash in results between crawl and cleanup) |
@@ -38,7 +38,7 @@ that's a design conversation, not a patch.
 | # | What goes wrong | When it bites | Compromise we take |
 |---|---|---|---|
 | K1 | **Engagement snapshot is stale** — scoreBucket lags live counts | Viral tweets in first hours | Two-phase ranking absorbs it: retrieval order approximate, rerank reads live counts. Accept that a tweet going viral *right now* may sit in a low bucket until refresh re-buckets it (≤48h re-crawl SLA) |
-| K2 | **Feedback brigading** | Public demo with a vote button | Clamp ±5 per (queryKey, tweet), one vote/session, rerank-only. Accept that determined abuse can bury one result in one query — bounded blast radius is the design, not a leftover |
+| K2 | **Feedback brigading** | Public demo with a vote button | Clamp ±5 per (queryKey, tweet), rerank-only. Votes key on a verified identity token and legacy session IDs are never trusted, but no auth provider is configured yet — so nobody can vote today and the brigading surface is closed by dormancy rather than by enforcement. Accept that determined abuse can bury one result in one query — bounded blast radius is the design, not a leftover |
 | K3 | **Tweepcred favors old accounts / penalizes new quality authors** | Fresh accounts in demo corpus | Blend: `authority = max(tweepcred, 0.5·log1p(followers))` floor. Accept imperfect cold-start rather than tuning a second model |
 | K4 | **Hand-tuned weights overfit our own taste** | Judge queries we never tried | Golden judgment set (docs/PARSER.md §6 format) + nDCG@10 tracked per change; weights live in one config file so tuning is a diff, not a hunt |
 | K5 | **Boost propagation double-counts** — quote engagement added to target AND quote ranks itself | Quote-storm threads | One-hop only, 0.5× discount, and SERP-level dedup collapses quote chains to best representative. Accept mild inflation over graph traversal cost |
@@ -59,7 +59,7 @@ that's a design conversation, not a patch.
 | O1 | **Indexer crash mid-batch** | Always, eventually | Atomic batch mutation + checkpoint-after-ack + idempotent upserts → re-run is safe. Accept duplicate *work*, never duplicate *data* |
 | O2 | **OCC contention on `terms.df` hot keys** | Backfill at full speed | Per-batch df aggregation (one write per term per batch) + jittered backoff; if still hot, shard df into K counter rows summed at read. Stage 2 only if measured |
 | O3 | **Convex function limits** (16k reads/query, 1MiB doc, 8k array) | Big OR queries, giant batches | Every read path carries an explicit `limit` (ReadPlan type); batches sized ~100 tweets. Limits are inputs to the design, not surprises |
-| O4 | **Config drift** — which lexicon/weights indexed this corpus? | Debugging relevance a week later | `meta` table records active config hash per ingest run; lexicons/weights are versioned files. Accept manual reindex when lexicon changes materially (no auto-migration) |
+| O4 | **Config drift** — which lexicon/weights indexed this corpus? | Debugging relevance a week later | `meta` holds ONE active-config row (hash + tokenizer/lexicon versions); a batch under a different config is rejected, not recorded. Adding posts to an existing corpus under a newer config requires the explicit `--allow-config-drift` additive path (new tweets only; existing postings untouched). Accept manual reindex when lexicon changes materially (no auto-migration) |
 
 ## The compromises we're explicitly NOT making
 

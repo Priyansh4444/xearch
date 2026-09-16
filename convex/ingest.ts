@@ -81,6 +81,10 @@ export const ingestBatch = internalMutation({
     authors: v.array(authorIn),
     dfDeltas: v.array(v.object({ term: v.string(), delta: v.number() })),
     configHash: v.string(), // recorded to meta (RISKS O4)
+    // Additive ingest under a newer config: new tweets only, existing postings
+    // untouched, the active config preserved. Tokenizer/lexicon versions stay
+    // strict — a mismatch there changes how text is interpreted.
+    allowConfigDrift: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
     const meta = await ctx.db
@@ -89,12 +93,13 @@ export const ingestBatch = internalMutation({
       .unique();
     if (
       meta !== null &&
-      (meta.configHash !== args.configHash ||
-        meta.tokenizerVersion !== TOKENIZER_VERSION ||
-        meta.lexiconVersion !== aspectsFile.version)
+      (meta.tokenizerVersion !== TOKENIZER_VERSION ||
+        meta.lexiconVersion !== aspectsFile.version ||
+        (meta.configHash !== args.configHash && args.allowConfigDrift !== true))
     ) {
       throw new Error(
-        "Index configuration mismatch. Use a separate deployment for a deliberate reindex.",
+        "Index configuration mismatch. Use a separate deployment for a deliberate reindex, " +
+          "or --allow-config-drift for additive indexing of new tweets.",
       );
     }
 
@@ -216,8 +221,21 @@ export const ingestBatch = internalMutation({
       tokenizerVersion: TOKENIZER_VERSION,
       updatedAt: Date.now(),
     };
-    if (meta === null) await ctx.db.insert("meta", metaRow);
-    else await ctx.db.patch(meta._id, metaRow);
+    if (meta === null) {
+      await ctx.db.insert("meta", metaRow);
+    } else if (meta.configHash === args.configHash) {
+      await ctx.db.patch(meta._id, metaRow);
+    } else if (inserted > 0) {
+      // Drift add: keep the original active config (it indexed most of the
+      // corpus) and record every config that CONTRIBUTED tweets. A batch that
+      // only replayed existing rows must not claim provenance it did not add.
+      const drifted = new Set(meta.driftedConfigHashes ?? []);
+      drifted.add(args.configHash);
+      await ctx.db.patch(meta._id, {
+        driftedConfigHashes: [...drifted].sort(),
+        updatedAt: Date.now(),
+      });
+    }
 
     return { inserted, updated, skipped };
   },

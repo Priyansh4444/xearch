@@ -89,7 +89,9 @@ export const emptyXQuery = (): XQuery => ({
  * this string is the identity used by queryCache, answers, and feedback.
  */
 export function canonicalJson(xq: XQuery): string {
-  const sorted = (xs: Term[]) => [...xs].sort();
+  // Duplicates are semantically irrelevant (`must: [a, a]` == `must: [a]`), so
+  // they are folded here instead of splitting feedback/cache keys.
+  const sorted = (xs: Term[]) => [...new Set(xs)].sort();
   // Full element-wise comparison: first-token-only ordering lets shared-prefix
   // phrase lists (e.g. [["a","x"],["a","y"]] vs reversed) hash differently and
   // split queryCache answers and feedback totals.
