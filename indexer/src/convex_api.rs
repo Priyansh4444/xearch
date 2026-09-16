@@ -14,8 +14,6 @@ const MAX_ATTEMPTS: u32 = 8;
 pub struct ConvexClient {
     pub deployment_url: String, // e.g. https://something.convex.cloud
     pub deploy_key: String,
-    /// Additive ingest into a corpus indexed under a different config (RISKS O4).
-    allow_config_drift: bool,
     client: reqwest::blocking::Client,
 }
 
@@ -33,20 +31,12 @@ impl ConvexClient {
         Ok(Self {
             deployment_url: deployment_url.trim_end_matches('/').to_string(),
             deploy_key,
-            allow_config_drift: false,
             client: reqwest::blocking::Client::builder()
                 .connect_timeout(std::time::Duration::from_secs(10))
                 .timeout(std::time::Duration::from_secs(60))
                 .build()
                 .context("build Convex HTTP client")?,
         })
-    }
-
-    /// Permit additive ingest under a different index config (`--allow-config-drift`).
-    #[must_use]
-    pub const fn allowing_config_drift(mut self, allow: bool) -> Self {
-        self.allow_config_drift = allow;
-        self
     }
 
     /// Sends internal.ingest.ingestBatch. Retries on 5xx/OCC-conflict responses
@@ -68,16 +58,7 @@ impl ConvexClient {
     ///
     /// Returns an error when Convex rejects the mutation or the ack is malformed.
     pub fn ingest_batch_json(&self, args: &serde_json::Value) -> Result<IngestAck> {
-        let mut args = args.clone();
-        if self.allow_config_drift {
-            if let Some(object) = args.as_object_mut() {
-                object.insert(
-                    "allowConfigDrift".to_string(),
-                    serde_json::Value::Bool(true),
-                );
-            }
-        }
-        let value = self.mutation("ingest:ingestBatch", &args)?;
+        let value = self.mutation("ingest:ingestBatch", args)?;
         serde_json::from_value(value).context("ingestBatch ack shape")
     }
 
