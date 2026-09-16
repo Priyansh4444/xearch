@@ -414,6 +414,62 @@ mod tests {
     }
 
     #[test]
+    fn quote_and_retweet_boosts_merge_at_half_weight() {
+        let w = EngagementWeights {
+            like: 1.0,
+            reply: 2.0,
+            retweet: 3.0,
+            quote: 4.0,
+        };
+        let source = Metrics {
+            likes: 10,
+            retweets: 0,
+            quotes: 0,
+            replies: 0,
+        };
+        let hot = Metrics {
+            likes: 0,
+            retweets: 0,
+            quotes: 0,
+            replies: 5,
+        };
+        let metrics = HashMap::from([
+            (TweetId("quote".to_string()), source),
+            (TweetId("retweet".to_string()), hot),
+            (TweetId("orphan".to_string()), source),
+        ]);
+        let edges = vec![
+            (
+                TweetId("quote".to_string()),
+                Some(TweetId("target".to_string())),
+                None,
+            ),
+            (
+                TweetId("retweet".to_string()),
+                None,
+                Some(TweetId("target".to_string())),
+            ),
+            // Missing metrics for the source: contributes nothing.
+            (
+                TweetId("gone".to_string()),
+                Some(TweetId("target".to_string())),
+                None,
+            ),
+            // A source with no edges contributes no target row.
+            (TweetId("orphan".to_string()), None, None),
+        ];
+        let boosts = propagate_boosts(&edges, &metrics, &w);
+        let expected = 0.5f64.mul_add(
+            engagement_ln1p(&hot, &w),
+            0.5 * engagement_ln1p(&source, &w),
+        );
+        let actual = boosts[&TweetId("target".to_string())];
+        assert!((actual - expected).abs() < 1e-9, "{actual} != {expected}");
+        assert_eq!(boosts.len(), 1);
+        assert!(!boosts.contains_key(&TweetId("orphan".to_string())));
+    }
+
+    #[test]
     fn adjacent_bigrams_skip_aspects_and_encode_stx() {
         let tokens = toks("apple tree ~price");
         assert_eq!(
