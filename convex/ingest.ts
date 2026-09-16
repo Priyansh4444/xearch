@@ -225,9 +225,10 @@ export const ingestBatch = internalMutation({
       await ctx.db.insert("meta", metaRow);
     } else if (meta.configHash === args.configHash) {
       await ctx.db.patch(meta._id, metaRow);
-    } else {
+    } else if (inserted > 0) {
       // Drift add: keep the original active config (it indexed most of the
-      // corpus) and record every config that has contributed tweets.
+      // corpus) and record every config that CONTRIBUTED tweets. A batch that
+      // only replayed existing rows must not claim provenance it did not add.
       const drifted = new Set(meta.driftedConfigHashes ?? []);
       drifted.add(args.configHash);
       await ctx.db.patch(meta._id, {

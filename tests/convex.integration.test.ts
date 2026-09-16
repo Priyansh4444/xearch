@@ -243,8 +243,18 @@ describe("search serving flow", () => {
       allowConfigDrift: true,
     });
     expect(ack.inserted).toBe(1);
-    const meta = await t.run(async (ctx) => await ctx.db.query("meta").first());
+    let meta = await t.run(async (ctx) => await ctx.db.query("meta").first());
     expect(meta?.configHash).toBe("old-config");
+    expect(meta?.driftedConfigHashes).toEqual(["new-config"]);
+
+    // Replaying the same rows under a third config inserted nothing, so that
+    // config must not claim provenance.
+    const replay = await t.mutation(internal.ingest.ingestBatch, {
+      ...batch([tweet("second", "pear tree", ["pear", "tree"])], "third-config"),
+      allowConfigDrift: true,
+    });
+    expect(replay.inserted).toBe(0);
+    meta = await t.run(async (ctx) => await ctx.db.query("meta").first());
     expect(meta?.driftedConfigHashes).toEqual(["new-config"]);
     // Existing tweets keep their postings and their original config's snapshot.
     const result = await t.query(api.search.search, { raw: "apple", sort: "top" });
