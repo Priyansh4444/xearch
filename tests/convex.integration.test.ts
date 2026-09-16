@@ -273,6 +273,185 @@ describe("search serving flow", () => {
     expect(fallback.results.length).toBe(20);
   });
 
+  test("prefix paging fixes shown rows under ingest, metrics, and votes", async () => {
+    const t = convexTest(schema, modules);
+    const rows = Array.from({ length: 12 }, (_, i) => ({
+      ...tweet(`p${i}`, `apple ${i}`, ["apple"]),
+      createdAt: 1_700_000_000_000 + i * 60_000,
+      metrics: { likes: 20 - i, retweets: 0, quotes: 0, replies: 0 },
+    }));
+    await t.mutation(internal.ingest.ingestBatch, batch(rows));
+
+    const first = await t.query(api.search.search, { raw: "apple", sort: "top", limit: 4 });
+    expect(first.nextPrefix.map((ref) => ref.id)).toEqual(first.results.map((row) => row._id));
+
+    // Perturb ranking three ways between pages: a hot new match, a metric bump,
+    // and a vote on a shown row.
+    await t.mutation(
+      internal.ingest.ingestBatch,
+      batch([
+        {
+          ...tweet("hot", "apple hot", ["apple"]),
+          metrics: { likes: 100_000, retweets: 0, quotes: 0, replies: 0 },
+        },
+      ]),
+    );
+    await t.mutation(internal.ingest.applyMetrics, {
+      updates: [
+        {
+          tweetId: "p1",
+          metrics: { likes: 50_000, retweets: 0, quotes: 0, replies: 0 },
+          metricsAt: Date.UTC(2026, 8, 10),
+          newScoreBucket: 250,
+        },
+      ],
+    });
+    const voter = t.withIdentity({ subject: "prefix-voter" });
+    await voter.mutation(api.feedback.vote, {
+      queryKey: first.queryKey,
+      tweetId: first.results[0]!._id,
+      vote: -1,
+    });
+
+    // Counterfactual: a fresh search does react to all three perturbations.
+    const fresh = await t.query(api.search.search, { raw: "apple", sort: "top", limit: 4 });
+    expect(fresh.results[0]?.tweetId).toBe("hot");
+
+    // Continuation: page one is byte-stable, and the hot match can only grow
+    // the live tail below it.
+    const second = await t.query(api.search.search, {
+      raw: "apple",
+      sort: "top",
+      limit: 8,
+      asOf: first.asOf,
+      prefix: first.nextPrefix,
+      prefixQueryKey: first.queryKey,
+    });
+    expect(second.results.slice(0, 4).map((row) => row._id)).toEqual(
+      first.results.map((row) => row._id),
+    );
+    expect(second.results[0]?.parts).toEqual(first.results[0]?.parts);
+    expect(second.results[0]?.score).toBe(first.results[0]?.score);
+    // The hot match can only grow the live tail below the frozen prefix.
+    expect(second.results.slice(0, 4).map((row) => row.tweetId)).not.toContain("hot");
+    expect(second.results.slice(4).map((row) => row.tweetId)).toContain("hot");
+    expect(new Set(second.results.map((row) => row._id)).size).toBe(second.results.length);
+    expect(second.candidateCount).toBeGreaterThanOrEqual(4);
+
+    // A prefix longer than the limit returns just that prefix, in order.
+    const narrow = await t.query(api.search.search, {
+      raw: "apple",
+      sort: "top",
+      limit: 2,
+      prefix: second.nextPrefix.slice(0, 4),
+      prefixQueryKey: second.queryKey,
+    });
+    expect(narrow.results.map((row) => row._id)).toEqual(
+      second.results.slice(0, 2).map((row) => row._id),
+    );
+
+    // Duplicate prefix entries collapse; a missing pinned doc is dropped.
+    const duplicated = await t.query(api.search.search, {
+      raw: "apple",
+      sort: "top",
+      limit: 8,
+      prefix: [second.nextPrefix[0]!, second.nextPrefix[0]!, second.nextPrefix[1]!],
+      prefixQueryKey: second.queryKey,
+    });
+    expect(duplicated.results[0]?._id).toBe(second.results[0]?._id);
+    expect(new Set(duplicated.results.map((row) => row._id)).size).toBe(duplicated.results.length);
+    await t.run(async (ctx) => await ctx.db.delete(first.results[0]!._id));
+    const missing = await t.query(api.search.search, {
+      raw: "apple",
+      sort: "top",
+      limit: 8,
+      prefix: second.nextPrefix,
+      prefixQueryKey: second.queryKey,
+    });
+    expect(missing.error).toBeNull();
+    expect(missing.results.map((row) => row._id)).not.toContain(first.results[0]!._id);
+
+    // A forged oversized prefix is rejected before any hydration work.
+    const oversized = await t.query(api.search.search, {
+      raw: "apple",
+      sort: "top",
+      limit: 8,
+      prefix: Array.from({ length: 201 }, () => second.nextPrefix[0]!),
+      prefixQueryKey: second.queryKey,
+    });
+    expect(oversized.error).toBe("Too many pinned rows.");
+  });
+
+  test("pinned rows are bound to the query and to their interpretation", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(
+      internal.ingest.ingestBatch,
+      batch([tweet("apple-1", "apple", ["apple"]), tweet("banana-1", "banana", ["banana"])]),
+    );
+    const apple = await t.query(api.search.search, { raw: "apple", sort: "top", limit: 1 });
+    const banana = await t.query(api.search.search, { raw: "banana", sort: "top", limit: 1 });
+
+    // A pinned row from another query (or a forged id) is not prepended: it must
+    // satisfy the same constraints and gates as a retrieved candidate.
+    const crossQuery = await t.query(api.search.search, {
+      raw: "apple",
+      sort: "top",
+      limit: 4,
+      prefix: [...apple.nextPrefix, ...banana.nextPrefix],
+      prefixQueryKey: apple.queryKey,
+    });
+    expect(crossQuery.prefixDropped).toBe(false);
+    expect(crossQuery.results.map((row) => row.tweetId)).toEqual(["apple-1"]);
+
+    // A prefix minted under a different interpretation restarts the sequence.
+    const drifted = await t.query(api.search.search, {
+      raw: "apple",
+      sort: "top",
+      limit: 4,
+      prefix: apple.nextPrefix,
+      prefixQueryKey: "0000000000000000",
+    });
+    expect(drifted.prefixDropped).toBe(true);
+    expect(drifted.results.map((row) => row.tweetId)).toEqual(["apple-1"]);
+
+    // An invalid query fails before any pinned hydration work.
+    const invalid = await t.query(api.search.search, {
+      raw: "x".repeat(513),
+      sort: "top",
+      limit: 4,
+      prefix: apple.nextPrefix,
+      prefixQueryKey: apple.queryKey,
+    });
+    expect(invalid.error).toBeTruthy();
+    expect(invalid.results).toEqual([]);
+  });
+
+  test("widened (L1+) pinned rows survive continuation validation", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(
+      internal.ingest.ingestBatch,
+      batch([tweet("a1", "apple", ["apple"]), tweet("p1", "pie", ["pie"])]),
+    );
+    // "apple pie" has no L0 hit: the ladder widens, so rows satisfy only the
+    // relaxed gates and must still be pinnable.
+    const first = await t.query(api.search.search, { raw: "apple pie", sort: "top", limit: 2 });
+    expect(first.ladder).toBe("L2");
+    expect(first.results.every((row) => row.matchedVia !== "L0")).toBe(true);
+    expect(first.nextPrefix.length).toBeGreaterThan(0);
+
+    const second = await t.query(api.search.search, {
+      raw: "apple pie",
+      sort: "top",
+      limit: 4,
+      prefix: first.nextPrefix,
+      prefixQueryKey: first.queryKey,
+    });
+    expect(second.prefixDropped).toBe(false);
+    expect(second.results.slice(0, first.results.length).map((row) => row._id)).toEqual(
+      first.results.map((row) => row._id),
+    );
+  });
+
   test("OR branches drop glue and temporal words the same way must does", async () => {
     const t = convexTest(schema, modules);
     await t.mutation(internal.ingest.ingestBatch, batch());
