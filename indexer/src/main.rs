@@ -437,6 +437,57 @@ fn ingest_tweets(cli: &Cli, files: &[PathBuf], out_dir: Option<&PathBuf>) -> Res
     Ok(())
 }
 
+/// One re-crawled tweet reduced to its newest snapshot.
+struct RecrawledTweet {
+    id: TweetId,
+    quoted: Option<TweetId>,
+    retweet: Option<TweetId>,
+    metrics: Metrics,
+    metrics_at: i64,
+    created_at: i64,
+}
+
+/// Read every JSONL under `files`, keeping only the newest snapshot per tweet.
+///
+/// Files contain re-crawls (the collector refreshes metrics), so an edge list
+/// with every occurrence attributes a source's boost once per recrawl, and
+/// last-write-wins order can pick an older snapshot.
+fn latest_recrawls(files: &[PathBuf]) -> Result<Vec<RecrawledTweet>> {
+    let mut latest: std::collections::HashMap<TweetId, RecrawledTweet> =
+        std::collections::HashMap::new();
+    for file in files {
+        let reader = std::io::BufReader::new(std::fs::File::open(file)?);
+        for line in reader.lines() {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            let Ok(IngressRecord::Tweet(tweet)) = parse_and_gate(&line) else {
+                continue;
+            };
+            let next = RecrawledTweet {
+                id: tweet.id.clone(),
+                quoted: tweet.quoted_tweet_id.clone(),
+                retweet: tweet.retweet_of_tweet_id.clone(),
+                metrics: tweet.metrics,
+                metrics_at: tweet.metrics_at,
+                created_at: tweet.created_at,
+            };
+            match latest.entry(tweet.id) {
+                std::collections::hash_map::Entry::Occupied(mut slot) => {
+                    if next.metrics_at > slot.get().metrics_at {
+                        slot.insert(next);
+                    }
+                }
+                std::collections::hash_map::Entry::Vacant(slot) => {
+                    slot.insert(next);
+                }
+            }
+        }
+    }
+    Ok(latest.into_values().collect())
+}
+
 fn refresh(cli: &Cli) -> Result<()> {
     let cfg = load_config(&cli.lexicons)?;
     let client = ConvexClient::from_env()?;
@@ -449,29 +500,20 @@ fn refresh(cli: &Cli) -> Result<()> {
     if files.is_empty() {
         bail!("no .jsonl files under {}", cli.data_dir.display());
     }
-    let mut edges: Vec<(TweetId, Option<TweetId>, Option<TweetId>)> = Vec::new();
-    let mut metrics: std::collections::HashMap<TweetId, Metrics> = std::collections::HashMap::new();
-    let mut metrics_at: std::collections::HashMap<TweetId, i64> = std::collections::HashMap::new();
-    let mut created_ats: std::collections::HashMap<TweetId, i64> = std::collections::HashMap::new();
-    for file in &files {
-        let reader = std::io::BufReader::new(std::fs::File::open(file)?);
-        for line in reader.lines() {
-            let line = line?;
-            if line.trim().is_empty() {
-                continue;
-            }
-            let Ok(IngressRecord::Tweet(tweet)) = parse_and_gate(&line) else {
-                continue;
-            };
-            edges.push((
-                tweet.id.clone(),
-                tweet.quoted_tweet_id.clone(),
-                tweet.retweet_of_tweet_id.clone(),
-            ));
-            metrics.insert(tweet.id.clone(), tweet.metrics);
-            metrics_at.insert(tweet.id.clone(), tweet.metrics_at);
-            created_ats.insert(tweet.id, tweet.created_at);
-        }
+    let recrawls = latest_recrawls(&files)?;
+    let mut edges: Vec<(TweetId, Option<TweetId>, Option<TweetId>)> =
+        Vec::with_capacity(recrawls.len());
+    let mut metrics: std::collections::HashMap<TweetId, Metrics> =
+        std::collections::HashMap::with_capacity(recrawls.len());
+    let mut metrics_at: std::collections::HashMap<TweetId, i64> =
+        std::collections::HashMap::with_capacity(recrawls.len());
+    let mut created_ats: std::collections::HashMap<TweetId, i64> =
+        std::collections::HashMap::with_capacity(recrawls.len());
+    for recrawl in recrawls {
+        edges.push((recrawl.id.clone(), recrawl.quoted, recrawl.retweet));
+        created_ats.insert(recrawl.id.clone(), recrawl.created_at);
+        metrics_at.insert(recrawl.id.clone(), recrawl.metrics_at);
+        metrics.insert(recrawl.id, recrawl.metrics);
     }
     let boosts = propagate_boosts(&edges, &metrics, &cfg.engagement_weights);
     let mut updates = Vec::new();
@@ -729,4 +771,34 @@ fn fnv1a64(parts: &[&[u8]]) -> u64 {
         }
     }
     hash
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write_recrawl(path: &Path, likes: u64, metrics_at: i64) {
+        let line = format!(
+            r#"{{"kind":"tweet","id":"9","text":"apple tree","authorId":"7","createdAt":1700000000000,"metrics":{{"likes":{likes},"retweets":0,"quotes":0,"replies":0}},"metricsAt":{metrics_at},"media":[],"quotedTweetId":null,"retweetOfTweetId":null,"inReplyToTweetId":null}}"#
+        );
+        std::fs::write(path, line).unwrap();
+    }
+
+    #[test]
+    fn latest_recrawls_keeps_the_newest_snapshot_per_tweet() {
+        let dir = std::env::temp_dir().join(format!("xearch-recrawl-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let older = dir.join("a.jsonl");
+        let newer = dir.join("b.jsonl");
+        write_recrawl(&older, 1, 1_700_000_000_000);
+        write_recrawl(&newer, 2, 1_700_000_100_000);
+
+        let recrawls = latest_recrawls(&[older, newer]).unwrap();
+        assert_eq!(recrawls.len(), 1);
+        assert_eq!(recrawls[0].id.0, "9");
+        assert_eq!(recrawls[0].metrics.likes, 2);
+        assert_eq!(recrawls[0].metrics_at, 1_700_000_100_000);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

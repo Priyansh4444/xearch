@@ -286,7 +286,9 @@ export const applyMetrics = internalMutation({
         patch.quoteCount = update.metrics.quotes;
         patch.metricsAt = update.metricsAt;
       }
-      if (update.propagatedBoost !== undefined) {
+      // The boost rides the same snapshot as the metrics: a stale recrawl must
+      // not overwrite a boost derived from newer input.
+      if (update.propagatedBoost !== undefined && update.metricsAt >= existing.metricsAt) {
         patch.propagatedBoost = update.propagatedBoost;
       }
       if (Object.keys(patch).length > 0) {
