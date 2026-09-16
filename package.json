@@ -30,7 +30,7 @@
   },
   "devDependencies": {
     "@effect/tsgo": "^0.44.0",
-    "@types/node": "^26.4.1",
+    "@types/node": "^26.5.1",
     "convex-test": "^0.0.56",
     "jsdom": "^30.0.1",
     "oxfmt": "0.67.0",
