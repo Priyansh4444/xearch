@@ -24,7 +24,13 @@ fn rejected_and_blank_suffix_is_checkpointed_without_a_batch() {
     let quarantine = fixture.0.join("quarantine");
     let checkpoint = fixture.0.join("checkpoint.json");
     fs::create_dir_all(&data).unwrap();
-    fs::write(data.join("rows.jsonl"), "malformed\n\n").unwrap();
+    let rows = data.join("rows.jsonl");
+    fs::write(&rows, "malformed\n\n").unwrap();
+    // Checkpoint identity is the canonical path (basenames can collide).
+    let key = fs::canonicalize(&rows)
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
 
     let run = || {
         Command::new(env!("CARGO_BIN_EXE_xearch-indexer"))
@@ -49,10 +55,7 @@ fn rejected_and_blank_suffix_is_checkpointed_without_a_batch() {
         "{}",
         String::from_utf8_lossy(&first.stderr)
     );
-    assert_eq!(
-        Checkpoint::load(&checkpoint).unwrap().offsets["rows.jsonl"],
-        2
-    );
+    assert_eq!(Checkpoint::load(&checkpoint).unwrap().offsets[&key], 2);
     let rejected = fs::read(quarantine.join("rows.jsonl")).unwrap();
     let second = run();
     assert!(
@@ -61,8 +64,5 @@ fn rejected_and_blank_suffix_is_checkpointed_without_a_batch() {
         String::from_utf8_lossy(&second.stderr)
     );
     assert_eq!(fs::read(quarantine.join("rows.jsonl")).unwrap(), rejected);
-    assert_eq!(
-        Checkpoint::load(&checkpoint).unwrap().offsets["rows.jsonl"],
-        2
-    );
+    assert_eq!(Checkpoint::load(&checkpoint).unwrap().offsets[&key], 2);
 }

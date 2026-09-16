@@ -251,6 +251,42 @@ describe("search serving flow", () => {
     expect(result.appliedQuery.union).toBe(true);
   });
 
+  test("OR branches keep aspect signals and defer through the posting budget", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(
+      internal.ingest.ingestBatch,
+      batch([tweet("pricey", "cheap phone", ["cheap", "phone", "~price"])]),
+    );
+    const result = await t.query(api.search.search, { raw: "cheap OR phone", sort: "top" });
+    expect(result.appliedQuery.union).toBe(true);
+    expect(result.appliedQuery.aspects).toEqual(["~price"]);
+    expect(result.appliedQuery.should.sort()).toEqual(["cheap", "phone"]);
+    expect(result.results.map((row) => row.tweetId)).toContain("pricey");
+
+    // Budget 0: the first bucket-moving update is deferred untouched, then the
+    // caller re-sends it and it lands.
+    const update = {
+      tweetId: "pricey",
+      metrics: { likes: 5, retweets: 0, quotes: 0, replies: 0 },
+      metricsAt: Date.UTC(2026, 8, 4),
+      newScoreBucket: 250,
+    };
+    const deferred = await t.mutation(internal.ingest.applyMetrics, {
+      updates: [update],
+      postingBudget: 0,
+    });
+    expect(deferred.processed).toBe(0);
+    let row = await t.run(async (ctx) => await ctx.db.query("tweets").first());
+    expect(row?.scoreBucket).toBe(1);
+    expect(row?.likeCount).toBe(0);
+
+    const applied = await t.mutation(internal.ingest.applyMetrics, { updates: [update] });
+    expect(applied.processed).toBe(1);
+    row = await t.run(async (ctx) => await ctx.db.query("tweets").first());
+    expect(row?.scoreBucket).toBe(250);
+    expect(row?.likeCount).toBe(5);
+  });
+
   test("applyMetrics moves posting buckets only when the bucket changed", async () => {
     const t = convexTest(schema, modules);
     await t.mutation(

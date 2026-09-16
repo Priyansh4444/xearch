@@ -19,6 +19,14 @@ import { mediaTypeValidator } from "./contracts/media";
  */
 const MAX_POSTINGS_PER_TWEET = 4096;
 
+/**
+ * Postings one `applyMetrics` mutation may read/rewrite before it stops and the
+ * caller re-sends from `processed`. A 2,048 budget plus one over-budget tweet
+ * (≤ 4,096 postings) stays inside Convex's per-transaction read/write limits no
+ * matter how many updates the caller packs into `updates`.
+ */
+const POSTING_BUDGET_PER_MUTATION = 2048;
+
 const postingIn = v.object({
   term: v.string(),
   tf: v.number(),
@@ -240,15 +248,29 @@ export const applyMetrics = internalMutation({
         newScoreBucket: v.optional(v.number()),
       }),
     ),
+    /** Override for tests; production uses POSTING_BUDGET_PER_MUTATION. */
+    postingBudget: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
     let patched = 0;
+    let processed = 0; // updates fully applied from the front of args.updates
+    let budget = Math.max(0, args.postingBudget ?? POSTING_BUDGET_PER_MUTATION);
     for (const update of args.updates) {
       const existing = await ctx.db
         .query("tweets")
         .withIndex("by_tweetId", (q) => q.eq("tweetId", update.tweetId))
         .unique();
-      if (existing === null) continue;
+      if (existing === null) {
+        processed += 1;
+        continue;
+      }
+      const newBucket = update.newScoreBucket;
+      const bucketMoved =
+        newBucket !== undefined &&
+        update.metricsAt >= existing.metricsAt &&
+        existing.scoreBucket !== newBucket;
+      // Stop BEFORE touching this update; the caller re-sends from `processed`.
+      if (bucketMoved && budget <= 0) break;
       const patch: {
         likeCount?: number;
         retweetCount?: number;
@@ -271,26 +293,24 @@ export const applyMetrics = internalMutation({
         await ctx.db.patch(existing._id, patch);
         patched += 1;
       }
-      if (
-        update.newScoreBucket !== undefined &&
-        update.metricsAt >= existing.metricsAt &&
-        existing.scoreBucket !== update.newScoreBucket
-      ) {
+      if (bucketMoved) {
         // One bounded read (the ingest cap), and only rows whose bucket moved
         // are written — a refresh over an unchanged bucket costs one row read.
         const postings = await ctx.db
           .query("postings")
           .withIndex("by_tweet", (q) => q.eq("tweetId", existing._id))
           .take(MAX_POSTINGS_PER_TWEET);
+        budget -= postings.length;
         for (const posting of postings) {
-          if (posting.scoreBucket !== update.newScoreBucket) {
-            await ctx.db.patch(posting._id, { scoreBucket: update.newScoreBucket });
+          if (posting.scoreBucket !== newBucket) {
+            await ctx.db.patch(posting._id, { scoreBucket: newBucket });
           }
         }
-        await ctx.db.patch(existing._id, { scoreBucket: update.newScoreBucket });
+        await ctx.db.patch(existing._id, { scoreBucket: newBucket });
       }
+      processed += 1;
     }
-    return { patched };
+    return { patched, processed };
   },
 });
 

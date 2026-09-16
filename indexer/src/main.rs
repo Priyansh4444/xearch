@@ -12,7 +12,7 @@ use xearch_indexer::convex_api::{ConvexClient, IngestAck};
 use xearch_indexer::ids::{Term, TweetId};
 use xearch_indexer::loose::{parse_line as parse_loose_line, ParsedLine};
 use xearch_indexer::model::{IngestBatch, IngressRecord, Metrics};
-use xearch_indexer::num::u64_as_f64;
+use xearch_indexer::num::{f64_as_usize, u64_as_f64};
 use xearch_indexer::pipeline::{
     engagement_ln1p, propagate_boosts, quantize, recency_score, AspectLexicon, AspectPatterns,
     BatchBuilder, Config, EngagementWeights, RECENCY_EPOCH_MS, RECENCY_MAX_DAYS, RECENCY_PER_DAY,
@@ -181,7 +181,10 @@ fn backfill(cli: &Cli, out_dir: Option<&PathBuf>) -> Result<()> {
 
     for file in &files {
         let name = file_name(file);
-        let offset = *checkpoint.offsets.get(&name).unwrap_or(&0);
+        // Checkpoint identity is the canonical path, never the basename: a
+        // resume must not collide two different files that share a name.
+        let key = source_key(file);
+        let offset = *checkpoint.offsets.get(&key).unwrap_or(&0);
         let reader = std::io::BufReader::new(
             std::fs::File::open(file).with_context(|| format!("opening {name}"))?,
         );
@@ -224,7 +227,7 @@ fn backfill(cli: &Cli, out_dir: Option<&PathBuf>) -> Result<()> {
             }
             next_offset = idx.saturating_add(1);
             if flush_ctx.builder.is_full() {
-                flush_ctx.flush(&name, next_offset)?;
+                flush_ctx.flush(&key, next_offset)?;
             }
             if cli
                 .limit
@@ -235,14 +238,11 @@ fn backfill(cli: &Cli, out_dir: Option<&PathBuf>) -> Result<()> {
         }
         // Flush at the file boundary so offsets never describe a half-acked file.
         if !flush_ctx.builder.is_empty() {
-            flush_ctx.flush(&name, next_offset)?;
+            flush_ctx.flush(&key, next_offset)?;
         }
         // All pending records have been acknowledged. Persist progress even if
         // the suffix contained only blank or quarantined lines.
-        flush_ctx
-            .checkpoint
-            .offsets
-            .insert(name.clone(), next_offset);
+        flush_ctx.checkpoint.offsets.insert(key, next_offset);
         flush_ctx.checkpoint.store(&cli.checkpoint)?;
         if limit_reached(cli, flush_ctx.stats) {
             report_limit(cli);
@@ -341,25 +341,29 @@ fn ingest_tweets(cli: &Cli, files: &[PathBuf], out_dir: Option<&PathBuf>) -> Res
     let mut builder = BatchBuilder::new(cfg);
     let mut stats = Stats::default();
     let started = std::time::Instant::now();
-    let sources: Vec<(String, Box<dyn BufRead>)> = if files.is_empty() {
+    // (checkpoint key, display label, reader); stdin is never resumable.
+    let sources: Vec<(String, String, Box<dyn BufRead>)> = if files.is_empty() {
         let stdin: Box<dyn BufRead> = Box::new(std::io::BufReader::new(std::io::stdin()));
-        vec![(String::from("stdin"), stdin)]
+        vec![(String::from("stdin"), String::from("stdin"), stdin)]
     } else {
         let mut opened = Vec::new();
         for file in files {
             let name = file_name(file);
+            // Canonical paths keep same-basename inputs distinct (the old
+            // basename key silently reused another file's offset).
+            let key = source_key(file);
             let reader: Box<dyn BufRead> = Box::new(std::io::BufReader::new(
                 std::fs::File::open(file).with_context(|| format!("opening {name}"))?,
             ));
-            opened.push((name, reader));
+            opened.push((key, name, reader));
         }
         opened
     };
-    for (name, reader) in sources {
-        let offset = if name == "stdin" {
+    for (key, name, reader) in sources {
+        let offset = if key == "stdin" {
             0
         } else {
-            *checkpoint.offsets.get(&name).unwrap_or(&0)
+            *checkpoint.offsets.get(&key).unwrap_or(&0)
         };
         let mut next_offset = offset;
         let mut flush_ctx = FlushContext {
@@ -408,20 +412,17 @@ fn ingest_tweets(cli: &Cli, files: &[PathBuf], out_dir: Option<&PathBuf>) -> Res
             }
             next_offset = idx.saturating_add(1);
             if flush_ctx.builder.is_full() {
-                flush_ctx.flush(&name, next_offset)?;
+                flush_ctx.flush(&key, next_offset)?;
             }
             if limit_reached(cli, flush_ctx.stats) {
                 break;
             }
         }
         if !flush_ctx.builder.is_empty() {
-            flush_ctx.flush(&name, next_offset)?;
+            flush_ctx.flush(&key, next_offset)?;
         }
-        if name != "stdin" {
-            flush_ctx
-                .checkpoint
-                .offsets
-                .insert(name.clone(), next_offset);
+        if key != "stdin" {
+            flush_ctx.checkpoint.offsets.insert(key, next_offset);
             flush_ctx.checkpoint.store(&cli.checkpoint)?;
         }
         if limit_reached(cli, flush_ctx.stats) {
@@ -496,12 +497,22 @@ fn refresh(cli: &Cli) -> Result<()> {
             .unwrap_or_default()
             .cmp(b["tweetId"].as_str().unwrap_or_default())
     });
-    let mut patched = 0_u64;
+    let mut applied = 0_u64;
     for chunk in updates.chunks(40) {
-        let args = serde_json::json!({ "updates": chunk });
-        client.apply_metrics(&args)?;
-        patched = patched.saturating_add(u64::try_from(chunk.len()).unwrap_or(0));
-        eprintln!("refresh: applied {}/{} boost rows", patched, updates.len());
+        let mut offset = 0_usize;
+        while let Some(pending) = chunk.get(offset..).filter(|slice| !slice.is_empty()) {
+            // A short ack means the posting budget stopped the mutation; the
+            // remainder is safe to re-send (metricsAt gates make it idempotent).
+            let args = serde_json::json!({ "updates": pending });
+            let ack = client.apply_metrics(&args)?;
+            let processed = f64_as_usize(ack.processed);
+            if processed == 0 {
+                bail!("applyMetrics made no progress on a non-empty slice; aborting refresh");
+            }
+            offset = offset.saturating_add(processed);
+            applied = applied.saturating_add(u64::try_from(processed).unwrap_or(u64::MAX));
+            eprintln!("refresh: applied {}/{} metric rows", applied, updates.len());
+        }
     }
     eprintln!(
         "refresh done: {} quote/RT edges, {} merged targets, config {}",
@@ -590,6 +601,16 @@ fn file_name(path: &Path) -> String {
     path.file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default()
+}
+
+/// Stable, unique checkpoint identity for an input file: its canonical path.
+/// Basenames collide (`/a/tweets.jsonl` vs `/b/tweets.jsonl`), which used to
+/// skip a file's records or double-ingest them on resume.
+fn source_key(path: &Path) -> String {
+    std::fs::canonicalize(path).map_or_else(
+        |_| path.to_string_lossy().into_owned(),
+        |p| p.to_string_lossy().into_owned(),
+    )
 }
 
 fn now_ms() -> i64 {

@@ -261,8 +261,14 @@ export async function tierB(
   ]);
   const tokensWithoutGlue = xq.must.filter((token) => !GLUE.has(token));
   // Aspect detection intentionally sees glue words such as "vs" before
-  // retrieval removes them.
-  const tokensForAspects = [...xq.must];
+  // retrieval removes them, and sees every explicit-OR branch: an aspect
+  // signal in a should term or quoted branch is the same signal as in must
+  // (e.g. "cheap OR phone" still carries ~price).
+  const tokensForAspects = [
+    ...xq.must,
+    ...xq.should,
+    ...(xq.union ? xq.phrases.flatMap((phrase) => tokenize(phrase.join(" ")).tokens) : []),
+  ];
 
   // 2e. Media lexicon: a leading media noun is a filter, not a term.
   const MEDIA_NOUNS: Record<string, MediaFilter> = {
@@ -352,10 +358,11 @@ export async function tierB(
       }
     }
     // G5 guard, query side: never let an aspect empty the whole must set — a
-    // bare attribute word ("cheap") stays a literal term.
+    // bare attribute word ("cheap") stays a literal term. A union query has no
+    // must to empty; its weak words are branches, so they stay alternatives.
     if (stay.length > 0) {
       xq.must = stay;
-    } else {
+    } else if (!xq.union) {
       xq.aspects = [];
       xq.should = xq.should.filter((t) => !weakWords.has(t));
     }
