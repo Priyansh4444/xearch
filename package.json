@@ -20,6 +20,7 @@
     "codegen": "convex codegen",
     "prepare": "effect-tsgo patch --no-typescript --oxlint",
     "typecheck": "tsc --noEmit && pnpm --filter xearch-web typecheck",
+    "deploy:web": "node -e \"if (!process.env.VITE_CONVEX_URL) { console.error('deploy:web needs VITE_CONVEX_URL set to the deployment the Worker should use, e.g. https://sleek-emu-128.convex.cloud (.env.local would silently target the dev deployment)'); process.exit(1); }\" && pnpm --filter xearch-web build && bunx wrangler@4 deploy --config apps/web/wrangler.jsonc",
     "web": "pnpm --filter xearch-web dev",
     "doctor": "react-doctor --no-telemetry --no-supply-chain"
   },

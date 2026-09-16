@@ -11,6 +11,7 @@
 import type * as answers from "../answers.js";
 import type * as contracts_ids from "../contracts/ids.js";
 import type * as contracts_media from "../contracts/media.js";
+import type * as engine_bigrams from "../engine/bigrams.js";
 import type * as engine_constraints from "../engine/constraints.js";
 import type * as engine_parse from "../engine/parse.js";
 import type * as engine_plan from "../engine/plan.js";
@@ -33,6 +34,7 @@ declare const fullApi: ApiFromModules<{
   answers: typeof answers;
   "contracts/ids": typeof contracts_ids;
   "contracts/media": typeof contracts_media;
+  "engine/bigrams": typeof engine_bigrams;
   "engine/constraints": typeof engine_constraints;
   "engine/parse": typeof engine_parse;
   "engine/plan": typeof engine_plan;

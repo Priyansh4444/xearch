@@ -156,8 +156,9 @@ export default defineSchema({
     lexiconVersion: v.number(),
     tokenizerVersion: v.number(),
     updatedAt: v.number(),
-    // Configs that contributed tweets additively under --allow-config-drift
-    // (new tweets only; the active config above is preserved).
+    // Retired with the additive config-drift path (rows may still carry them);
+    // the strict config guard rejects mismatches instead of recording drift.
+    stopwordsVersion: v.optional(v.number()),
     driftedConfigHashes: v.optional(v.array(v.string())),
   }).index("by_key", ["key"]),
 });

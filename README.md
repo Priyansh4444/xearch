@@ -93,6 +93,10 @@ pnpm collect:sync [run-id]                                 # mirror data/old to 
 pnpm collect:pull <run-id> [pattern ...]                   # read-only pull from R2: manifest + ingress,
                                                            # digest-verified against the manifest
 pnpm web                        # the SERP at http://localhost:5173 (uses .env.local's CONVEX_URL)
+VITE_CONVEX_URL=https://<prod>.convex.cloud pnpm deploy:web
+                                # build + deploy the SERP to the xearch-web Worker
+                                # (apps/web/wrangler.jsonc); pass the deployment the
+                                # worker should talk to, not .env.local's dev URL
 
 # index a pulled run into the deployment in .env.local (CONVEX_URL + CONVEX_DEPLOY_KEY):
 cd indexer && cargo build --release && cd ..
@@ -109,9 +113,11 @@ indexer/target/release/xearch-indexer upload --batch-dir ./batches
 indexer/target/release/xearch-indexer ingest-tweets tweets.jsonl
 indexer/target/release/xearch-indexer ingest-tweets --out-dir ./batches tweets.jsonl
 
-# additive ingest into a corpus indexed under an older config: new tweets only,
-# existing postings untouched, the active config preserved (rate-limit friendly):
-indexer/target/release/xearch-indexer --allow-config-drift ingest-tweets tweets.jsonl
+# ingest in chunks (rate-limit friendly): each command appends new tweets and
+# skips ones already indexed; batches must share the deployment's index config
+# (a config change requires a deliberate reindex, RISKS O4):
+indexer/target/release/xearch-indexer ingest-tweets tweets-part-1.jsonl
+indexer/target/release/xearch-indexer ingest-tweets tweets-part-2.jsonl
 
 # re-bucket scores + metric re-crawls + quote/RT boost propagation:
 indexer/target/release/xearch-indexer --data-dir data/old/<run-id>/ingress refresh
