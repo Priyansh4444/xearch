@@ -279,6 +279,33 @@ test("a dropped prefix falls back to the fresh ranking metadata", async () => {
   expect(container.textContent).not.toContain("widened to related posts (L2)");
 });
 
+test("a video that cannot play falls back to an open link", async () => {
+  const videoUrl = "https://video.twimg.com/amplify_video/1/vid/avc1/3840x2160/clip.mp4?tag=28";
+  full = {
+    ...response(),
+    results: [
+      {
+        ...(response().results[0] as object),
+        mediaType: MediaType.Video,
+        mediaUrls: [videoUrl],
+      },
+    ],
+  };
+  await render();
+  const video = container.querySelector("video");
+  expect(video).not.toBeNull();
+  expect(video?.querySelector("source")?.getAttribute("type")).toBe("video/mp4");
+  expect(video?.getAttribute("src")).toBeNull();
+
+  await act(async () => {
+    video!.dispatchEvent(new Event("error"));
+  });
+  expect(container.querySelector("video")).toBeNull();
+  const link = container.querySelector(".media-fallback a");
+  expect(link?.getAttribute("href")).toBe(videoUrl);
+  expect(container.textContent).toContain("This browser can’t play this video.");
+});
+
 test("stopword-only phrases and exclude-only queries also offer the literal lane", async () => {
   for (const appliedQuery of [
     { ...emptyXQuery(), phrases: [["the", "and"]] },

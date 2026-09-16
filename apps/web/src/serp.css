@@ -7,6 +7,7 @@
   --hairline: #2f3336;
   --signal: #1d9bf0;
   --mark: #12334d;
+  --radius: 2px;
   font-family: "IBM Plex Sans", system-ui, sans-serif;
   color: var(--ink);
   color-scheme: dark;
@@ -55,10 +56,10 @@ body {
   width: 100%;
   font-family: "IBM Plex Mono", ui-monospace, monospace;
   font-size: 1.35rem;
-  padding: 0.85rem 1.25rem;
+  padding: 0.85rem 1rem;
   border: 1px solid var(--hairline);
-  border-radius: 999px;
-  background: #202327;
+  border-radius: var(--radius);
+  background: #000000;
   color: var(--ink);
   appearance: none;
 }
@@ -66,7 +67,7 @@ body {
 .searchbox input:focus-visible {
   outline: none;
   border-color: var(--signal);
-  box-shadow: 0 0 0 2px rgb(29 155 240 / 0.35);
+  box-shadow: 0 0 0 1px var(--signal);
 }
 
 .searchbox input::placeholder {
@@ -95,7 +96,7 @@ body {
   padding: 0.25rem 0;
   background: var(--surface);
   border: 1px solid var(--hairline);
-  border-radius: 12px;
+  border-radius: var(--radius);
   margin-top: 0.35rem;
   overflow: hidden;
 }
@@ -152,7 +153,7 @@ body {
   padding: 0.25rem 0.8rem;
   background: none;
   border: 1px solid var(--hairline);
-  border-radius: 999px;
+  border-radius: var(--radius);
   color: var(--muted);
   cursor: pointer;
 }
@@ -301,8 +302,10 @@ body {
 .media video {
   max-width: 100%;
   max-height: 340px;
-  border-radius: 4px;
-  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
+  /* Outline reads as depth without a tinted border picking up the surface. */
+  outline: 1px solid rgb(255 255 255 / 0.1);
+  border: none;
   display: block;
 }
 
@@ -360,7 +363,7 @@ body {
   background: var(--surface);
   color: var(--ink);
   border: 1px solid var(--hairline);
-  border-radius: 999px;
+  border-radius: var(--radius);
   cursor: pointer;
 }
 
@@ -393,7 +396,7 @@ body {
   background: var(--signal);
   color: #000000;
   border: none;
-  border-radius: 999px;
+  border-radius: var(--radius);
   cursor: pointer;
 }
 
@@ -474,7 +477,7 @@ body {
   padding: 0.5rem 1.5rem;
   background: none;
   border: 1px solid var(--signal);
-  border-radius: 999px;
+  border-radius: var(--radius);
   color: var(--signal);
   cursor: pointer;
 }
@@ -494,4 +497,56 @@ body {
   text-align: center;
   font-size: 0.8rem;
   color: var(--muted);
+}
+
+/* interactive chrome --------------------------------------------------------- */
+
+/* Press feedback: the control shrinks under the finger and eases back out.
+   Values match search.pronsh.dev: scale .96, 150ms ease-out, explicit
+   properties (never `transition: all`). The standalone `scale` property is
+   composited, so the press never triggers layout. */
+.tab,
+.lane-toggle,
+.vote,
+.chips button,
+.load-more,
+.error-state button {
+  transition-property: color, background-color, border-color, opacity, scale;
+  transition-duration: 150ms;
+  transition-timing-function: ease-out;
+}
+
+.tab:not(:disabled):active,
+.lane-toggle:not(:disabled):active,
+.vote:not(:disabled):active,
+.chips button:not(:disabled):active,
+.load-more:not(:disabled):active,
+.error-state button:not(:disabled):active {
+  scale: 0.96;
+}
+
+.tab:focus-visible,
+.lane-toggle:focus-visible,
+.vote:focus-visible,
+.chips button:focus-visible,
+.load-more:focus-visible,
+.error-state button:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 2px;
+}
+
+/* media fallback ------------------------------------------------------------- */
+
+.media-fallback {
+  margin: 0;
+  padding: 0.75rem 1rem;
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.media-fallback a {
+  color: var(--signal);
 }

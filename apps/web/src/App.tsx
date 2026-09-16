@@ -692,23 +692,45 @@ function Media({ tweet }: { tweet: Result }) {
   if (tweet.mediaType === MediaType.None || tweet.mediaUrls.length === 0) return null;
   return (
     <div className={tweet.mediaUrls.length > 1 ? "media grid" : "media"}>
-      {tweet.mediaUrls.map((url) =>
-        tweet.mediaType === MediaType.Image ? (
-          <img key={url} src={url} alt="" loading="lazy" />
-        ) : (
-          <video
-            key={url}
-            src={url}
-            controls={tweet.mediaType === MediaType.Video}
-            autoPlay={tweet.mediaType === MediaType.Gif}
-            loop={tweet.mediaType === MediaType.Gif}
-            muted
-            playsInline
-            preload="metadata"
-          />
-        ),
-      )}
+      {tweet.mediaUrls.map((url) => (
+        <MediaItem key={url} url={url} kind={tweet.mediaType} />
+      ))}
     </div>
+  );
+}
+
+/**
+ * One media attachment. A browser that cannot play the provider's mp4 (Firefox
+ * on Linux without an H.264 decoder reports "no video with supported format")
+ * gets an explicit link instead of a dead player.
+ */
+function MediaItem({ url, kind }: { url: string; kind: Result["mediaType"] }) {
+  const [failed, setFailed] = useState(false);
+  if (kind === MediaType.Image) return <img src={url} alt="" loading="lazy" />;
+  if (failed) {
+    return (
+      <p className="media-fallback">
+        This browser can’t play this video.{" "}
+        <a href={url} target="_blank" rel="noreferrer noopener">
+          Open video
+        </a>
+      </p>
+    );
+  }
+  return (
+    <video
+      controls={kind === MediaType.Video}
+      autoPlay={kind === MediaType.Gif}
+      loop={kind === MediaType.Gif}
+      muted
+      playsInline
+      preload="metadata"
+      onError={() => setFailed(true)}
+    >
+      {/* The declared type lets Firefox start playback when the CDN sends a
+          generic content type for the same mp4. */}
+      <source src={url} type="video/mp4" />
+    </video>
   );
 }
 
