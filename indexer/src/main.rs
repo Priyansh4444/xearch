@@ -14,8 +14,9 @@ use xearch_indexer::loose::{parse_line as parse_loose_line, ParsedLine};
 use xearch_indexer::model::{IngestBatch, IngressRecord, Metrics};
 use xearch_indexer::num::u64_as_f64;
 use xearch_indexer::pipeline::{
-    propagate_boosts, AspectLexicon, AspectPatterns, BatchBuilder, Config, EngagementWeights,
-    RECENCY_EPOCH_MS, RECENCY_MAX_DAYS, RECENCY_PER_DAY, SCORE_MAX,
+    engagement_ln1p, propagate_boosts, quantize, recency_score, AspectLexicon, AspectPatterns,
+    BatchBuilder, Config, EngagementWeights, RECENCY_EPOCH_MS, RECENCY_MAX_DAYS, RECENCY_PER_DAY,
+    SCORE_MAX,
 };
 use xearch_indexer::tokenizer::TOKENIZER_VERSION;
 
@@ -297,9 +298,11 @@ impl FlushContext<'_> {
         let batch = self.builder.take_batch();
         let ack = self.dest.emit(&batch)?;
         self.stats.batches = self.stats.batches.saturating_add(1);
-        self.checkpoint
-            .offsets
-            .insert(file.to_string(), next_offset);
+        if file != "stdin" {
+            self.checkpoint
+                .offsets
+                .insert(file.to_string(), next_offset);
+        }
         if let Destination::Dir { next, .. } = self.dest {
             self.checkpoint.next_batch = *next;
         }
@@ -353,7 +356,11 @@ fn ingest_tweets(cli: &Cli, files: &[PathBuf], out_dir: Option<&PathBuf>) -> Res
         opened
     };
     for (name, reader) in sources {
-        let offset = *checkpoint.offsets.get(&name).unwrap_or(&0);
+        let offset = if name == "stdin" {
+            0
+        } else {
+            *checkpoint.offsets.get(&name).unwrap_or(&0)
+        };
         let mut next_offset = offset;
         let mut flush_ctx = FlushContext {
             dest: &mut dest,
@@ -410,11 +417,13 @@ fn ingest_tweets(cli: &Cli, files: &[PathBuf], out_dir: Option<&PathBuf>) -> Res
         if !flush_ctx.builder.is_empty() {
             flush_ctx.flush(&name, next_offset)?;
         }
-        flush_ctx
-            .checkpoint
-            .offsets
-            .insert(name.clone(), next_offset);
-        flush_ctx.checkpoint.store(&cli.checkpoint)?;
+        if name != "stdin" {
+            flush_ctx
+                .checkpoint
+                .offsets
+                .insert(name.clone(), next_offset);
+            flush_ctx.checkpoint.store(&cli.checkpoint)?;
+        }
         if limit_reached(cli, flush_ctx.stats) {
             report_limit(cli);
             break;
@@ -439,6 +448,7 @@ fn refresh(cli: &Cli) -> Result<()> {
     let mut edges: Vec<(TweetId, Option<TweetId>, Option<TweetId>)> = Vec::new();
     let mut metrics: std::collections::HashMap<TweetId, Metrics> = std::collections::HashMap::new();
     let mut metrics_at: std::collections::HashMap<TweetId, i64> = std::collections::HashMap::new();
+    let mut created_ats: std::collections::HashMap<TweetId, i64> = std::collections::HashMap::new();
     for file in &files {
         let reader = std::io::BufReader::new(std::fs::File::open(file)?);
         for line in reader.lines() {
@@ -455,15 +465,18 @@ fn refresh(cli: &Cli) -> Result<()> {
                 tweet.retweet_of_tweet_id.clone(),
             ));
             metrics.insert(tweet.id.clone(), tweet.metrics);
-            metrics_at.insert(tweet.id, tweet.metrics_at);
+            metrics_at.insert(tweet.id.clone(), tweet.metrics_at);
+            created_ats.insert(tweet.id, tweet.created_at);
         }
     }
     let boosts = propagate_boosts(&edges, &metrics, &cfg.engagement_weights);
     let mut updates = Vec::new();
-    for (tweet_id, boost) in &boosts {
-        let Some(m) = metrics.get(tweet_id) else {
-            continue;
-        };
+    for (tweet_id, m) in &metrics {
+        let boost = boosts.get(tweet_id).copied().unwrap_or(0.0);
+        let created_at = created_ats.get(tweet_id).copied().unwrap_or(0);
+        let static_score =
+            engagement_ln1p(m, &cfg.engagement_weights) + boost + recency_score(created_at);
+        let score_bucket = quantize(static_score, cfg.bucket_count);
         updates.push(serde_json::json!({
             "tweetId": tweet_id.as_str(),
             "metrics": {
@@ -474,6 +487,7 @@ fn refresh(cli: &Cli) -> Result<()> {
             },
             "metricsAt": metrics_at.get(tweet_id).copied().unwrap_or(0),
             "propagatedBoost": boost,
+            "newScoreBucket": score_bucket,
         }));
     }
     updates.sort_by(|a, b| {

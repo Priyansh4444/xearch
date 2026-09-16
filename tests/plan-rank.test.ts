@@ -48,18 +48,14 @@ describe("escalate", () => {
   });
 
   test("L2 -> L3 only with mined PRF terms, then stops", () => {
-    const l2 = escalate(
-      planL0(xqWith({ must: [t("linux")] }), dfs),
-      0,
-      xqWith({ must: [t("linux")] }),
-      dfs,
-    )!;
+    const two = xqWith({ must: [t("linux"), t("box")] });
+    const l2 = escalate(escalate(planL0(two, dfs), 0, two, dfs)!, 0, two, dfs)!;
     expect(l2.level).toBe("L2");
-    expect(escalate(l2, 0, xqWith({ must: [t("linux")] }), dfs)).toBeNull();
-    const l3 = escalate(l2, 0, xqWith({ must: [t("linux")] }), dfs, [t("kernel")])!;
+    expect(escalate(l2, 0, two, dfs)).toBeNull();
+    const l3 = escalate(l2, 0, two, dfs, [t("kernel")])!;
     expect(l3.level).toBe("L3");
     expect(l3.unions.map((u) => u.term)).toContain("kernel");
-    expect(escalate(l3, 0, xqWith({ must: [t("linux")] }), dfs, [t("kernel")])).toBeNull();
+    expect(escalate(l3, 0, two, dfs, [t("kernel")])).toBeNull();
   });
 });
 
@@ -174,6 +170,13 @@ describe("planL0 permutations", () => {
     const plan = planL0(xqWith({ must: [], should: [t("linux"), t("box")] }), dfs);
     expect(plan.gates).toEqual([]);
     expect(plan.unions.map((u) => u.term)).toEqual(["linux", "box"]);
+  });
+
+  it("single-term queries never widen past L0", () => {
+    const xq = xqWith({ must: [t("linux")] });
+    expect(escalate(planL0(xq, dfs), 0, xq, dfs)).toBeNull();
+    const orxq = xqWith({ must: [], should: [t("linux")] });
+    expect(escalate(planL0(orxq, dfs), 0, orxq, dfs)).toBeNull();
   });
 
   it("uniqueTerms dedups in first-seen order across input permutations", () => {
@@ -345,6 +348,36 @@ describe("rerank permutations", () => {
     const cap = rerank(emptyXQuery(), [{ ...base, feedbackVotes: 50 }], stats, NOW)[0]!.score;
     const expected = bucket === "floor" ? floor : bucket === "cap" ? cap : zero;
     expect(score).toBe(expected);
+  });
+
+  it("Latest orders by time before coverage; Top keeps coverage first", () => {
+    const xq = xqWith({ must: [t("linux"), t("box")] });
+    const latest = { ...xq, sort: SortOrder.Latest };
+    const olderCovered: Candidate = {
+      ...base,
+      tweetId: "older",
+      tf: new Map([
+        [t("linux"), 1],
+        [t("box"), 1],
+      ]),
+      createdAt: NOW - 10_000,
+      matchedVia: "L2",
+    };
+    const newerPartial: Candidate = {
+      ...base,
+      tweetId: "newer",
+      tf: new Map([[t("linux"), 1]]),
+      createdAt: NOW,
+      matchedVia: "L2",
+    };
+    expect(rerank(latest, [olderCovered, newerPartial], stats, NOW).map((s) => s.tweetId)).toEqual([
+      "newer",
+      "older",
+    ]);
+    expect(rerank(xq, [olderCovered, newerPartial], stats, NOW).map((s) => s.tweetId)).toEqual([
+      "older",
+      "newer",
+    ]);
   });
 
   it("feedback clamp is monotone: down < neutral < up", () => {

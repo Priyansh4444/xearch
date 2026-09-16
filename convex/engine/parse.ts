@@ -34,6 +34,23 @@ export interface TierBDeps {
   now(): number;
 }
 
+/** A standalone `or` outside quotes — the explicit-union marker. */
+function hasTopLevelOr(raw: string): boolean {
+  let inQuote = false;
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i]!;
+    if (ch === '"') {
+      inQuote = !inQuote;
+      continue;
+    }
+    if (inQuote || i === 0 || !/\s/.test(raw[i - 1]!)) continue;
+    if (raw.slice(i, i + 2).toLowerCase() !== "or") continue;
+    const after = raw[i + 2];
+    if (after !== undefined && /\s/.test(after)) return true;
+  }
+  return false;
+}
+
 /** Tier A: deterministic operator grammar. Total function — never throws. */
 export function tierA(raw: string): { xq: XQuery; trace: ParseTrace } {
   const xq = emptyXQuery();
@@ -45,12 +62,24 @@ export function tierA(raw: string): { xq: XQuery; trace: ParseTrace } {
   };
   let rest = raw;
 
+  // Explicit OR is a union, not a stopword, and it is detected BEFORE phrases:
+  // a quoted branch ("apple pie" OR tree) must join the union as content, not
+  // sit in xq.phrases where it would become an AND gate no single branch can pass.
+  const isOr = hasTopLevelOr(rest);
+
   // "quoted phrases"
   rest = rest.replace(/"([^"]+)"/g, (_m, phrase: string) => {
     const toks = tokenize(phrase, true).tokens;
     if (toks.length > 0) {
-      xq.phrases.push(toks);
-      trace.consumed[`"${phrase}"`] = "phrases";
+      if (isOr) {
+        for (const term of tokenize(phrase).tokens) {
+          if (!xq.should.includes(term)) xq.should.push(term);
+        }
+        trace.consumed[`"${phrase}"`] = "should";
+      } else {
+        xq.phrases.push(toks);
+        trace.consumed[`"${phrase}"`] = "phrases";
+      }
     }
     return " ";
   });
@@ -107,7 +136,7 @@ export function tierA(raw: string): { xq: XQuery; trace: ParseTrace } {
   });
 
   // Explicit OR is a union, not a stopword. "apple OR tree" must not AND.
-  if (/(^|\s)or(\s|$)/i.test(rest) && /\s+or\s+/i.test(rest)) {
+  if (isOr) {
     const groups = rest.split(/\s+or\s+/i);
     for (const group of groups) {
       for (const tok of tokenize(group).tokens) {

@@ -255,11 +255,11 @@ export const applyMetrics = internalMutation({
         await ctx.db.patch(existing._id, patch);
         patched += 1;
       }
-      if (update.newScoreBucket !== undefined) {
+      if (update.newScoreBucket !== undefined && update.metricsAt >= existing.metricsAt) {
         const postings = await ctx.db
           .query("postings")
           .withIndex("by_tweet", (q) => q.eq("tweetId", existing._id))
-          .take(64);
+          .collect();
         for (const posting of postings) {
           await ctx.db.patch(posting._id, { scoreBucket: update.newScoreBucket });
         }

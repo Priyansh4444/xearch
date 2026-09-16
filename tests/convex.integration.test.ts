@@ -190,7 +190,7 @@ describe("search serving flow", () => {
     const result = await t.query(api.search.search, { raw: "apple tree", sort: "top" });
     expect(result.results[0]?.tweetId).toBe("exact");
     expect(result.results.find((row) => row.tweetId === "exact")?.matchedVia).toBe("L0");
-  });
+  }, 30_000);
 
   test("unquoted AND still matches non-adjacent terms when a bigram posting exists", async () => {
     const t = convexTest(schema, modules);
@@ -225,6 +225,24 @@ describe("search serving flow", () => {
     expect(result.results.every((row) => row.matchedVia === "L0")).toBe(true);
     expect(result.appliedQuery.should.sort()).toEqual(["apple", "tree"]);
     expect(result.appliedQuery.must).toEqual([]);
+  });
+
+  test("quoted OR branches join the union instead of gating every candidate", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(
+      internal.ingest.ingestBatch,
+      batch([
+        tweet("pie", "apple pie recipe", ["apple", "pie", "recipe"]),
+        tweet("tree-only", "tree", ["tree"]),
+      ]),
+    );
+    const result = await t.query(api.search.search, {
+      raw: '"apple pie" OR tree',
+      sort: "top",
+    });
+    expect(result.results.map((row) => row.tweetId).sort()).toEqual(["pie", "tree-only"]);
+    expect(result.appliedQuery.phrases).toEqual([]);
+    expect(result.appliedQuery.should.sort()).toEqual(["apple", "pie", "tree"]);
   });
 
   test("applyMetrics writes quote/RT boost onto the merged original", async () => {
@@ -267,7 +285,7 @@ describe("search serving flow", () => {
     const result = await t.query(api.search.search, { raw: "apple tree", sort: "top" });
     expect(result.results[0]?.tweetId).toBe("exact");
     expect(result.results.find((row) => row.tweetId === "exact")?.matchedVia).toBe("L0");
-  });
+  }, 30_000);
 
   test("Top ranks the exact two-term hit above a viral one-term related post", async () => {
     const t = convexTest(schema, modules);

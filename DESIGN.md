@@ -474,10 +474,10 @@ filters `{authorId, media:"image"}`.
 ```
 1. Look up df for each `must` term (and aspect token) in `terms`.  (k point reads)
 2. Sort terms rarest-first.
-3. Read postings for the RAREST term via the matching compound index,
-   ordered by scoreBucket desc, capped at N=500.
-4. For each remaining term (rarer→commoner), read its postings capped at N
-   and intersect tweetId sets in memory.
+3. Read postings for the RAREST term (or an adjacent-token bigram posting when
+   present) via the matching compound index, ordered by scoreBucket desc, capped at N=1,500.
+4. For remaining AND gates, aspects, and phrase adjacency, verify them directly
+   against candidate tweet text instead of intersecting truncated posting lists.
 5. Hand survivors (≤ ~200) to the reranker (§6).
 6. db.get() the top 20 tweets, return hydrated results.
 ```

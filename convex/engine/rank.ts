@@ -149,13 +149,14 @@ export function rerank(
     const exactA = a.matchedVia === LadderLevel.L0;
     const exactB = b.matchedVia === LadderLevel.L0;
     if (exactA !== exactB) return exactA ? -1 : 1;
-    const coverA = mustCoverage(xq, byId.get(a.tweetId)!.tf);
-    const coverB = mustCoverage(xq, byId.get(b.tweetId)!.tf);
-    if (coverA !== coverB) return coverB - coverA;
     if (xq.sort === SortOrder.Latest) {
       const time = byId.get(b.tweetId)!.createdAt - byId.get(a.tweetId)!.createdAt;
       if (time !== 0) return time;
+      return b.score - a.score || a.tweetId.localeCompare(b.tweetId);
     }
+    const coverA = mustCoverage(xq, byId.get(a.tweetId)!.tf);
+    const coverB = mustCoverage(xq, byId.get(b.tweetId)!.tf);
+    if (coverA !== coverB) return coverB - coverA;
     return b.score - a.score || a.tweetId.localeCompare(b.tweetId);
   }
   const best = new Map<string, Scored>();

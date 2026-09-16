@@ -22,6 +22,8 @@ interface Shown {
   queryKey: string | null;
   /** Terms that actually gated/boosted retrieval — what highlighting should mark. */
   terms: string[];
+  /** No indexed terms or filters: the posting index has nothing to retrieve on. */
+  termless: boolean;
 }
 
 /** Known-dense corpus topics — each returns real posts from the archived run. */
@@ -113,16 +115,31 @@ function presentResults(
           ladder: null,
           queryKey: null,
           terms: query.split(/\s+/),
+          termless: false,
         };
   }
   if (full === undefined) return undefined;
   const q = full.appliedQuery;
+  const f = q.filters;
+  const termless =
+    q.must.length === 0 &&
+    q.should.length === 0 &&
+    q.phrases.length === 0 &&
+    q.exclude.length === 0 &&
+    q.aspects.length === 0 &&
+    f.authorId === null &&
+    f.since === null &&
+    f.until === null &&
+    f.media === null &&
+    f.minLikes === null &&
+    f.lang === null;
   return {
     error: full.error,
     results: full.results,
     ladder: full.ladder,
     queryKey: full.queryKey,
     terms: [...q.must, ...q.should, ...q.phrases.flat(), ...q.exclude.map((term) => `-${term}`)],
+    termless,
   };
 }
 
@@ -187,6 +204,7 @@ export function App(): ReactElement {
         searching={searching}
         canVote={canVote}
         onPick={pickQuery}
+        onUseLiteral={lane === "xearch" ? () => setLane("baseline") : null}
       />
 
       <footer className="colophon">
@@ -203,6 +221,7 @@ interface SearchBodyProps {
   searching: boolean;
   canVote: boolean;
   onPick: (query: string) => void;
+  onUseLiteral: (() => void) | null;
 }
 
 function SearchBody({
@@ -212,11 +231,19 @@ function SearchBody({
   searching,
   canVote,
   onPick,
+  onUseLiteral,
 }: SearchBodyProps): ReactElement {
   if (query === "") return <Intro onPick={onPick} />;
   if (error) return <p role="alert">{error}</p>;
   if (shown === undefined) return <SkeletonList />;
-  if (shown.results.length === 0) return <EmptyState query={query} onPick={onPick} />;
+  if (shown.results.length === 0)
+    return (
+      <EmptyState
+        query={query}
+        onPick={onPick}
+        onUseLiteral={shown.termless ? onUseLiteral : null}
+      />
+    );
 
   const count = shown.results.length;
   let countLabel = `${count} posts`;
@@ -272,7 +299,28 @@ function Intro({ onPick }: { onPick: (q: string) => void }) {
   );
 }
 
-function EmptyState({ query, onPick }: { query: string; onPick: (q: string) => void }) {
+function EmptyState({
+  query,
+  onPick,
+  onUseLiteral,
+}: {
+  query: string;
+  onPick: (q: string) => void;
+  onUseLiteral: (() => void) | null;
+}) {
+  if (onUseLiteral !== null) {
+    return (
+      <div className="empty-state">
+        <p>
+          Every word in <span className="query-echo">{query}</span> is dropped by the posting index,
+          so this lane has nothing to retrieve on. The literal lane searches those words directly:
+        </p>
+        <button type="button" className="lane-toggle" onClick={onUseLiteral}>
+          search the literal lane
+        </button>
+      </div>
+    );
+  }
   return (
     <div className="empty-state">
       <p>
@@ -368,7 +416,10 @@ function SearchBox({
       <input
         type="search"
         value={input}
-        onChange={(e) => onChange(e.target.value)}
+        onChange={(e) => {
+          setOpen(true);
+          onChange(e.target.value);
+        }}
         onFocus={() => setOpen(true)}
         onBlur={() => {
           window.setTimeout(() => setOpen(false), 0);

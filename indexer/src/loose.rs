@@ -30,8 +30,7 @@ pub fn parse_line(line: &str) -> Result<ParsedLine, String> {
             serde_json::from_value(probe).map_err(|err| format!("parse: {err}"))?;
         return Ok(ParsedLine::Ingress(record));
     }
-    let raw: LooseTweet =
-        serde_json::from_value(probe).map_err(|err| format!("parse: {err}"))?;
+    let raw: LooseTweet = serde_json::from_value(probe).map_err(|err| format!("parse: {err}"))?;
     let tweet_id = raw
         .id
         .filter(|id| !id.is_empty())

@@ -129,6 +129,14 @@ it.each([
   },
 );
 
+test("all-stopword queries offer the literal lane instead of a dead end", async () => {
+  full = { ...response(), results: [] };
+  await render();
+  expect(container.textContent).toContain("dropped by the posting index");
+  await click("search the literal lane");
+  expect(container.querySelector(".lane-toggle")?.textContent).toContain("lane: baseline");
+});
+
 test("unknown author errors are recoverable in the search screen", async () => {
   full = response("Unknown author: missing.");
   await render();
