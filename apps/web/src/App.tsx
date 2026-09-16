@@ -8,6 +8,9 @@ import { queryInputError } from "../../../convex/engine/constraints";
 import { tokenize } from "../../../convex/engine/tokenize";
 import { LadderLevel, RERANK_CANDIDATES } from "../../../convex/engine/plan";
 import { SortOrder } from "../../../convex/engine/xquery";
+import pilotConfig from "../../../config/collection/pilot.json";
+import expansionConfig from "../../../config/collection/expansion.json";
+import influencersConfig from "../../../config/collection/influencers.json";
 
 type SearchReturn = FunctionReturnType<typeof api.search.search>;
 type BaselineResults = FunctionReturnType<typeof api.search.searchBaseline>;
@@ -34,6 +37,10 @@ const PAGE_SIZE = 20;
 
 /** First-page metadata kept frozen while a prefix sequence is open. */
 type PageMeta = Pick<SearchReturn, "queryKey" | "ladder" | "appliedQuery" | "trace">;
+
+/** Configured seed timelines; derived from the collection configs so it cannot go stale. */
+const SEED_ACCOUNTS =
+  pilotConfig.accounts.length + expansionConfig.accounts.length + influencersConfig.accounts.length;
 
 /** Known-dense corpus topics — each returns real posts from the archived run. */
 const DEMO_QUERIES = ["bun", "pricing", "rust", "react server components", "agents"];
@@ -305,7 +312,10 @@ export function App(): ReactElement {
       />
 
       <footer className="colophon">
-        <p>corpus: 62 seed timelines plus related posts, archived 2026-09-03. served by Convex.</p>
+        <p>
+          corpus: {SEED_ACCOUNTS} seed timelines plus related posts — archived, deduped, served by
+          Convex.
+        </p>
       </footer>
     </div>
   );
@@ -437,8 +447,8 @@ function EmptyState({
     <div className="empty-state">
       <p>
         No matches found in the bounded search window for{" "}
-        <span className="query-echo">{query}</span>. The corpus starts from 62 tech accounts — try
-        words people actually posted:
+        <span className="query-echo">{query}</span>. The corpus starts from {SEED_ACCOUNTS} tech
+        accounts — try words people actually posted:
       </p>
       <DemoChips onPick={onPick} />
     </div>
