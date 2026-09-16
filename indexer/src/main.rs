@@ -184,7 +184,7 @@ fn backfill(cli: &Cli, out_dir: Option<&PathBuf>) -> Result<()> {
         // Checkpoint identity is the canonical path, never the basename: a
         // resume must not collide two different files that share a name.
         let key = source_key(file);
-        let offset = resumed_offset(&checkpoint, &key, &name);
+        let offset = resumed_offset(&checkpoint, &key, &name, true);
         let reader = std::io::BufReader::new(
             std::fs::File::open(file).with_context(|| format!("opening {name}"))?,
         );
@@ -344,9 +344,17 @@ fn ingest_tweets(cli: &Cli, files: &[PathBuf], out_dir: Option<&PathBuf>) -> Res
     let mut stats = Stats::default();
     let started = std::time::Instant::now();
     // (checkpoint key, display label, reader); stdin is never resumable.
-    let sources: Vec<(String, String, Box<dyn BufRead>)> = if files.is_empty() {
+    // Legacy basename keys are only safe when the basename is unambiguous in
+    // this invocation: two same-named inputs would share one offset and one of
+    // them would silently skip records.
+    let mut basenames: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for file in files {
+        let count = basenames.entry(file_name(file)).or_insert(0);
+        *count = count.saturating_add(1);
+    }
+    let sources: Vec<(String, String, bool, Box<dyn BufRead>)> = if files.is_empty() {
         let stdin: Box<dyn BufRead> = Box::new(std::io::BufReader::new(std::io::stdin()));
-        vec![(String::from("stdin"), String::from("stdin"), stdin)]
+        vec![(String::from("stdin"), String::from("stdin"), false, stdin)]
     } else {
         let mut opened = Vec::new();
         for file in files {
@@ -354,18 +362,19 @@ fn ingest_tweets(cli: &Cli, files: &[PathBuf], out_dir: Option<&PathBuf>) -> Res
             // Canonical paths keep same-basename inputs distinct (the old
             // basename key silently reused another file's offset).
             let key = source_key(file);
+            let allow_legacy = basenames.get(&name).copied().unwrap_or(0) == 1;
             let reader: Box<dyn BufRead> = Box::new(std::io::BufReader::new(
                 std::fs::File::open(file).with_context(|| format!("opening {name}"))?,
             ));
-            opened.push((key, name, reader));
+            opened.push((key, name, allow_legacy, reader));
         }
         opened
     };
-    for (key, name, reader) in sources {
+    for (key, name, allow_legacy, reader) in sources {
         let offset = if key == "stdin" {
             0
         } else {
-            resumed_offset(&checkpoint, &key, &name)
+            resumed_offset(&checkpoint, &key, &name, allow_legacy)
         };
         let mut next_offset = offset;
         let mut flush_ctx = FlushContext {
@@ -424,7 +433,9 @@ fn ingest_tweets(cli: &Cli, files: &[PathBuf], out_dir: Option<&PathBuf>) -> Res
             flush_ctx.flush(&key, next_offset)?;
         }
         if key != "stdin" {
-            flush_ctx.checkpoint.offsets.remove(&name);
+            if allow_legacy {
+                flush_ctx.checkpoint.offsets.remove(&name);
+            }
             flush_ctx.checkpoint.offsets.insert(key, next_offset);
             flush_ctx.checkpoint.store(&cli.checkpoint)?;
         }
@@ -651,11 +662,21 @@ fn file_name(path: &Path) -> String {
 /// Offset for one input file, migrating checkpoints written before
 /// `source_key`: those keyed by basename only, and defaulting them to 0 would
 /// re-process the whole file once after an upgrade.
-fn resumed_offset(checkpoint: &Checkpoint, key: &str, name: &str) -> u64 {
+///
+/// The legacy key is only consulted when the basename is unambiguous in this
+/// invocation (`allow_legacy`); with two same-named inputs it could belong to
+/// either, and applying it would silently skip the other file's records.
+fn resumed_offset(checkpoint: &Checkpoint, key: &str, name: &str, allow_legacy: bool) -> u64 {
     checkpoint
         .offsets
         .get(key)
-        .or_else(|| checkpoint.offsets.get(name))
+        .or_else(|| {
+            if allow_legacy {
+                checkpoint.offsets.get(name)
+            } else {
+                None
+            }
+        })
         .copied()
         .unwrap_or(0)
 }

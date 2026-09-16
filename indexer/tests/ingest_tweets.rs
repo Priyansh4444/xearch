@@ -102,8 +102,9 @@ fn ingest_tweets_checkpoints_same_basename_files_separately() {
     fs::write(dir_b.join("tweets.jsonl"), record("3002", "beta")).unwrap();
     let checkpoint = fixture.0.join("checkpoint.json");
 
-    let run = |out: &std::path::Path| {
-        Command::new(env!("CARGO_BIN_EXE_xearch-indexer"))
+    let run = |out: &std::path::Path, files: &[PathBuf]| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_xearch-indexer"));
+        command
             .args(["--lexicons"])
             .arg(manifest.join("../shared/lexicons"))
             .args(["--checkpoint"])
@@ -112,19 +113,12 @@ fn ingest_tweets_checkpoints_same_basename_files_separately() {
             .arg(fixture.0.join("q"))
             .arg("ingest-tweets")
             .arg("--out-dir")
-            .arg(out)
-            .arg(dir_a.join("tweets.jsonl"))
-            .arg(dir_b.join("tweets.jsonl"))
-            .output()
-            .unwrap()
+            .arg(out);
+        for file in files {
+            command.arg(file);
+        }
+        command.output().unwrap()
     };
-
-    let first = run(&fixture.0.join("first"));
-    assert!(
-        first.status.success(),
-        "{}",
-        String::from_utf8_lossy(&first.stderr)
-    );
     let count = |dir: &std::path::Path| -> usize {
         fs::read_dir(dir).map_or(0, |entries| {
             entries
@@ -137,12 +131,37 @@ fn ingest_tweets_checkpoints_same_basename_files_separately() {
                 .sum()
         })
     };
-    // Both files were read: the basename key used to make the second one resume
-    // from the first file's offset and skip its only record.
+
+    // Warm-up run: writes the checkpoint with the real config hash for file A.
+    let warmup = run(&fixture.0.join("warmup"), &[dir_a.join("tweets.jsonl")]);
+    assert!(
+        warmup.status.success(),
+        "{}",
+        String::from_utf8_lossy(&warmup.stderr)
+    );
+    let stored: Value = serde_json::from_str(&fs::read_to_string(&checkpoint).unwrap()).unwrap();
+    // Rewrite it the way pre-upgrade versions stored it: basename key. With two
+    // same-named inputs that offset is ambiguous, so neither file may use it.
+    let legacy = serde_json::json!({
+        "config_hash": stored["config_hash"],
+        "offsets": { "tweets.jsonl": 1 },
+        "next_batch": 0,
+    });
+    fs::write(&checkpoint, serde_json::to_vec_pretty(&legacy).unwrap()).unwrap();
+
+    let both = [dir_a.join("tweets.jsonl"), dir_b.join("tweets.jsonl")];
+    let first = run(&fixture.0.join("first"), &both);
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    // Both files were read from the start: the ambiguous basename offset used to
+    // make the first one skip its only record.
     assert_eq!(count(&fixture.0.join("first")), 2);
 
-    // Resume with the same checkpoint: both files are fully acked, nothing new.
-    let second = run(&fixture.0.join("second"));
+    // Resume with the same checkpoint: both canonical keys are at EOF, nothing new.
+    let second = run(&fixture.0.join("second"), &both);
     assert!(
         second.status.success(),
         "{}",
