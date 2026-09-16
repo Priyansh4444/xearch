@@ -177,6 +177,9 @@ describe("planL0 permutations", () => {
     expect(escalate(planL0(xq, dfs), 0, xq, dfs)).toBeNull();
     const orxq = xqWith({ must: [], should: [t("linux")] });
     expect(escalate(planL0(orxq, dfs), 0, orxq, dfs)).toBeNull();
+    // A derived aspect is not a second lexical term: `cheap` + ~price stays put.
+    const aspected = xqWith({ must: [t("linux")], aspects: [t("~price")] });
+    expect(escalate(planL0(aspected, dfs), 0, aspected, dfs)).toBeNull();
   });
 
   it("uniqueTerms dedups in first-seen order across input permutations", () => {

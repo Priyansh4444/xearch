@@ -184,7 +184,7 @@ fn backfill(cli: &Cli, out_dir: Option<&PathBuf>) -> Result<()> {
         // Checkpoint identity is the canonical path, never the basename: a
         // resume must not collide two different files that share a name.
         let key = source_key(file);
-        let offset = *checkpoint.offsets.get(&key).unwrap_or(&0);
+        let offset = resumed_offset(&checkpoint, &key, &name);
         let reader = std::io::BufReader::new(
             std::fs::File::open(file).with_context(|| format!("opening {name}"))?,
         );
@@ -241,7 +241,9 @@ fn backfill(cli: &Cli, out_dir: Option<&PathBuf>) -> Result<()> {
             flush_ctx.flush(&key, next_offset)?;
         }
         // All pending records have been acknowledged. Persist progress even if
-        // the suffix contained only blank or quarantined lines.
+        // the suffix contained only blank or quarantined lines. The legacy
+        // basename entry migrates to the canonical key here.
+        flush_ctx.checkpoint.offsets.remove(&name);
         flush_ctx.checkpoint.offsets.insert(key, next_offset);
         flush_ctx.checkpoint.store(&cli.checkpoint)?;
         if limit_reached(cli, flush_ctx.stats) {
@@ -363,7 +365,7 @@ fn ingest_tweets(cli: &Cli, files: &[PathBuf], out_dir: Option<&PathBuf>) -> Res
         let offset = if key == "stdin" {
             0
         } else {
-            *checkpoint.offsets.get(&key).unwrap_or(&0)
+            resumed_offset(&checkpoint, &key, &name)
         };
         let mut next_offset = offset;
         let mut flush_ctx = FlushContext {
@@ -422,6 +424,7 @@ fn ingest_tweets(cli: &Cli, files: &[PathBuf], out_dir: Option<&PathBuf>) -> Res
             flush_ctx.flush(&key, next_offset)?;
         }
         if key != "stdin" {
+            flush_ctx.checkpoint.offsets.remove(&name);
             flush_ctx.checkpoint.offsets.insert(key, next_offset);
             flush_ctx.checkpoint.store(&cli.checkpoint)?;
         }
@@ -601,6 +604,18 @@ fn file_name(path: &Path) -> String {
     path.file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default()
+}
+
+/// Offset for one input file, migrating checkpoints written before
+/// `source_key`: those keyed by basename only, and defaulting them to 0 would
+/// re-process the whole file once after an upgrade.
+fn resumed_offset(checkpoint: &Checkpoint, key: &str, name: &str) -> u64 {
+    checkpoint
+        .offsets
+        .get(key)
+        .or_else(|| checkpoint.offsets.get(name))
+        .copied()
+        .unwrap_or(0)
 }
 
 /// Stable, unique checkpoint identity for an input file: its canonical path.

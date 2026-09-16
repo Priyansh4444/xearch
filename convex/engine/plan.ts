@@ -209,11 +209,14 @@ export function escalate(
     for (const t of xq.must) gateSet.add(t);
     for (const t of xq.aspects) gateSet.add(t);
     for (const t of phraseTerms(xq)) gateSet.add(t);
-    // A single-term query has nothing to relax: its postings ARE its complete
-    // result set, and widening it can only OR in unrelated PRF topics
-    // (live-app `pronsh` returned @theo megaposts at L3).
-    const distinct = new Set<Term>(gateSet);
+    // A single lexical term has nothing to relax: its postings ARE its complete
+    // result set, and widening it can only OR in unrelated PRF topics (live-app
+    // `pronsh` returned @theo megaposts at L3). Aspects derive from those terms,
+    // so they do not make a one-term query look like two.
+    const distinct = new Set<Term>();
+    for (const t of xq.must) distinct.add(t);
     for (const t of xq.should) distinct.add(t);
+    for (const t of phraseTerms(xq)) distinct.add(t);
     if (distinct.size < 2) return null;
     const drops = gateSet.size - executed.gates.length;
     const protectedTerms = new Set<Term>();
