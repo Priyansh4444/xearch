@@ -6,7 +6,7 @@ import { api } from "../../../convex/_generated/api";
 import { MediaType } from "../../../convex/contracts/media";
 import { queryInputError } from "../../../convex/engine/constraints";
 import { tokenize } from "../../../convex/engine/tokenize";
-import { LadderLevel } from "../../../convex/engine/plan";
+import { LadderLevel, RERANK_CANDIDATES } from "../../../convex/engine/plan";
 import { SortOrder } from "../../../convex/engine/xquery";
 
 type SearchReturn = FunctionReturnType<typeof api.search.search>;
@@ -25,7 +25,12 @@ interface Shown {
   terms: string[];
   /** No indexed terms or filters: the posting index has nothing to retrieve on. */
   termless: boolean;
+  /** Rows the reranker produced; `results.length < candidateCount` means more. */
+  candidateCount: number;
 }
+
+/** Rows per "Load more" click; the server clamps to the rerank window. */
+const PAGE_SIZE = 20;
 
 /** Known-dense corpus topics — each returns real posts from the archived run. */
 const DEMO_QUERIES = ["bun", "pricing", "rust", "react server components", "agents"];
@@ -46,6 +51,18 @@ function useSearchPage() {
   const [lane, setLane] = useState<Lane>(initial.lane);
   const inputError = queryInputError(query);
   const canVote = useQuery(api.feedback.canVote);
+  // One page state per request identity: a new query/sort/lane derives PAGE_SIZE
+  // during render instead of resetting through an effect.
+  const requestKey = `${query}\u0000${sort}\u0000${lane}`;
+  const [page, setPage] = useState<{ key: string; limit: number; asOf?: number }>({
+    key: requestKey,
+    limit: PAGE_SIZE,
+  });
+  const limit = page.key === requestKey ? page.limit : PAGE_SIZE;
+  // A ranking snapshot exists only after the server answered the first page:
+  // new searches omit `asOf` (server clock), load-more echoes the response so
+  // rows already shown keep their order. Client clocks never rank.
+  const asOf = page.key === requestKey ? page.asOf : undefined;
 
   // Keep the query shareable: /?q=...&sort=...&lane=... mirrors the controls.
   useEffect(() => {
@@ -61,20 +78,42 @@ function useSearchPage() {
 
   const full = useQuery(
     api.search.search,
-    query === "" || inputError !== null || lane !== "xearch" ? "skip" : { raw: query, sort },
+    query === "" || inputError !== null || lane !== "xearch"
+      ? "skip"
+      : { raw: query, sort, limit, ...(asOf === undefined ? {} : { asOf }) },
   );
   const baseline = useQuery(
     api.search.searchBaseline,
     query === "" || inputError !== null || lane !== "baseline" ? "skip" : { raw: query },
   );
 
-  const current = presentResults(lane, query, full, baseline);
+  // "Load more" changes the query args, and Convex returns undefined until the
+  // larger page lands; keep the previous page on screen meanwhile so the list
+  // does not blank. Adjusting state during render (the documented "derive from
+  // previous render" pattern) avoids an effect that would cascade renders.
+  const [lastFull, setLastFull] = useState<{ key: string; data: SearchReturn } | null>(null);
+  if (full !== undefined && lastFull?.data !== full) {
+    setLastFull({ key: requestKey, data: full });
+  }
+  const effectiveFull = full ?? (lastFull?.key === requestKey ? lastFull.data : undefined);
+  const loadingMore = full === undefined && effectiveFull !== undefined && query !== "";
+
+  const current = presentResults(lane, query, effectiveFull, baseline);
 
   const shown = input.trim() === query ? current : undefined;
   const error = inputError ?? shown?.error;
   const searching = input.trim() !== "" && !error && shown === undefined;
-  const operatorSort = full !== undefined && Object.values(full.trace.consumed).includes("sort");
-  const activeSort = full?.appliedQuery.sort ?? sort;
+  const operatorSort =
+    effectiveFull !== undefined && Object.values(effectiveFull.trace.consumed).includes("sort");
+  const activeSort = effectiveFull?.appliedQuery.sort ?? sort;
+  const loadMore = () =>
+    setPage({
+      key: requestKey,
+      limit: Math.min(limit + PAGE_SIZE, RERANK_CANDIDATES),
+      ...(effectiveFull !== undefined && effectiveFull.asOf > 0
+        ? { asOf: effectiveFull.asOf }
+        : {}),
+    });
 
   const pickQuery = (next: string) => {
     setInput(next);
@@ -96,6 +135,9 @@ function useSearchPage() {
     operatorSort,
     activeSort,
     canVote: canVote === true,
+    candidateCount: shown?.candidateCount ?? 0,
+    loadingMore,
+    loadMore,
     pickQuery,
     changeInput,
   };
@@ -117,6 +159,7 @@ function presentResults(
           queryKey: null,
           terms: query.split(/\s+/),
           termless: false,
+          candidateCount: baseline.length,
         };
   }
   if (full === undefined) return undefined;
@@ -139,6 +182,7 @@ function presentResults(
     queryKey: full.queryKey,
     terms: [...q.must, ...q.should, ...q.phrases.flat(), ...q.exclude.map((term) => `-${term}`)],
     termless,
+    candidateCount: full.candidateCount,
   };
 }
 
@@ -155,6 +199,9 @@ export function App(): ReactElement {
     operatorSort,
     activeSort,
     canVote,
+    candidateCount,
+    loadingMore,
+    loadMore,
     pickQuery,
     changeInput,
   } = useSearchPage();
@@ -201,7 +248,10 @@ export function App(): ReactElement {
         error={error}
         shown={shown}
         searching={searching}
+        loadingMore={loadingMore}
         canVote={canVote}
+        candidateCount={candidateCount}
+        onLoadMore={loadMore}
         onPick={pickQuery}
         onUseLiteral={lane === "xearch" ? () => setLane("baseline") : null}
       />
@@ -218,7 +268,10 @@ interface SearchBodyProps {
   error: string | null | undefined;
   shown: Shown | undefined;
   searching: boolean;
+  loadingMore: boolean;
   canVote: boolean;
+  candidateCount: number;
+  onLoadMore: () => void;
   onPick: (query: string) => void;
   onUseLiteral: (() => void) | null;
 }
@@ -228,7 +281,10 @@ function SearchBody({
   error,
   shown,
   searching,
+  loadingMore,
   canVote,
+  candidateCount,
+  onLoadMore,
   onPick,
   onUseLiteral,
 }: SearchBodyProps): ReactElement {
@@ -245,14 +301,12 @@ function SearchBody({
     );
 
   const count = shown.results.length;
-  let countLabel = `${count} posts`;
-  if (count === 1) countLabel = "1 post";
-  if (count === 20) countLabel = "top 20 posts";
+  const more = count < candidateCount;
+  let countLabel = `${count} post${count === 1 ? "" : "s"}`;
+  if (more) countLabel = `${count} of ${candidateCount} posts`;
   let notice = "";
   if (shown.ladder !== null && shown.ladder !== LadderLevel.L0) {
     notice = ` — exact matches were thin; widened to related posts (${shown.ladder})`;
-  } else if (count < 20) {
-    notice = " — matches within the bounded search window";
   }
   const exact: Result[] = [];
   const related: Result[] = [];
@@ -270,7 +324,7 @@ function SearchBody({
     </ol>
   );
   return (
-    <main aria-busy={searching}>
+    <main aria-busy={searching || loadingMore}>
       <p className="count-line">
         {countLabel}
         {notice}
@@ -281,6 +335,16 @@ function SearchBody({
           <h2 className="related-label">Related</h2>
           {renderList(related, "Related posts")}
         </>
+      ) : null}
+      {more ? (
+        <button type="button" className="load-more" onClick={onLoadMore} disabled={loadingMore}>
+          {loadingMore ? "Loading…" : `Load more (${candidateCount - count} left)`}
+        </button>
+      ) : candidateCount >= RERANK_CANDIDATES ? (
+        <p className="window-note">
+          End of the bounded search window ({candidateCount} candidates) — refine the query to see
+          more.
+        </p>
       ) : null}
     </main>
   );

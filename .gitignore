@@ -7,7 +7,7 @@ checkpoint.json
 checkpoint-prepare.json
 prepare-full.log
 batches*/
-quarantine/
+quarantine*/
 data/
 done/
 .env*

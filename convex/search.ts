@@ -45,6 +45,8 @@ function invalidSearch(error: string) {
     appliedQuery: emptyXQuery(),
     trace: tierA("").trace,
     results: [] as never[],
+    candidateCount: 0,
+    asOf: 0, // invalid queries never rank
   };
 }
 
@@ -61,20 +63,32 @@ export const COMMON_DF_FLOOR = 200;
 const TOTAL_DOCS_ESTIMATE = 165_000;
 const AVG_TOKEN_COUNT_ESTIMATE = 30;
 
+/**
+ * SERP page size. "Load more" grows `limit`; results are a stable prefix of the
+ * reranked candidate window, so paging never duplicates or reorders a row.
+ */
+export const DEFAULT_RESULT_LIMIT = 20;
+
 export const search = query({
   args: {
     raw: v.string(),
     sort: v.union(v.literal(SortOrder.Top), v.literal(SortOrder.Latest)),
-    // Presentation mode rides OUTSIDE the IR (DESIGN §4.1); list-mode only here.
-    cursor: v.optional(v.string()),
+    // Number of results to return, bounded by the rerank window. Presentation
+    // mode rides OUTSIDE the IR (DESIGN §4.1); list-mode only here.
+    limit: v.optional(v.number()),
+    // Ranking snapshot: echo the first response's `asOf` when loading more so
+    // the recency term (and relative dates) stay fixed across pages. A new
+    // query omits it and gets "now".
+    asOf: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
+    const now = snapshotTime(args.asOf);
     // 0. Tier C refinement merge lands when tierC.ts exists; the reactive re-run
     //    machinery is already in place because this is a plain Convex query.
     // 1. Parse.
     const inputError = queryInputError(args.raw);
     if (inputError !== null) return invalidSearch(inputError);
-    const parsed = await tierB(tierA(args.raw), deps(ctx));
+    const parsed = await tierB(tierA(args.raw), deps(ctx, now));
     const xq = parsed.xq;
     if (!Object.values(parsed.trace.consumed).includes("sort")) xq.sort = args.sort;
     const unknownAuthor = parsed.trace.leftover.find((term) => term.startsWith("from:"));
@@ -208,14 +222,15 @@ export const search = query({
       });
     }
 
-    // 5. Rerank, hydrate the top 20 for the SERP.
+    // 5. Rerank, then return a prefix of the candidate window for the SERP.
     const scored = rerank(
       xq,
       candidates,
       { totalDocs: TOTAL_DOCS_ESTIMATE, avgTokenCount: AVG_TOKEN_COUNT_ESTIMATE, dfs },
-      Date.now(),
+      now,
     );
-    const results = scored.slice(0, 20).map((s) => {
+    const limit = resultLimit(args.limit);
+    const results = scored.slice(0, limit).map((s) => {
       const t = tweets.get(s.tweetId)!;
       const a = authors.get(t.authorId) ?? null;
       return {
@@ -234,9 +249,34 @@ export const search = query({
       appliedQuery: xq,
       trace: parsed.trace,
       results,
+      // Everything reranked for this query; `results.length < candidateCount`
+      // means "Load more" has another page.
+      candidateCount: scored.length,
+      asOf: now,
     };
   },
 });
+
+/** Client clocks may drift slightly; anything further ahead is rejected. */
+const MAX_SNAPSHOT_SKEW_MS = 60_000;
+
+/**
+ * `asOf` when the caller supplies a sane snapshot, else the current time. A
+ * future snapshot would push relative dates ("today", "since:2d") forward and
+ * flatten every candidate's recency, so it is rejected rather than clamped
+ * silently far into the past.
+ */
+function snapshotTime(asOf: number | undefined, now: number = Date.now()): number {
+  if (asOf === undefined || !Number.isFinite(asOf) || asOf <= 0) return now;
+  if (asOf > now + MAX_SNAPSHOT_SKEW_MS) return now;
+  return asOf;
+}
+
+/** Clamp the requested SERP size into the bounded rerank window. */
+function resultLimit(requested: number | undefined): number {
+  if (requested === undefined || !Number.isFinite(requested)) return DEFAULT_RESULT_LIMIT;
+  return Math.min(Math.max(1, Math.trunc(requested)), RERANK_CANDIDATES);
+}
 
 /** Execute a ReadPlan: rarest-term seed for AND, union lists fused by RRF. */
 async function executePlan(
@@ -430,7 +470,7 @@ export const suggest = query({
 });
 
 /** TierBDeps backed by ctx.db — the only place parsing touches the database. */
-function deps(ctx: QueryCtx): TierBDeps {
+function deps(ctx: QueryCtx, now: number): TierBDeps {
   const dfOf = async (term: string) => {
     const row = await ctx.db
       .query("terms")
@@ -461,7 +501,7 @@ function deps(ctx: QueryCtx): TierBDeps {
       return author === null ? null : { authorId: author.authorId as AuthorId };
     },
     dfOf,
-    now: () => Date.now(),
+    now: () => now,
   };
 }
 
