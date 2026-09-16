@@ -480,10 +480,16 @@ filters `{authorId, media:"image"}`.
    corpus has them, are read as union wideners — never as gates.
 4. For remaining AND gates, aspects, and phrase adjacency, verify them directly
    against candidate tweet text instead of intersecting truncated posting lists.
-5. Hand survivors (≤ ~200) to the reranker (§6).
-6. db.get() the top 20 tweets, return hydrated results.
+5. Hydrate survivors (≤ 200) — the reranker needs author, feedback, and metric
+   fields — then rank them (§6).
+6. Return the requested page (default 20; "Load more" grows it up to the
+   200-candidate rerank window) from the ranked list.
 ```
 
+- Paging keeps a fixed ranking snapshot (`asOf` echoed from the first page), so
+  rows already shown do not move. The candidate set itself stays reactive: a
+  newly indexed matching post can enter a later page — that is the live-SERP
+  behavior (§5.3), not a paging bug.
 - Requests are limited to 512 characters and 12 input tokens, with at most 12
   indexed terms/aspects after parsing. L3 adds at most 5 PRF terms. Posting reads
   are cached across all five executions: at most 1,500 rows on the seed read plus

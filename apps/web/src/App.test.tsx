@@ -29,6 +29,8 @@ function response(error: string | null = null) {
     ladder: LadderLevel.L0,
     appliedQuery: emptyXQuery(),
     trace: { consumed: {} },
+    candidateCount: error === null ? 1 : 0,
+    asOf: 1_700_000_000_000,
     results:
       error === null
         ? [
@@ -135,6 +137,40 @@ test("all-stopword queries offer the literal lane instead of a dead end", async 
   expect(container.textContent).toContain("dropped by the posting index");
   await click("search the literal lane");
   expect(container.querySelector(".lane-toggle")?.textContent).toContain("lane: baseline");
+});
+
+test("load more grows the page and keeps the previous rows while loading", async () => {
+  const rows = (n: number, offset = 0) =>
+    Array.from({ length: n }, (_, i) => ({
+      ...(response().results[0] as object),
+      _id: `t-${offset + i}`,
+      tweetId: `${offset + i}`,
+      text: `apple ${offset + i}`,
+    }));
+  full = { ...response(), results: rows(20), candidateCount: 60 };
+  await render();
+  expect(container.textContent).toContain("20 of 60 posts");
+  expect(container.querySelector(".load-more")?.textContent).toContain("40 left");
+
+  // The next page is in flight: previous rows stay on screen, button shows loading.
+  full = undefined;
+  await click("Load more (40 left)");
+  expect(container.querySelectorAll(".results li").length).toBe(20);
+  expect(container.querySelector(".load-more")?.textContent).toContain("Loading");
+  const searchArgs = mocks.query.mock.calls
+    .map(([, args]) => args as { raw?: string; limit?: number; asOf?: number } | undefined)
+    .filter((args) => args?.raw === "apple");
+  // The first page omits asOf (server clock); load more echoes the response's
+  // snapshot so the rows already shown keep their order.
+  expect(searchArgs[0]?.asOf).toBeUndefined();
+  expect(searchArgs.some((args) => args?.limit === 40 && args?.asOf === 1_700_000_000_000)).toBe(
+    true,
+  );
+
+  full = { ...response(), results: rows(40), candidateCount: 60 };
+  await render();
+  expect(container.textContent).toContain("40 of 60 posts");
+  expect(container.querySelectorAll(".results li").length).toBe(40);
 });
 
 test("stopword-only phrases and exclude-only queries also offer the literal lane", async () => {

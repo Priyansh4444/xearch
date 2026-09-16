@@ -227,6 +227,52 @@ describe("search serving flow", () => {
     expect(result.appliedQuery.must).toEqual([]);
   });
 
+  test("limit pages through the reranked window without duplicates", async () => {
+    const t = convexTest(schema, modules);
+    // Distinct, close scores and creation times: the recency term makes the
+    // ranking snapshot observable if it is not held fixed across pages.
+    const rows = Array.from({ length: 30 }, (_, i) => ({
+      ...tweet(`p${i}`, `apple ${i}`, ["apple"]),
+      createdAt: 1_700_000_000_000 + i * 60_000,
+      metrics: { likes: 30 - i, retweets: 0, quotes: 0, replies: 0 },
+    }));
+    await t.mutation(internal.ingest.ingestBatch, batch(rows));
+
+    const first = await t.query(api.search.search, { raw: "apple", sort: "top", limit: 5 });
+    expect(first.results.length).toBe(5);
+    expect(first.candidateCount).toBe(30);
+    expect(first.asOf).toBeGreaterThan(0);
+
+    const second = await t.query(api.search.search, {
+      raw: "apple",
+      sort: "top",
+      limit: 10,
+      asOf: first.asOf,
+    });
+    expect(second.results.slice(0, 5).map((row) => row.tweetId)).toEqual(
+      first.results.map((row) => row.tweetId),
+    );
+
+    const all = await t.query(api.search.search, { raw: "apple", sort: "top", limit: 1000 });
+    expect(all.results.length).toBe(30);
+    expect(new Set(all.results.map((row) => row.tweetId)).size).toBe(30);
+
+    // A snapshot from the future is rejected: it would move relative dates and
+    // flatten recency for every candidate.
+    const future = await t.query(api.search.search, {
+      raw: "apple",
+      sort: "top",
+      asOf: Date.now() + 86_400_000,
+    });
+    expect(future.asOf).toBeLessThan(Date.now() + 60_000);
+
+    // Clamped into [1, rerank window]; a nonsense limit must not return nothing.
+    const clamped = await t.query(api.search.search, { raw: "apple", sort: "top", limit: -5 });
+    expect(clamped.results.length).toBe(1);
+    const fallback = await t.query(api.search.search, { raw: "apple", sort: "top" });
+    expect(fallback.results.length).toBe(20);
+  });
+
   test("OR branches drop glue and temporal words the same way must does", async () => {
     const t = convexTest(schema, modules);
     await t.mutation(internal.ingest.ingestBatch, batch());

@@ -1,12 +1,15 @@
 :root {
-  --paper: #f7f8f4;
-  --ink: #161b21;
-  --muted: #5b6570;
-  --hairline: #dce0d7;
-  --signal: #c2410c;
-  --mark: #f4e3c8;
+  /* X (Twitter) dark palette. */
+  --paper: #000000;
+  --surface: #16181c;
+  --ink: #e7e9ea;
+  --muted: #71767b;
+  --hairline: #2f3336;
+  --signal: #1d9bf0;
+  --mark: #12334d;
   font-family: "IBM Plex Sans", system-ui, sans-serif;
   color: var(--ink);
+  color-scheme: dark;
 }
 
 * {
@@ -52,10 +55,10 @@ body {
   width: 100%;
   font-family: "IBM Plex Mono", ui-monospace, monospace;
   font-size: 1.35rem;
-  padding: 0.85rem 1rem;
-  border: 1.5px solid var(--ink);
-  border-radius: 2px;
-  background: #fff;
+  padding: 0.85rem 1.25rem;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  background: #202327;
   color: var(--ink);
   appearance: none;
 }
@@ -63,12 +66,12 @@ body {
 .searchbox input:focus-visible {
   outline: none;
   border-color: var(--signal);
-  box-shadow: 0 0 0 3px rgb(194 65 12 / 0.18);
+  box-shadow: 0 0 0 2px rgb(29 155 240 / 0.35);
 }
 
 .searchbox input::placeholder {
   color: var(--muted);
-  opacity: 0.7;
+  opacity: 1;
 }
 
 .searchbox.is-searching input {
@@ -90,9 +93,11 @@ body {
   list-style: none;
   margin: 0;
   padding: 0.25rem 0;
-  background: #fff;
-  border: 1.5px solid var(--ink);
-  border-top: none;
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  margin-top: 0.35rem;
+  overflow: hidden;
 }
 
 .typeahead button {
@@ -112,7 +117,7 @@ body {
 .typeahead button:hover,
 .typeahead button:focus-visible,
 .typeahead button.active {
-  background: var(--mark);
+  background: #1d1f23;
 }
 
 .related-label {
@@ -153,8 +158,8 @@ body {
 }
 
 .tab.active {
-  border-color: var(--ink);
-  color: var(--ink);
+  border-color: var(--signal);
+  color: var(--signal);
   font-weight: 600;
 }
 
@@ -204,9 +209,9 @@ body {
 }
 
 .vote.on {
-  background: var(--ink);
-  border-color: var(--ink);
-  color: var(--paper);
+  background: var(--signal);
+  border-color: var(--signal);
+  color: #000000;
 }
 
 /* result list --------------------------------------------------------------- */
@@ -283,7 +288,8 @@ body {
 
 .text mark {
   background: var(--mark);
-  border-bottom: 2px solid var(--signal);
+  color: var(--ink);
+  border-bottom: 1px solid var(--signal);
   padding: 0 1px;
 }
 
@@ -333,7 +339,8 @@ body {
 .query-echo {
   font-family: "IBM Plex Mono", ui-monospace, monospace;
   color: var(--ink);
-  background: var(--mark);
+  background: var(--surface);
+  border: 1px solid var(--hairline);
   padding: 0 0.25em;
 }
 
@@ -350,7 +357,7 @@ body {
   font-family: "IBM Plex Mono", ui-monospace, monospace;
   font-size: 0.9rem;
   padding: 0.35rem 0.75rem;
-  background: #fff;
+  background: var(--surface);
   color: var(--ink);
   border: 1px solid var(--hairline);
   border-radius: 999px;
@@ -383,10 +390,10 @@ body {
 .error-state button {
   font: inherit;
   padding: 0.4rem 1rem;
-  background: var(--ink);
-  color: var(--paper);
+  background: var(--signal);
+  color: #000000;
   border: none;
-  border-radius: 2px;
+  border-radius: 999px;
   cursor: pointer;
 }
 
@@ -454,4 +461,37 @@ body {
     flex-direction: column;
     gap: 0.1rem;
   }
+}
+
+/* load more ---------------------------------------------------------------- */
+
+.load-more {
+  display: block;
+  margin: 1.25rem auto 0;
+  font: inherit;
+  font-weight: 600;
+  font-size: 0.95rem;
+  padding: 0.5rem 1.5rem;
+  background: none;
+  border: 1px solid var(--signal);
+  border-radius: 999px;
+  color: var(--signal);
+  cursor: pointer;
+}
+
+.load-more:hover,
+.load-more:focus-visible {
+  background: rgb(29 155 240 / 0.12);
+}
+
+.load-more:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.window-note {
+  margin: 1.25rem 0 0;
+  text-align: center;
+  font-size: 0.8rem;
+  color: var(--muted);
 }

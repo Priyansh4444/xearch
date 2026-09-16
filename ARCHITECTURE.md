@@ -25,9 +25,12 @@ The frontend sees a **three-verb API**; everything else is internal:
 const serp = useQuery(api.search.search, {
   raw: "linux box cheap from:@theo",
   sort: "top",            // "top" | "latest"
-  cursor: null,
+  limit: 20,              // page size; "Load more" grows it, capped at 200
+  asOf: undefined,        // optional ranking snapshot; echo the first response's asOf for later pages
+                          // (stable order for shown rows; the candidate set stays reactive)
 });
-// serp: { results: Result[], appliedQuery: XQueryPublic, ladder: "L0"|"L1"|..., trace }
+// serp: { results: Result[], candidateCount, asOf, appliedQuery: XQueryPublic, ladder: "L0"|"L1"|..., trace }
+// candidateCount is the whole ranked window; results.length < candidateCount means "more to load".
 
 const hints = useQuery(api.search.suggest, { prefix: "conv" });      // typeahead
 

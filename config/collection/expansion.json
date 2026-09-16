@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "source": "fxtwitter",
+  "apiBaseUrl": "https://api.fxtwitter.com",
+  "apiVersion": "2",
+  "specificationUrl": "https://api.fxtwitter.com/2/openapi.json",
+  "historyDays": 183,
+  "withReplies": true,
+  "requestedPageSize": 100,
+  "delayMs": 500,
+  "coverageFloor": 500,
+  "selectedOn": "2026-09-16",
+  "accounts": [
+    { "handle": "elonmusk", "expectedUserId": "44196397", "cohort": "bigger" },
+    { "handle": "aidenybai", "expectedUserId": "1216901847673229313", "cohort": "bigger" },
+    { "handle": "dillon_mulroy", "expectedUserId": "384666406", "cohort": "bigger" },
+    { "handle": "jensenhuang", "expectedUserId": "2070631956824698880", "cohort": "bigger" },
+    { "handle": "sujayakar314", "expectedUserId": "16641887", "cohort": "crew" },
+    { "handle": "redman", "expectedUserId": "18498215", "cohort": "crew" },
+    { "handle": "erquhart_", "expectedUserId": "1818134776672346112", "cohort": "crew" },
+    { "handle": "ianmacartney", "expectedUserId": "14508734", "cohort": "crew" },
+    { "handle": "mikeysee", "expectedUserId": "20140140", "cohort": "crew" },
+    { "handle": "nicolapps", "expectedUserId": "2276497146", "cohort": "crew" }
+  ]
+}
