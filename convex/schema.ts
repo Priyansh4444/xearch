@@ -28,6 +28,9 @@ export default defineSchema({
     tokenCount: v.number(), // BM25 length (near-binary, but keep the data)
     staticScore: v.number(), // raw static score (indexer-owned)
     propagatedBoost: v.number(), // one-hop quote/RT engagement, 0.5x (indexer refresh)
+    // The bucket currently denormalized on this tweet's postings (refresh compares
+    // before rewriting; absent on rows indexed before the field existed).
+    scoreBucket: v.optional(v.number()),
   })
     .index("by_tweetId", ["tweetId"])
     .index("by_author_time", ["authorId", "createdAt"])

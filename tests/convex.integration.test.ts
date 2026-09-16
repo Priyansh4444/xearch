@@ -227,22 +227,75 @@ describe("search serving flow", () => {
     expect(result.appliedQuery.must).toEqual([]);
   });
 
-  test("quoted OR branches join the union instead of gating every candidate", async () => {
+  test("quoted OR branches stay adjacency-verified alternatives", async () => {
     const t = convexTest(schema, modules);
     await t.mutation(
       internal.ingest.ingestBatch,
       batch([
         tweet("pie", "apple pie recipe", ["apple", "pie", "recipe"]),
+        tweet("apple-only", "apple", ["apple"]),
         tweet("tree-only", "tree", ["tree"]),
+        tweet("apart", "apple on the tree", ["apple", "tree"]),
       ]),
     );
     const result = await t.query(api.search.search, {
       raw: '"apple pie" OR tree',
       sort: "top",
     });
-    expect(result.results.map((row) => row.tweetId).sort()).toEqual(["pie", "tree-only"]);
-    expect(result.appliedQuery.phrases).toEqual([]);
-    expect(result.appliedQuery.should.sort()).toEqual(["apple", "pie", "tree"]);
+    // "apple-only" is retrieved by the phrase tokens but fails both branches:
+    // the phrase needs adjacency and the bare branch needs "tree".
+    expect(result.results.map((row) => row.tweetId).sort()).toEqual(["apart", "pie", "tree-only"]);
+    expect(result.appliedQuery.phrases).toEqual([["apple", "pie"]]);
+    expect(result.appliedQuery.should).toEqual(["tree"]);
+    expect(result.appliedQuery.must).toEqual([]);
+    expect(result.appliedQuery.union).toBe(true);
+  });
+
+  test("applyMetrics moves posting buckets only when the bucket changed", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(
+      internal.ingest.ingestBatch,
+      batch([{ ...tweet("movable", "apple tree", ["apple", "tree"]), scoreBucket: 7 }]),
+    );
+    const before = await t.run(async (ctx) => await ctx.db.query("tweets").first());
+    expect(before?.scoreBucket).toBe(7);
+
+    const at = Date.UTC(2026, 8, 4);
+    await t.mutation(internal.ingest.applyMetrics, {
+      updates: [
+        {
+          tweetId: "movable",
+          metrics: { likes: 3, retweets: 0, quotes: 0, replies: 0 },
+          metricsAt: at,
+          newScoreBucket: 9,
+        },
+      ],
+    });
+    const moved = await t.run(async (ctx) => ({
+      tweet: await ctx.db.query("tweets").first(),
+      postings: await ctx.db.query("postings").take(10),
+    }));
+    expect(moved.tweet?.scoreBucket).toBe(9);
+    expect(moved.postings.every((p) => p.scoreBucket === 9)).toBe(true);
+
+    // A stale snapshot never rewrites the bucket, even if the value differs.
+    await t.mutation(internal.ingest.applyMetrics, {
+      updates: [
+        {
+          tweetId: "movable",
+          metrics: { likes: 99, retweets: 0, quotes: 0, replies: 0 },
+          metricsAt: at - 1,
+          newScoreBucket: 11,
+        },
+      ],
+    });
+    const stale = await t.run(async (ctx) => ({
+      tweet: await ctx.db.query("tweets").first(),
+      postings: await ctx.db.query("postings").take(10),
+    }));
+    expect(stale.tweet?.scoreBucket).toBe(9);
+    expect(stale.postings.every((p) => p.scoreBucket === 9)).toBe(true);
+    expect(stale.tweet?.likeCount).toBe(3);
   });
 
   test("applyMetrics writes quote/RT boost onto the merged original", async () => {

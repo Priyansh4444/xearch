@@ -62,24 +62,16 @@ export function tierA(raw: string): { xq: XQuery; trace: ParseTrace } {
   };
   let rest = raw;
 
-  // Explicit OR is a union, not a stopword, and it is detected BEFORE phrases:
-  // a quoted branch ("apple pie" OR tree) must join the union as content, not
-  // sit in xq.phrases where it would become an AND gate no single branch can pass.
+  // Explicit OR is a union, not a stopword. Quoted branches stay phrases
+  // (adjacency-verified alternatives); bare branches become should terms.
   const isOr = hasTopLevelOr(rest);
 
   // "quoted phrases"
   rest = rest.replace(/"([^"]+)"/g, (_m, phrase: string) => {
     const toks = tokenize(phrase, true).tokens;
     if (toks.length > 0) {
-      if (isOr) {
-        for (const term of tokenize(phrase).tokens) {
-          if (!xq.should.includes(term)) xq.should.push(term);
-        }
-        trace.consumed[`"${phrase}"`] = "should";
-      } else {
-        xq.phrases.push(toks);
-        trace.consumed[`"${phrase}"`] = "phrases";
-      }
+      xq.phrases.push(toks);
+      trace.consumed[`"${phrase}"`] = "phrases";
     }
     return " ";
   });
@@ -135,7 +127,10 @@ export function tierA(raw: string): { xq: XQuery; trace: ParseTrace } {
     return pre;
   });
 
-  // Explicit OR is a union, not a stopword. "apple OR tree" must not AND.
+  // Explicit OR: bare branches are alternatives (should), quoted branches are
+  // alternatives (phrases), and `union` tells the planner and constraint check
+  // to gate on none of them. "apple OR tree" must not AND, and a tree-only
+  // post must not need to cover the phrase in `"apple pie" OR tree`.
   if (isOr) {
     const groups = rest.split(/\s+or\s+/i);
     for (const group of groups) {
@@ -145,6 +140,7 @@ export function tierA(raw: string): { xq: XQuery; trace: ParseTrace } {
     }
     trace.consumed["OR"] = "should";
     xq.must = [];
+    xq.union = true;
   } else {
     xq.must = tokenize(rest).tokens;
   }

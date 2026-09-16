@@ -67,6 +67,27 @@ export function matchesConstraints(
   for (const term of xq.exclude) {
     if (tokens.includes(term)) return false;
   }
+  if (xq.union) {
+    // Explicit OR: one branch must match. Bare branches (should) are terms;
+    // quoted branches (phrases) are adjacency groups — `"apple pie" OR tree`
+    // must not accept a post that only says "apple".
+    let matched = false;
+    for (const term of xq.should) {
+      if (tokens.includes(term)) {
+        matched = true;
+        break;
+      }
+    }
+    if (!matched) {
+      for (const phrase of xq.phrases) {
+        if (coversPhrase(tokens, phrase)) {
+          matched = true;
+          break;
+        }
+      }
+    }
+    return matched;
+  }
   for (const phrase of xq.phrases) {
     if (!coversPhrase(tokens, phrase)) return false;
   }

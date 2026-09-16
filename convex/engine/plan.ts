@@ -80,6 +80,29 @@ export interface ReadPlan {
  * Terms are ordered rarest-first by caller-provided dfs (planner stays pure).
  */
 export function planL0(xq: XQuery, dfs: Map<Term, number>): ReadPlan {
+  if (xq.union) {
+    // Explicit OR: branches are alternatives, so only aspects gate. Every
+    // branch term (bare words, phrase tokens, indexed phrase bigrams) is a
+    // union read; the executor verifies branch matching on candidate text.
+    const gates: PostingsRead[] = [];
+    for (const term of rarestFirst(uniqueTerms(xq.aspects), dfs)) {
+      gates.push(readFor(term, xq));
+    }
+    const unions: PostingsRead[] = [];
+    for (const term of rarestFirst(
+      uniqueTerms(xq.should, phraseTerms(xq), indexedBigrams(xq, dfs)),
+      dfs,
+    )) {
+      unions.push(readFor(term, xq));
+    }
+    return {
+      level: LadderLevel.L0,
+      gates,
+      unions,
+      excludes: [...xq.exclude],
+      postFilters: postFiltersOf(xq),
+    };
+  }
   const gateTerms = rarestFirst(uniqueTerms(xq.must, xq.aspects, phraseTerms(xq)), dfs);
   const gates: PostingsRead[] = [];
   for (const term of gateTerms) gates.push(readFor(term, xq));

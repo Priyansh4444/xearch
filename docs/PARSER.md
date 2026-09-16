@@ -25,6 +25,8 @@ Source of truth for types: `convex/engine/xquery.ts`.
     "lang": null
   },
   "sort": "top"                 // "top"|"latest"
+  // "union": true is emitted ONLY for an explicit Tier A `or`: must is empty and
+  // should/phrases are alternatives (match any) instead of a conjunction.
 }
 ```
 
