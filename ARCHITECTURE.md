@@ -192,8 +192,8 @@ there is no "call the parser yourself" endpoint to misuse.
 
 ## Open questions and risks
 
-- Should `suggest` blend author handles with terms (two range reads instead of one)?
-  Leaning yes; costs one read.
+- `suggest` blends author handles with terms (two range reads, 70/30). `from:` and
+  `@` prefixes query authors only.
 - Is 1000 the right per-term posting cap for a 1–10M corpus, or should it scale with
   df (e.g. min(1000, df/10))? Needs measurement against the eval set.
 - Feedback clamp ±5: right bound? Revisit once real votes exist.

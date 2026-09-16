@@ -24,7 +24,13 @@ fn rejected_and_blank_suffix_is_checkpointed_without_a_batch() {
     let quarantine = fixture.0.join("quarantine");
     let checkpoint = fixture.0.join("checkpoint.json");
     fs::create_dir_all(&data).unwrap();
-    fs::write(data.join("rows.jsonl"), "malformed\n\n").unwrap();
+    let rows = data.join("rows.jsonl");
+    fs::write(&rows, "malformed\n\n").unwrap();
+    // Checkpoint identity is the canonical path (basenames can collide).
+    let key = fs::canonicalize(&rows)
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
 
     let run = || {
         Command::new(env!("CARGO_BIN_EXE_xearch-indexer"))
@@ -49,10 +55,7 @@ fn rejected_and_blank_suffix_is_checkpointed_without_a_batch() {
         "{}",
         String::from_utf8_lossy(&first.stderr)
     );
-    assert_eq!(
-        Checkpoint::load(&checkpoint).unwrap().offsets["rows.jsonl"],
-        2
-    );
+    assert_eq!(Checkpoint::load(&checkpoint).unwrap().offsets[&key], 2);
     let rejected = fs::read(quarantine.join("rows.jsonl")).unwrap();
     let second = run();
     assert!(
@@ -61,8 +64,70 @@ fn rejected_and_blank_suffix_is_checkpointed_without_a_batch() {
         String::from_utf8_lossy(&second.stderr)
     );
     assert_eq!(fs::read(quarantine.join("rows.jsonl")).unwrap(), rejected);
-    assert_eq!(
-        Checkpoint::load(&checkpoint).unwrap().offsets["rows.jsonl"],
-        2
+    assert_eq!(Checkpoint::load(&checkpoint).unwrap().offsets[&key], 2);
+}
+
+#[test]
+fn legacy_basename_checkpoint_migrates_to_the_canonical_key() {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let fixture = Fixture(
+        manifest
+            .join("target")
+            .join(format!("backfill-legacy-{nonce}")),
     );
+    let data = fixture.0.join("data");
+    let quarantine = fixture.0.join("quarantine");
+    let checkpoint = fixture.0.join("checkpoint.json");
+    fs::create_dir_all(&data).unwrap();
+    let rows = data.join("rows.jsonl");
+    fs::write(&rows, "malformed\n\n").unwrap();
+    let key = fs::canonicalize(&rows)
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+
+    let run = || {
+        Command::new(env!("CARGO_BIN_EXE_xearch-indexer"))
+            .args(["--data-dir"])
+            .arg(&data)
+            .args(["--checkpoint"])
+            .arg(&checkpoint)
+            .args(["--quarantine"])
+            .arg(&quarantine)
+            .args(["--lexicons"])
+            .arg(manifest.join("../shared/lexicons"))
+            .arg("backfill")
+            .env("CONVEX_URL", "http://127.0.0.1:9")
+            .env("CONVEX_DEPLOY_KEY", "unused-test-value")
+            .output()
+            .unwrap()
+    };
+    let first = run();
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+
+    // Rewrite the checkpoint the way pre-upgrade versions stored it: basename.
+    let stored = Checkpoint::load(&checkpoint).unwrap();
+    let legacy = serde_json::json!({
+        "config_hash": stored.config_hash,
+        "offsets": { "rows.jsonl": 2 },
+    });
+    fs::write(&checkpoint, serde_json::to_vec_pretty(&legacy).unwrap()).unwrap();
+
+    let second = run();
+    assert!(
+        second.status.success(),
+        "{}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    let migrated = Checkpoint::load(&checkpoint).unwrap();
+    assert_eq!(migrated.offsets[&key], 2);
+    assert!(!migrated.offsets.contains_key("rows.jsonl"));
 }

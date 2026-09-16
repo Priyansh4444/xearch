@@ -3,7 +3,14 @@
 // deterministic scoring.
 
 import { describe, expect, test, it } from "vitest";
-import { escalate, planL0, uniqueTerms, MIN_RESULTS, PER_TERM_CAP } from "../convex/engine/plan";
+import {
+  escalate,
+  indexedBigrams,
+  planL0,
+  uniqueTerms,
+  MIN_RESULTS,
+  PER_TERM_CAP,
+} from "../convex/engine/plan";
 import { rerank, WEIGHTS, type Candidate } from "../convex/engine/rank";
 import { emptyXQuery } from "../convex/engine/xquery";
 import { SortOrder, type MediaFilter, type XQueryFilters } from "../convex/engine/xquery";
@@ -41,18 +48,14 @@ describe("escalate", () => {
   });
 
   test("L2 -> L3 only with mined PRF terms, then stops", () => {
-    const l2 = escalate(
-      planL0(xqWith({ must: [t("linux")] }), dfs),
-      0,
-      xqWith({ must: [t("linux")] }),
-      dfs,
-    )!;
+    const two = xqWith({ must: [t("linux"), t("box")] });
+    const l2 = escalate(escalate(planL0(two, dfs), 0, two, dfs)!, 0, two, dfs)!;
     expect(l2.level).toBe("L2");
-    expect(escalate(l2, 0, xqWith({ must: [t("linux")] }), dfs)).toBeNull();
-    const l3 = escalate(l2, 0, xqWith({ must: [t("linux")] }), dfs, [t("kernel")])!;
+    expect(escalate(l2, 0, two, dfs)).toBeNull();
+    const l3 = escalate(l2, 0, two, dfs, [t("kernel")])!;
     expect(l3.level).toBe("L3");
     expect(l3.unions.map((u) => u.term)).toContain("kernel");
-    expect(escalate(l3, 0, xqWith({ must: [t("linux")] }), dfs, [t("kernel")])).toBeNull();
+    expect(escalate(l3, 0, two, dfs, [t("kernel")])).toBeNull();
   });
 });
 
@@ -150,6 +153,34 @@ describe("planL0 permutations", () => {
       }
     },
   );
+
+  it("indexedBigrams only include pairs that exist in dfs", () => {
+    const xq = xqWith({ must: [t("linux"), t("box")] });
+    expect(indexedBigrams(xq, dfs)).toEqual([]);
+    const bg = t("\u0002linux\u0002box");
+    const withBg = new Map(dfs);
+    withBg.set(bg, 3);
+    expect(indexedBigrams(xq, withBg)).toEqual([bg]);
+    const plan = planL0(xqWith({ must: [t("linux"), t("box")] }), withBg);
+    expect(plan.gates.map((g) => g.term)).toEqual(["linux", "box"]);
+    expect(plan.unions.map((u) => u.term)).toEqual([bg]);
+  });
+
+  it("empty-must OR queries plan should-terms as L0 unions", () => {
+    const plan = planL0(xqWith({ must: [], should: [t("linux"), t("box")] }), dfs);
+    expect(plan.gates).toEqual([]);
+    expect(plan.unions.map((u) => u.term)).toEqual(["linux", "box"]);
+  });
+
+  it("single-term queries never widen past L0", () => {
+    const xq = xqWith({ must: [t("linux")] });
+    expect(escalate(planL0(xq, dfs), 0, xq, dfs)).toBeNull();
+    const orxq = xqWith({ must: [], should: [t("linux")] });
+    expect(escalate(planL0(orxq, dfs), 0, orxq, dfs)).toBeNull();
+    // A derived aspect is not a second lexical term: `cheap` + ~price stays put.
+    const aspected = xqWith({ must: [t("linux")], aspects: [t("~price")] });
+    expect(escalate(planL0(aspected, dfs), 0, aspected, dfs)).toBeNull();
+  });
 
   it("uniqueTerms dedups in first-seen order across input permutations", () => {
     expect(uniqueTerms([t("a"), t("b")], [t("b"), t("c")], [t("a")])).toEqual([
@@ -322,6 +353,36 @@ describe("rerank permutations", () => {
     expect(score).toBe(expected);
   });
 
+  it("Latest orders by time before coverage; Top keeps coverage first", () => {
+    const xq = xqWith({ must: [t("linux"), t("box")] });
+    const latest = { ...xq, sort: SortOrder.Latest };
+    const olderCovered: Candidate = {
+      ...base,
+      tweetId: "older",
+      tf: new Map([
+        [t("linux"), 1],
+        [t("box"), 1],
+      ]),
+      createdAt: NOW - 10_000,
+      matchedVia: "L2",
+    };
+    const newerPartial: Candidate = {
+      ...base,
+      tweetId: "newer",
+      tf: new Map([[t("linux"), 1]]),
+      createdAt: NOW,
+      matchedVia: "L2",
+    };
+    expect(rerank(latest, [olderCovered, newerPartial], stats, NOW).map((s) => s.tweetId)).toEqual([
+      "newer",
+      "older",
+    ]);
+    expect(rerank(xq, [olderCovered, newerPartial], stats, NOW).map((s) => s.tweetId)).toEqual([
+      "older",
+      "newer",
+    ]);
+  });
+
   it("feedback clamp is monotone: down < neutral < up", () => {
     const score = (v: number) =>
       rerank(emptyXQuery(), [{ ...base, feedbackVotes: v }], stats, NOW)[0]!.score;
@@ -386,6 +447,33 @@ describe("rerank permutations", () => {
     expect(shouldOnly).toBeGreaterThan(plain);
     expect(mediaOnly).toBeGreaterThan(shouldOnly);
     expect(both).toBeGreaterThan(mediaOnly);
+  });
+
+  it("L0 exact matches outrank a viral L2 one-term hit", () => {
+    const xq = xqWith({ must: [t("linux"), t("box")] });
+    const exact: Candidate = {
+      ...base,
+      tweetId: "exact",
+      tf: new Map([
+        [t("linux"), 1],
+        [t("box"), 1],
+      ]),
+      matchedVia: "L0",
+      likeCount: 0,
+    };
+    const viral: Candidate = {
+      ...base,
+      tweetId: "viral",
+      tf: new Map([[t("linux"), 1]]),
+      matchedVia: "L2",
+      likeCount: 1_000_000,
+    };
+    for (const order of [
+      [viral, exact],
+      [exact, viral],
+    ]) {
+      expect(rerank(xq, order, stats, NOW)[0]!.tweetId).toBe("exact");
+    }
   });
 
   it.each([

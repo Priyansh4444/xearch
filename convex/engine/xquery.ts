@@ -50,6 +50,13 @@ export interface XQuery {
   aspects: Term[];
   filters: XQueryFilters;
   sort: SortOrder;
+  /**
+   * Explicit OR (Tier A). When true, `must` is empty and `should`/`phrases` are
+   * ALTERNATIVES, not a conjunction: `should` holds the bare branch terms and
+   * `phrases` the quoted branches (verified with token adjacency). A candidate
+   * matches when it contains any should term or covers any phrase.
+   */
+  union: boolean;
   // NOTE deliberately absent: presentation mode (list|answer). It rides in the
   // request envelope, chosen by the user — never inferred (DESIGN §4.1).
 }
@@ -73,6 +80,7 @@ export const emptyXQuery = (): XQuery => ({
   aspects: [],
   filters: emptyFilters(),
   sort: SortOrder.Top,
+  union: false,
 });
 
 /**
@@ -112,6 +120,9 @@ export function canonicalJson(xq: XQuery): string {
       lang: xq.filters.lang,
     },
     sort: xq.sort,
+    // Serialized only when true: the explicit-OR flag is absent for every
+    // conjunction query, so adding it cannot split existing queryKeys/votes.
+    ...(xq.union ? { union: true } : {}),
   });
 }
 

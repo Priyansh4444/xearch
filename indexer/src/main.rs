@@ -8,13 +8,15 @@ use std::collections::HashSet;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use xearch_indexer::checkpoint::Checkpoint;
-use xearch_indexer::convex_api::ConvexClient;
-use xearch_indexer::ids::Term;
-use xearch_indexer::model::IngressRecord;
-use xearch_indexer::num::u64_as_f64;
+use xearch_indexer::convex_api::{ConvexClient, IngestAck};
+use xearch_indexer::ids::{Term, TweetId};
+use xearch_indexer::loose::{parse_line as parse_loose_line, ParsedLine};
+use xearch_indexer::model::{IngestBatch, IngressRecord, Metrics};
+use xearch_indexer::num::{f64_as_usize, u64_as_f64};
 use xearch_indexer::pipeline::{
-    AspectLexicon, AspectPatterns, BatchBuilder, Config, EngagementWeights, RECENCY_EPOCH_MS,
-    RECENCY_MAX_DAYS, RECENCY_PER_DAY, SCORE_MAX,
+    engagement_ln1p, propagate_boosts, quantize, recency_score, AspectLexicon, AspectPatterns,
+    BatchBuilder, Config, EngagementWeights, RECENCY_EPOCH_MS, RECENCY_MAX_DAYS, RECENCY_PER_DAY,
+    SCORE_MAX,
 };
 use xearch_indexer::tokenizer::TOKENIZER_VERSION;
 
@@ -48,26 +50,104 @@ enum Mode {
     /// Re-bucket scores, apply metric re-crawls + boost propagation, run
     /// Tweepcred, backfill embeddings.
     Refresh,
+    /// Tokenize JSONL into `IngestBatch` files without contacting Convex.
+    Prepare {
+        /// Directory that receives `NNNNNN.json` batch files.
+        #[arg(long)]
+        out_dir: PathBuf,
+    },
+    /// Upload batch files written by `prepare`.
+    Upload {
+        #[arg(long)]
+        batch_dir: PathBuf,
+    },
+    /// Ingest tweet JSONL (ingress records or loose tweets) from files or stdin.
+    IngestTweets {
+        /// JSONL files; omit to read stdin.
+        files: Vec<PathBuf>,
+        /// Write batches to this directory instead of uploading.
+        #[arg(long)]
+        out_dir: Option<PathBuf>,
+    },
 }
 
 fn main() -> Result<()> {
     color_eyre::install()?;
     let cli = Cli::parse();
-    match cli.mode {
-        Mode::Backfill => backfill(&cli),
+    match &cli.mode {
+        Mode::Backfill => backfill(&cli, None),
         Mode::Tail => Err(color_eyre::eyre::eyre!("tail mode is not implemented yet")),
-        Mode::Refresh => Err(color_eyre::eyre::eyre!(
-            "refresh mode is not implemented yet"
-        )),
+        Mode::Refresh => refresh(&cli),
+        Mode::Prepare { out_dir } => backfill(&cli, Some(out_dir)),
+        Mode::Upload { batch_dir } => upload(batch_dir),
+        Mode::IngestTweets { files, out_dir } => ingest_tweets(&cli, files, out_dir.as_ref()),
     }
 }
 
 /// Bulk-load every *.jsonl under `data_dir`, checkpointing AFTER each Convex ack
 /// (O1 ordering is the whole point). Malformed or gate-failing lines land in
 /// quarantine files + counters — never crash the loop, never drop silently.
-fn backfill(cli: &Cli) -> Result<()> {
+enum Destination {
+    Convex(ConvexClient),
+    Dir { path: PathBuf, next: u64 },
+}
+
+impl Destination {
+    fn convex() -> Result<Self> {
+        Ok(Self::Convex(ConvexClient::from_env()?))
+    }
+
+    fn dir_resuming(path: PathBuf, checkpoint_next: u64) -> Self {
+        let scanned = next_batch_index(&path);
+        Self::Dir {
+            path,
+            next: scanned.max(checkpoint_next).max(1),
+        }
+    }
+
+    fn emit(&mut self, batch: &IngestBatch) -> Result<IngestAck> {
+        match self {
+            Self::Convex(client) => client.ingest_batch(batch),
+            Self::Dir { path, next } => {
+                std::fs::create_dir_all(path.as_path())?;
+                let file = path.join(format!("{next:06}.json"));
+                if file.exists() {
+                    bail!(
+                        "batch file {} already exists; refuse to overwrite prepared batches",
+                        file.display()
+                    );
+                }
+                std::fs::write(&file, serde_json::to_vec_pretty(batch)?)?;
+                *next = next.saturating_add(1);
+                Ok(IngestAck {
+                    inserted: u64_as_f64(u64::try_from(batch.tweets.len()).unwrap_or(u64::MAX)),
+                    updated: 0.0,
+                    skipped: 0.0,
+                })
+            }
+        }
+    }
+}
+
+fn next_batch_index(path: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return 1;
+    };
+    let mut max = 0_u64;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(stem) = name.to_str().and_then(|s| s.strip_suffix(".json")) else {
+            continue;
+        };
+        if let Ok(n) = stem.parse::<u64>() {
+            max = max.max(n);
+        }
+    }
+    max.saturating_add(1).max(1)
+}
+
+fn backfill(cli: &Cli, out_dir: Option<&PathBuf>) -> Result<()> {
     let cfg = load_config(&cli.lexicons)?;
-    let client = ConvexClient::from_env()?;
     let mut checkpoint = Checkpoint::load(&cli.checkpoint)?;
     if !checkpoint.config_hash.is_empty() && checkpoint.config_hash != cfg.config_hash {
         bail!(
@@ -80,6 +160,10 @@ fn backfill(cli: &Cli) -> Result<()> {
         );
     }
     checkpoint.config_hash.clone_from(&cfg.config_hash);
+    let mut dest = match out_dir {
+        Some(path) => Destination::dir_resuming(path.clone(), checkpoint.next_batch),
+        None => Destination::convex()?,
+    };
 
     let mut files: Vec<PathBuf> = std::fs::read_dir(&cli.data_dir)
         .with_context(|| format!("reading data dir {}", cli.data_dir.display()))?
@@ -97,13 +181,16 @@ fn backfill(cli: &Cli) -> Result<()> {
 
     for file in &files {
         let name = file_name(file);
-        let offset = *checkpoint.offsets.get(&name).unwrap_or(&0);
+        // Checkpoint identity is the canonical path, never the basename: a
+        // resume must not collide two different files that share a name.
+        let key = source_key(file);
+        let offset = resumed_offset(&checkpoint, &key, &name, true);
         let reader = std::io::BufReader::new(
             std::fs::File::open(file).with_context(|| format!("opening {name}"))?,
         );
         let mut next_offset = offset;
         let mut flush_ctx = FlushContext {
-            client: &client,
+            dest: &mut dest,
             builder: &mut builder,
             checkpoint: &mut checkpoint,
             cli,
@@ -140,7 +227,7 @@ fn backfill(cli: &Cli) -> Result<()> {
             }
             next_offset = idx.saturating_add(1);
             if flush_ctx.builder.is_full() {
-                flush_ctx.flush(&name, next_offset)?;
+                flush_ctx.flush(&key, next_offset)?;
             }
             if cli
                 .limit
@@ -151,14 +238,13 @@ fn backfill(cli: &Cli) -> Result<()> {
         }
         // Flush at the file boundary so offsets never describe a half-acked file.
         if !flush_ctx.builder.is_empty() {
-            flush_ctx.flush(&name, next_offset)?;
+            flush_ctx.flush(&key, next_offset)?;
         }
         // All pending records have been acknowledged. Persist progress even if
-        // the suffix contained only blank or quarantined lines.
-        flush_ctx
-            .checkpoint
-            .offsets
-            .insert(name.clone(), next_offset);
+        // the suffix contained only blank or quarantined lines. The legacy
+        // basename entry migrates to the canonical key here.
+        flush_ctx.checkpoint.offsets.remove(&name);
+        flush_ctx.checkpoint.offsets.insert(key, next_offset);
         flush_ctx.checkpoint.store(&cli.checkpoint)?;
         if limit_reached(cli, flush_ctx.stats) {
             report_limit(cli);
@@ -202,7 +288,7 @@ fn report_summary(stats: &Stats, started: std::time::Instant) {
 }
 
 struct FlushContext<'a> {
-    client: &'a ConvexClient,
+    dest: &'a mut Destination,
     builder: &'a mut BatchBuilder,
     checkpoint: &'a mut Checkpoint,
     cli: &'a Cli,
@@ -212,11 +298,16 @@ struct FlushContext<'a> {
 impl FlushContext<'_> {
     fn flush(&mut self, file: &str, next_offset: u64) -> Result<()> {
         let batch = self.builder.take_batch();
-        let ack = self.client.ingest_batch(&batch)?;
+        let ack = self.dest.emit(&batch)?;
         self.stats.batches = self.stats.batches.saturating_add(1);
-        self.checkpoint
-            .offsets
-            .insert(file.to_string(), next_offset);
+        if file != "stdin" {
+            self.checkpoint
+                .offsets
+                .insert(file.to_string(), next_offset);
+        }
+        if let Destination::Dir { next, .. } = self.dest {
+            self.checkpoint.next_batch = *next;
+        }
         self.checkpoint.store(&self.cli.checkpoint)?; // AFTER the ack — crash-resume without dupes/gaps
         eprintln!(
             "batch {}: {} tweets ({} inserted, {} updated, {} skipped), {} authors, {} df terms — {file}:{next_offset}",
@@ -232,9 +323,307 @@ impl FlushContext<'_> {
     }
 }
 
+#[allow(clippy::too_many_lines)]
+fn ingest_tweets(cli: &Cli, files: &[PathBuf], out_dir: Option<&PathBuf>) -> Result<()> {
+    let cfg = load_config(&cli.lexicons)?;
+    let mut checkpoint = Checkpoint::load(&cli.checkpoint)?;
+    if !checkpoint.config_hash.is_empty() && checkpoint.config_hash != cfg.config_hash {
+        bail!(
+            "checkpoint {} was written under config {} but the current config hashes to {}",
+            cli.checkpoint.display(),
+            checkpoint.config_hash,
+            cfg.config_hash
+        );
+    }
+    checkpoint.config_hash.clone_from(&cfg.config_hash);
+    let mut dest = match out_dir {
+        Some(path) => Destination::dir_resuming(path.clone(), checkpoint.next_batch),
+        None => Destination::convex()?,
+    };
+    let mut builder = BatchBuilder::new(cfg);
+    let mut stats = Stats::default();
+    let started = std::time::Instant::now();
+    // (checkpoint key, display label, reader); stdin is never resumable.
+    // Legacy basename keys are only safe when the basename is unambiguous in
+    // this invocation: two same-named inputs would share one offset and one of
+    // them would silently skip records.
+    let mut basenames: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for file in files {
+        let count = basenames.entry(file_name(file)).or_insert(0);
+        *count = count.saturating_add(1);
+    }
+    let sources: Vec<(String, String, bool, Box<dyn BufRead>)> = if files.is_empty() {
+        let stdin: Box<dyn BufRead> = Box::new(std::io::BufReader::new(std::io::stdin()));
+        vec![(String::from("stdin"), String::from("stdin"), false, stdin)]
+    } else {
+        let mut opened = Vec::new();
+        for file in files {
+            let name = file_name(file);
+            // Canonical paths keep same-basename inputs distinct (the old
+            // basename key silently reused another file's offset).
+            let key = source_key(file);
+            let allow_legacy = basenames.get(&name).copied().unwrap_or(0) == 1;
+            let reader: Box<dyn BufRead> = Box::new(std::io::BufReader::new(
+                std::fs::File::open(file).with_context(|| format!("opening {name}"))?,
+            ));
+            opened.push((key, name, allow_legacy, reader));
+        }
+        opened
+    };
+    for (key, name, allow_legacy, reader) in sources {
+        let offset = if key == "stdin" {
+            0
+        } else {
+            resumed_offset(&checkpoint, &key, &name, allow_legacy)
+        };
+        let mut next_offset = offset;
+        let mut flush_ctx = FlushContext {
+            dest: &mut dest,
+            builder: &mut builder,
+            checkpoint: &mut checkpoint,
+            cli,
+            stats: &mut stats,
+        };
+        for (idx, line) in reader.lines().enumerate() {
+            let idx = u64::try_from(idx).unwrap_or(u64::MAX);
+            let line = line.with_context(|| format!("reading {name}:{idx}"))?;
+            if idx < offset {
+                if let Ok(parsed) = parse_loose_line(&line) {
+                    for record in parsed.into_records() {
+                        if let IngressRecord::Author(author) = record {
+                            flush_ctx.builder.learn_handle(&author.id, &author.handle);
+                        }
+                    }
+                }
+                continue;
+            }
+            if line.trim().is_empty() {
+                next_offset = idx.saturating_add(1);
+                continue;
+            }
+            match parse_loose_line(&line).and_then(gate_parsed) {
+                Ok(parsed) => {
+                    for record in parsed.into_records() {
+                        match record {
+                            IngressRecord::Tweet(tweet) => {
+                                flush_ctx.builder.push_tweet(tweet);
+                                flush_ctx.stats.tweets = flush_ctx.stats.tweets.saturating_add(1);
+                            }
+                            IngressRecord::Author(author) => {
+                                flush_ctx.builder.push_author(author);
+                                flush_ctx.stats.authors = flush_ctx.stats.authors.saturating_add(1);
+                            }
+                        }
+                    }
+                }
+                Err(reason) => {
+                    quarantine(&cli.quarantine, &name, &line, &reason)?;
+                    flush_ctx.stats.quarantined = flush_ctx.stats.quarantined.saturating_add(1);
+                }
+            }
+            next_offset = idx.saturating_add(1);
+            if flush_ctx.builder.is_full() {
+                flush_ctx.flush(&key, next_offset)?;
+            }
+            if limit_reached(cli, flush_ctx.stats) {
+                break;
+            }
+        }
+        if !flush_ctx.builder.is_empty() {
+            flush_ctx.flush(&key, next_offset)?;
+        }
+        if key != "stdin" {
+            if allow_legacy {
+                flush_ctx.checkpoint.offsets.remove(&name);
+            }
+            flush_ctx.checkpoint.offsets.insert(key, next_offset);
+            flush_ctx.checkpoint.store(&cli.checkpoint)?;
+        }
+        if limit_reached(cli, flush_ctx.stats) {
+            report_limit(cli);
+            break;
+        }
+    }
+    report_summary(&stats, started);
+    Ok(())
+}
+
+/// One re-crawled tweet reduced to its newest snapshot.
+struct RecrawledTweet {
+    id: TweetId,
+    quoted: Option<TweetId>,
+    retweet: Option<TweetId>,
+    metrics: Metrics,
+    metrics_at: i64,
+    created_at: i64,
+}
+
+/// Read every JSONL under `files`, keeping only the newest snapshot per tweet.
+///
+/// Files contain re-crawls (the collector refreshes metrics), so an edge list
+/// with every occurrence attributes a source's boost once per recrawl, and
+/// last-write-wins order can pick an older snapshot.
+fn latest_recrawls(files: &[PathBuf]) -> Result<Vec<RecrawledTweet>> {
+    let mut latest: std::collections::HashMap<TweetId, RecrawledTweet> =
+        std::collections::HashMap::new();
+    for file in files {
+        let reader = std::io::BufReader::new(std::fs::File::open(file)?);
+        for line in reader.lines() {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            let Ok(IngressRecord::Tweet(tweet)) = parse_and_gate(&line) else {
+                continue;
+            };
+            let next = RecrawledTweet {
+                id: tweet.id.clone(),
+                quoted: tweet.quoted_tweet_id.clone(),
+                retweet: tweet.retweet_of_tweet_id.clone(),
+                metrics: tweet.metrics,
+                metrics_at: tweet.metrics_at,
+                created_at: tweet.created_at,
+            };
+            match latest.entry(tweet.id) {
+                std::collections::hash_map::Entry::Occupied(mut slot) => {
+                    if next.metrics_at > slot.get().metrics_at {
+                        slot.insert(next);
+                    }
+                }
+                std::collections::hash_map::Entry::Vacant(slot) => {
+                    slot.insert(next);
+                }
+            }
+        }
+    }
+    Ok(latest.into_values().collect())
+}
+
+fn refresh(cli: &Cli) -> Result<()> {
+    let cfg = load_config(&cli.lexicons)?;
+    let client = ConvexClient::from_env()?;
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&cli.data_dir)
+        .with_context(|| format!("reading data dir {}", cli.data_dir.display()))?
+        .filter_map(|entry| entry.ok().map(|e| e.path()))
+        .filter(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
+        .collect();
+    files.sort();
+    if files.is_empty() {
+        bail!("no .jsonl files under {}", cli.data_dir.display());
+    }
+    let recrawls = latest_recrawls(&files)?;
+    let mut edges: Vec<(TweetId, Option<TweetId>, Option<TweetId>)> =
+        Vec::with_capacity(recrawls.len());
+    let mut metrics: std::collections::HashMap<TweetId, Metrics> =
+        std::collections::HashMap::with_capacity(recrawls.len());
+    let mut metrics_at: std::collections::HashMap<TweetId, i64> =
+        std::collections::HashMap::with_capacity(recrawls.len());
+    let mut created_ats: std::collections::HashMap<TweetId, i64> =
+        std::collections::HashMap::with_capacity(recrawls.len());
+    for recrawl in recrawls {
+        edges.push((recrawl.id.clone(), recrawl.quoted, recrawl.retweet));
+        created_ats.insert(recrawl.id.clone(), recrawl.created_at);
+        metrics_at.insert(recrawl.id.clone(), recrawl.metrics_at);
+        metrics.insert(recrawl.id, recrawl.metrics);
+    }
+    let boosts = propagate_boosts(&edges, &metrics, &cfg.engagement_weights);
+    let mut updates = Vec::new();
+    for (tweet_id, m) in &metrics {
+        let boost = boosts.get(tweet_id).copied().unwrap_or(0.0);
+        let created_at = created_ats.get(tweet_id).copied().unwrap_or(0);
+        let static_score =
+            engagement_ln1p(m, &cfg.engagement_weights) + boost + recency_score(created_at);
+        let score_bucket = quantize(static_score, cfg.bucket_count);
+        updates.push(serde_json::json!({
+            "tweetId": tweet_id.as_str(),
+            "metrics": {
+                "likes": m.likes,
+                "retweets": m.retweets,
+                "quotes": m.quotes,
+                "replies": m.replies,
+            },
+            "metricsAt": metrics_at.get(tweet_id).copied().unwrap_or(0),
+            "propagatedBoost": boost,
+            "newScoreBucket": score_bucket,
+        }));
+    }
+    updates.sort_by(|a, b| {
+        a["tweetId"]
+            .as_str()
+            .unwrap_or_default()
+            .cmp(b["tweetId"].as_str().unwrap_or_default())
+    });
+    let mut applied = 0_u64;
+    for chunk in updates.chunks(40) {
+        let mut offset = 0_usize;
+        while let Some(pending) = chunk.get(offset..).filter(|slice| !slice.is_empty()) {
+            // A short ack means the posting budget stopped the mutation; the
+            // remainder is safe to re-send (metricsAt gates make it idempotent).
+            let args = serde_json::json!({ "updates": pending });
+            let ack = client.apply_metrics(&args)?;
+            let processed = f64_as_usize(ack.processed);
+            if processed == 0 {
+                bail!("applyMetrics made no progress on a non-empty slice; aborting refresh");
+            }
+            offset = offset.saturating_add(processed);
+            applied = applied.saturating_add(u64::try_from(processed).unwrap_or(u64::MAX));
+            eprintln!("refresh: applied {}/{} metric rows", applied, updates.len());
+        }
+    }
+    eprintln!(
+        "refresh done: {} quote/RT edges, {} merged targets, config {}",
+        edges.len(),
+        updates.len(),
+        cfg.config_hash
+    );
+    Ok(())
+}
+
+fn upload(batch_dir: &Path) -> Result<()> {
+    let client = ConvexClient::from_env()?;
+    let mut files: Vec<PathBuf> = std::fs::read_dir(batch_dir)
+        .with_context(|| format!("reading batch dir {}", batch_dir.display()))?
+        .filter_map(|entry| entry.ok().map(|e| e.path()))
+        .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
+        .collect();
+    files.sort();
+    if files.is_empty() {
+        bail!("no .json batch files under {}", batch_dir.display());
+    }
+    for file in files {
+        let args: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(&file)
+                .with_context(|| format!("reading {}", file.display()))?,
+        )?;
+        let ack = client.ingest_batch_json(&args)?;
+        eprintln!(
+            "uploaded {}: {} inserted, {} updated, {} skipped",
+            file.display(),
+            ack.inserted,
+            ack.updated,
+            ack.skipped
+        );
+    }
+    Ok(())
+}
+
+fn gate_parsed(parsed: ParsedLine) -> std::result::Result<ParsedLine, String> {
+    match parsed {
+        ParsedLine::Ingress(record) => Ok(ParsedLine::Ingress(gate_record(record)?)),
+        ParsedLine::Tweet { tweet, author } => match gate_record(IngressRecord::Tweet(tweet))? {
+            IngressRecord::Tweet(tweet) => Ok(ParsedLine::Tweet { tweet, author }),
+            IngressRecord::Author(_) => Err("gate: expected tweet".to_string()),
+        },
+    }
+}
+
 /// serde is the parser; the INGRESS §5 sanity gates run on top of it.
 fn parse_and_gate(line: &str) -> std::result::Result<IngressRecord, String> {
     let record: IngressRecord = serde_json::from_str(line).map_err(|e| format!("parse: {e}"))?;
+    gate_record(record)
+}
+
+fn gate_record(record: IngressRecord) -> std::result::Result<IngressRecord, String> {
     if let IngressRecord::Tweet(t) = &record {
         if t.text.trim().is_empty() {
             return Err("gate: empty text".to_string());
@@ -268,6 +657,38 @@ fn file_name(path: &Path) -> String {
     path.file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default()
+}
+
+/// Offset for one input file, migrating checkpoints written before
+/// `source_key`: those keyed by basename only, and defaulting them to 0 would
+/// re-process the whole file once after an upgrade.
+///
+/// The legacy key is only consulted when the basename is unambiguous in this
+/// invocation (`allow_legacy`); with two same-named inputs it could belong to
+/// either, and applying it would silently skip the other file's records.
+fn resumed_offset(checkpoint: &Checkpoint, key: &str, name: &str, allow_legacy: bool) -> u64 {
+    checkpoint
+        .offsets
+        .get(key)
+        .or_else(|| {
+            if allow_legacy {
+                checkpoint.offsets.get(name)
+            } else {
+                None
+            }
+        })
+        .copied()
+        .unwrap_or(0)
+}
+
+/// Stable, unique checkpoint identity for an input file: its canonical path.
+/// Basenames collide (`/a/tweets.jsonl` vs `/b/tweets.jsonl`), which used to
+/// skip a file's records or double-ingest them on resume.
+fn source_key(path: &Path) -> String {
+    std::fs::canonicalize(path).map_or_else(
+        |_| path.to_string_lossy().into_owned(),
+        |p| p.to_string_lossy().into_owned(),
+    )
 }
 
 fn now_ms() -> i64 {
@@ -341,7 +762,7 @@ fn load_config(lexicons: &Path) -> Result<Config> {
         )
     );
     let params = format!(
-        "tokenizerVersion={TOKENIZER_VERSION};aspectMapping=2;weights={weights_dbg};buckets={bucket_count};recency={RECENCY_EPOCH_MS},{RECENCY_PER_DAY},{RECENCY_MAX_DAYS};scoreMax={SCORE_MAX}"
+        "tokenizerVersion={TOKENIZER_VERSION};aspectMapping=2;bigrams=1;weights={weights_dbg};buckets={bucket_count};recency={RECENCY_EPOCH_MS},{RECENCY_PER_DAY},{RECENCY_MAX_DAYS};scoreMax={SCORE_MAX}"
     );
     let config_hash = format!(
         "fnv1a64:{:016x}",
@@ -371,4 +792,34 @@ fn fnv1a64(parts: &[&[u8]]) -> u64 {
         }
     }
     hash
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write_recrawl(path: &Path, likes: u64, metrics_at: i64) {
+        let line = format!(
+            r#"{{"kind":"tweet","id":"9","text":"apple tree","authorId":"7","createdAt":1700000000000,"metrics":{{"likes":{likes},"retweets":0,"quotes":0,"replies":0}},"metricsAt":{metrics_at},"media":[],"quotedTweetId":null,"retweetOfTweetId":null,"inReplyToTweetId":null}}"#
+        );
+        std::fs::write(path, line).unwrap();
+    }
+
+    #[test]
+    fn latest_recrawls_keeps_the_newest_snapshot_per_tweet() {
+        let dir = std::env::temp_dir().join(format!("xearch-recrawl-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let older = dir.join("a.jsonl");
+        let newer = dir.join("b.jsonl");
+        write_recrawl(&older, 1, 1_700_000_000_000);
+        write_recrawl(&newer, 2, 1_700_000_100_000);
+
+        let recrawls = latest_recrawls(&[older, newer]).unwrap();
+        assert_eq!(recrawls.len(), 1);
+        assert_eq!(recrawls[0].id.0, "9");
+        assert_eq!(recrawls[0].metrics.likes, 2);
+        assert_eq!(recrawls[0].metrics_at, 1_700_000_100_000);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

@@ -13,6 +13,9 @@ pub struct Checkpoint {
     pub config_hash: String,
     /// file name -> next unprocessed line index
     pub offsets: std::collections::HashMap<String, u64>,
+    /// Next `NNNNNN.json` index for `prepare` output. 0 means "unspecified".
+    #[serde(default)]
+    pub next_batch: u64,
 }
 
 impl Checkpoint {

@@ -1,4 +1,4 @@
-import { startTransition, useEffect, useState, type ReactElement } from "react";
+import { startTransition, useEffect, useState, type KeyboardEvent, type ReactElement } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { ConvexError } from "convex/values";
 import type { FunctionReturnType } from "convex/server";
@@ -22,6 +22,8 @@ interface Shown {
   queryKey: string | null;
   /** Terms that actually gated/boosted retrieval — what highlighting should mark. */
   terms: string[];
+  /** No indexed terms or filters: the posting index has nothing to retrieve on. */
+  termless: boolean;
 }
 
 /** Known-dense corpus topics — each returns real posts from the archived run. */
@@ -113,16 +115,31 @@ function presentResults(
           ladder: null,
           queryKey: null,
           terms: query.split(/\s+/),
+          termless: false,
         };
   }
   if (full === undefined) return undefined;
   const q = full.appliedQuery;
+  const f = q.filters;
+  const termless =
+    q.must.length === 0 &&
+    q.should.length === 0 &&
+    q.phrases.length === 0 &&
+    q.exclude.length === 0 &&
+    q.aspects.length === 0 &&
+    f.authorId === null &&
+    f.since === null &&
+    f.until === null &&
+    f.media === null &&
+    f.minLikes === null &&
+    f.lang === null;
   return {
     error: full.error,
     results: full.results,
     ladder: full.ladder,
     queryKey: full.queryKey,
     terms: [...q.must, ...q.should, ...q.phrases.flat(), ...q.exclude.map((term) => `-${term}`)],
+    termless,
   };
 }
 
@@ -149,17 +166,7 @@ export function App(): ReactElement {
         <p className="lane-note">literal lane: exact words, real posts</p>
       </header>
 
-      <div className={searching ? "searchbox is-searching" : "searchbox"}>
-        <input
-          type="search"
-          value={input}
-          onChange={(e) => changeInput(e.target.value)}
-          placeholder="search 164,959 posts"
-          aria-label="Search posts"
-        />
-        {/* Only while the input is ahead of the executed query — typing, not idle. */}
-        {input.trim() !== query ? <Typeahead input={input} onPick={pickQuery} /> : null}
-      </div>
+      <SearchBox input={input} searching={searching} onChange={changeInput} onPick={pickQuery} />
 
       {query !== "" ? (
         <div className="controls">
@@ -197,6 +204,7 @@ export function App(): ReactElement {
         searching={searching}
         canVote={canVote}
         onPick={pickQuery}
+        onUseLiteral={lane === "xearch" ? () => setLane("baseline") : null}
       />
 
       <footer className="colophon">
@@ -213,6 +221,7 @@ interface SearchBodyProps {
   searching: boolean;
   canVote: boolean;
   onPick: (query: string) => void;
+  onUseLiteral: (() => void) | null;
 }
 
 function SearchBody({
@@ -222,11 +231,19 @@ function SearchBody({
   searching,
   canVote,
   onPick,
+  onUseLiteral,
 }: SearchBodyProps): ReactElement {
   if (query === "") return <Intro onPick={onPick} />;
   if (error) return <p role="alert">{error}</p>;
   if (shown === undefined) return <SkeletonList />;
-  if (shown.results.length === 0) return <EmptyState query={query} onPick={onPick} />;
+  if (shown.results.length === 0)
+    return (
+      <EmptyState
+        query={query}
+        onPick={onPick}
+        onUseLiteral={shown.termless ? onUseLiteral : null}
+      />
+    );
 
   const count = shown.results.length;
   let countLabel = `${count} posts`;
@@ -238,23 +255,34 @@ function SearchBody({
   } else if (count < 20) {
     notice = " — matches within the bounded search window";
   }
+  const exact: Result[] = [];
+  const related: Result[] = [];
+  for (const tweet of shown.results) {
+    if (tweet.matchedVia === undefined || tweet.matchedVia === LadderLevel.L0) exact.push(tweet);
+    else related.push(tweet);
+  }
+  const renderList = (rows: Result[], label: string) => (
+    <ol className="results" aria-label={label}>
+      {rows.map((tweet) => (
+        <li key={`${shown.queryKey ?? query}:${tweet._id}`}>
+          <ResultRow tweet={tweet} terms={shown.terms} queryKey={canVote ? shown.queryKey : null} />
+        </li>
+      ))}
+    </ol>
+  );
   return (
     <main aria-busy={searching}>
       <p className="count-line">
         {countLabel}
         {notice}
       </p>
-      <ol className="results">
-        {shown.results.map((tweet) => (
-          <li key={`${shown.queryKey ?? query}:${tweet._id}`}>
-            <ResultRow
-              tweet={tweet}
-              terms={shown.terms}
-              queryKey={canVote ? shown.queryKey : null}
-            />
-          </li>
-        ))}
-      </ol>
+      {exact.length > 0 ? renderList(exact, "Exact matches") : null}
+      {related.length > 0 ? (
+        <>
+          <h2 className="related-label">Related</h2>
+          {renderList(related, "Related posts")}
+        </>
+      ) : null}
     </main>
   );
 }
@@ -271,7 +299,28 @@ function Intro({ onPick }: { onPick: (q: string) => void }) {
   );
 }
 
-function EmptyState({ query, onPick }: { query: string; onPick: (q: string) => void }) {
+function EmptyState({
+  query,
+  onPick,
+  onUseLiteral,
+}: {
+  query: string;
+  onPick: (q: string) => void;
+  onUseLiteral: (() => void) | null;
+}) {
+  if (onUseLiteral !== null) {
+    return (
+      <div className="empty-state">
+        <p>
+          Every word in <span className="query-echo">{query}</span> is dropped by the posting index,
+          so this lane has nothing to retrieve on. The literal lane searches those words directly:
+        </p>
+        <button type="button" className="lane-toggle" onClick={onUseLiteral}>
+          search the literal lane
+        </button>
+      </div>
+    );
+  }
   return (
     <div className="empty-state">
       <p>
@@ -312,40 +361,130 @@ function SkeletonList() {
   );
 }
 
-function Typeahead({ input, onPick }: { input: string; onPick: (q: string) => void }) {
-  const lastWord = input.split(/\s+/).at(-1) ?? "";
+function SearchBox({
+  input,
+  searching,
+  onChange,
+  onPick,
+}: {
+  input: string;
+  searching: boolean;
+  onChange: (next: string) => void;
+  onPick: (query: string) => void;
+}): ReactElement {
+  const [open, setOpen] = useState(false);
+  const [nav, setNav] = useState<{
+    prefix: string;
+    mode: "term" | "author" | "both";
+    i: number;
+  }>({ prefix: "", mode: "both", i: 0 });
+  const { prefix, mode, current } = suggestToken(input);
+  const minLen = mode === "author" ? 1 : 2;
   const suggestions = useQuery(
     api.search.suggest,
-    lastWord.length >= 2 ? { prefix: lastWord } : "skip",
+    open && prefix.length >= minLen ? { prefix, mode } : "skip",
   );
-  if (
-    lastWord.length < 2 ||
-    suggestions === undefined ||
-    suggestions.filter((s) => s.term !== lastWord).length === 0
-  ) {
-    return null;
-  }
-  const complete = (term: string) => [...input.split(/\s+/).slice(0, -1), term].join(" ");
+  const rows = (suggestions ?? [])
+    .filter((s) => s.term !== prefix && s.term !== current)
+    .slice(0, 8);
+  const active = nav.prefix === prefix && nav.mode === mode ? nav.i : 0;
+  const pick = (term: string) => {
+    onPick(applySuggestion(input, term));
+    setOpen(false);
+  };
+  const onKey = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (!open || rows.length === 0) return;
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setNav({ prefix, mode, i: (active + 1) % rows.length });
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setNav({ prefix, mode, i: (active - 1 + rows.length) % rows.length });
+    } else if (event.key === "Enter") {
+      const row = rows[active];
+      if (row !== undefined) {
+        event.preventDefault();
+        pick(row.term);
+      }
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      setOpen(false);
+    }
+  };
   return (
-    <ul className="typeahead" role="listbox" aria-label="Suggestions">
-      {suggestions
-        .filter((s) => s.term !== lastWord)
-        .slice(0, 5)
-        .map((s) => (
-          <li key={s.term}>
-            <button
-              type="button"
-              role="option"
-              aria-selected={false}
-              onClick={() => onPick(complete(s.term))}
-            >
-              {complete(s.term)}
-              <span className="df">{s.df}</span>
-            </button>
-          </li>
-        ))}
-    </ul>
+    <div className={searching ? "searchbox is-searching" : "searchbox"}>
+      <input
+        type="search"
+        value={input}
+        onChange={(e) => {
+          setOpen(true);
+          onChange(e.target.value);
+        }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => {
+          window.setTimeout(() => setOpen(false), 0);
+        }}
+        onKeyDown={onKey}
+        placeholder="search 164,959 posts"
+        aria-label="Search posts"
+        aria-autocomplete="list"
+        aria-expanded={open && rows.length > 0}
+        aria-controls="suggest-list"
+        aria-activedescendant={
+          open && rows[active] !== undefined ? `suggest-${String(active)}` : undefined
+        }
+      />
+      {open && rows.length > 0 ? (
+        <ul className="typeahead" id="suggest-list" role="listbox" aria-label="Suggestions">
+          {rows.map((s, i) => (
+            <li key={`${s.kind}:${s.term}`}>
+              <button
+                type="button"
+                id={`suggest-${String(i)}`}
+                role="option"
+                aria-selected={i === active}
+                className={i === active ? "active" : undefined}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => pick(s.term)}
+              >
+                <span>{s.kind === "author" ? `@${s.term}` : applySuggestion(input, s.term)}</span>
+                <span className="df">{s.kind === "author" ? "account" : s.df}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
   );
+}
+
+/** Last whitespace-delimited token, with from:/@ stripped for the suggest prefix. */
+export function suggestToken(input: string): {
+  prefix: string;
+  mode: "term" | "author" | "both";
+  current: string;
+} {
+  const current = input.split(/\s+/).at(-1) ?? "";
+  const from = /^from:@?/i.exec(current);
+  if (from !== null) {
+    return { prefix: current.slice(from[0].length).toLowerCase(), mode: "author", current };
+  }
+  if (current.startsWith("@")) {
+    return { prefix: current.slice(1).toLowerCase(), mode: "author", current };
+  }
+  return { prefix: current.toLowerCase(), mode: "both", current };
+}
+
+function applySuggestion(input: string, term: string): string {
+  const parts = input.split(/\s+/);
+  const last = parts.at(-1) ?? "";
+  let next = term;
+  if (/^from:/i.test(last)) {
+    next = last.toLowerCase().includes("@") ? `from:@${term}` : `from:${term}`;
+  } else if (last.startsWith("@")) {
+    next = `@${term}`;
+  }
+  return [...parts.slice(0, -1), next].join(" ");
 }
 
 interface ResultRowProps {

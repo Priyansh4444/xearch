@@ -2,6 +2,7 @@ import { convexTest } from "convex-test";
 import type { FunctionArgs } from "convex/server";
 import { describe, expect, test } from "vitest";
 import { api, internal } from "../convex/_generated/api";
+import { SEED_CAP } from "../convex/engine/plan";
 import schema from "../convex/schema";
 
 declare global {
@@ -171,6 +172,231 @@ describe("search serving flow", () => {
       sort: "top",
     });
     expect(widened.results.map((row) => row.tweetId)).toContain("tree-only");
+  });
+
+  test("two-term AND keeps the rare hit outside the common term's impact cap", async () => {
+    const t = convexTest(schema, modules);
+    const head = Array.from({ length: 501 }, (_, i) => ({
+      ...tweet(`apple-${i}`, "apple", ["apple"]),
+      scoreBucket: 255,
+      staticScore: 100,
+    }));
+    const exact = {
+      ...tweet("exact", "apple tree", ["apple", "tree"]),
+      scoreBucket: 1,
+      staticScore: 1,
+    };
+    await t.mutation(internal.ingest.ingestBatch, batch([...head, exact]));
+    const result = await t.query(api.search.search, { raw: "apple tree", sort: "top" });
+    expect(result.results[0]?.tweetId).toBe("exact");
+    expect(result.results.find((row) => row.tweetId === "exact")?.matchedVia).toBe("L0");
+  }, 30_000);
+
+  test("unquoted AND still matches non-adjacent terms when a bigram posting exists", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(
+      internal.ingest.ingestBatch,
+      batch([
+        tweet("apart", "apple grows on tree", ["apple", "tree"]),
+        tweet("exact", "apple tree", ["apple", "tree", "\u0002apple\u0002tree"]),
+      ]),
+    );
+    const result = await t.query(api.search.search, { raw: "apple tree", sort: "top" });
+    expect(result.results.map((row) => row.tweetId).sort()).toEqual(["apart", "exact"]);
+    expect(result.results.every((row) => row.matchedVia === "L0")).toBe(true);
+  });
+
+  test("explicit OR is a union at L0, not an AND of both terms", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(
+      internal.ingest.ingestBatch,
+      batch([
+        tweet("apple-only", "apple", ["apple"]),
+        tweet("tree-only", "tree", ["tree"]),
+        tweet("both", "apple tree", ["apple", "tree"]),
+      ]),
+    );
+    const result = await t.query(api.search.search, { raw: "apple OR tree", sort: "top" });
+    expect(result.results.map((row) => row.tweetId).sort()).toEqual([
+      "apple-only",
+      "both",
+      "tree-only",
+    ]);
+    expect(result.results.every((row) => row.matchedVia === "L0")).toBe(true);
+    expect(result.appliedQuery.should.sort()).toEqual(["apple", "tree"]);
+    expect(result.appliedQuery.must).toEqual([]);
+  });
+
+  test("quoted OR branches stay adjacency-verified alternatives", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(
+      internal.ingest.ingestBatch,
+      batch([
+        tweet("pie", "apple pie recipe", ["apple", "pie", "recipe"]),
+        tweet("apple-only", "apple", ["apple"]),
+        tweet("tree-only", "tree", ["tree"]),
+        tweet("apart", "apple on the tree", ["apple", "tree"]),
+      ]),
+    );
+    const result = await t.query(api.search.search, {
+      raw: '"apple pie" OR tree',
+      sort: "top",
+    });
+    // "apple-only" is retrieved by the phrase tokens but fails both branches:
+    // the phrase needs adjacency and the bare branch needs "tree".
+    expect(result.results.map((row) => row.tweetId).sort()).toEqual(["apart", "pie", "tree-only"]);
+    expect(result.appliedQuery.phrases).toEqual([["apple", "pie"]]);
+    expect(result.appliedQuery.should).toEqual(["tree"]);
+    expect(result.appliedQuery.must).toEqual([]);
+    expect(result.appliedQuery.union).toBe(true);
+  });
+
+  test("OR branches keep aspect signals and defer through the posting budget", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(
+      internal.ingest.ingestBatch,
+      batch([tweet("pricey", "cheap phone", ["cheap", "phone", "~price"])]),
+    );
+    const result = await t.query(api.search.search, { raw: "cheap OR phone", sort: "top" });
+    expect(result.appliedQuery.union).toBe(true);
+    expect(result.appliedQuery.aspects).toEqual(["~price"]);
+    expect(result.appliedQuery.should.sort()).toEqual(["cheap", "phone"]);
+    expect(result.results.map((row) => row.tweetId)).toContain("pricey");
+
+    // Budget 0: the first bucket-moving update is deferred untouched, then the
+    // caller re-sends it and it lands.
+    const update = {
+      tweetId: "pricey",
+      metrics: { likes: 5, retweets: 0, quotes: 0, replies: 0 },
+      metricsAt: Date.UTC(2026, 8, 4),
+      newScoreBucket: 250,
+    };
+    const deferred = await t.mutation(internal.ingest.applyMetrics, {
+      updates: [update],
+      postingBudget: 0,
+    });
+    expect(deferred.processed).toBe(0);
+    let row = await t.run(async (ctx) => await ctx.db.query("tweets").first());
+    expect(row?.scoreBucket).toBe(1);
+    expect(row?.likeCount).toBe(0);
+
+    const applied = await t.mutation(internal.ingest.applyMetrics, { updates: [update] });
+    expect(applied.processed).toBe(1);
+    row = await t.run(async (ctx) => await ctx.db.query("tweets").first());
+    expect(row?.scoreBucket).toBe(250);
+    expect(row?.likeCount).toBe(5);
+  });
+
+  test("applyMetrics moves posting buckets only when the bucket changed", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(
+      internal.ingest.ingestBatch,
+      batch([{ ...tweet("movable", "apple tree", ["apple", "tree"]), scoreBucket: 7 }]),
+    );
+    const before = await t.run(async (ctx) => await ctx.db.query("tweets").first());
+    expect(before?.scoreBucket).toBe(7);
+
+    const at = Date.UTC(2026, 8, 4);
+    await t.mutation(internal.ingest.applyMetrics, {
+      updates: [
+        {
+          tweetId: "movable",
+          metrics: { likes: 3, retweets: 0, quotes: 0, replies: 0 },
+          metricsAt: at,
+          newScoreBucket: 9,
+        },
+      ],
+    });
+    const moved = await t.run(async (ctx) => ({
+      tweet: await ctx.db.query("tweets").first(),
+      postings: await ctx.db.query("postings").take(10),
+    }));
+    expect(moved.tweet?.scoreBucket).toBe(9);
+    expect(moved.postings.every((p) => p.scoreBucket === 9)).toBe(true);
+
+    // A stale snapshot never rewrites the bucket, even if the value differs.
+    await t.mutation(internal.ingest.applyMetrics, {
+      updates: [
+        {
+          tweetId: "movable",
+          metrics: { likes: 99, retweets: 0, quotes: 0, replies: 0 },
+          metricsAt: at - 1,
+          newScoreBucket: 11,
+        },
+      ],
+    });
+    const stale = await t.run(async (ctx) => ({
+      tweet: await ctx.db.query("tweets").first(),
+      postings: await ctx.db.query("postings").take(10),
+    }));
+    expect(stale.tweet?.scoreBucket).toBe(9);
+    expect(stale.postings.every((p) => p.scoreBucket === 9)).toBe(true);
+    expect(stale.tweet?.likeCount).toBe(3);
+  });
+
+  test("applyMetrics writes quote/RT boost onto the merged original", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(internal.ingest.ingestBatch, batch([tweet("orig", "apple", ["apple"])]));
+    const ack = await t.mutation(internal.ingest.applyMetrics, {
+      updates: [
+        {
+          tweetId: "orig",
+          metrics: { likes: 3, retweets: 1, quotes: 2, replies: 0 },
+          metricsAt: Date.UTC(2026, 8, 4),
+          propagatedBoost: 4.5,
+        },
+      ],
+    });
+    expect(ack.patched).toBe(1);
+    const row = await t.run(async (ctx) => (await ctx.db.query("tweets").first())!);
+    expect(row.propagatedBoost).toBe(4.5);
+    expect(row.likeCount).toBe(3);
+  });
+
+  test("adjacent bigram postings seed two common terms that miss both impact windows", async () => {
+    const t = convexTest(schema, modules);
+    const apples = Array.from({ length: SEED_CAP + 1 }, (_, i) => ({
+      ...tweet(`apple-${i}`, "apple", ["apple"]),
+      scoreBucket: 255,
+      staticScore: 100,
+    }));
+    const trees = Array.from({ length: SEED_CAP + 1 }, (_, i) => ({
+      ...tweet(`tree-${i}`, "tree", ["tree"]),
+      scoreBucket: 255,
+      staticScore: 100,
+    }));
+    const exact = {
+      ...tweet("exact", "apple tree", ["apple", "tree", "\u0002apple\u0002tree"]),
+      scoreBucket: 1,
+      staticScore: 1,
+    };
+    await t.mutation(internal.ingest.ingestBatch, batch([...apples, ...trees, exact]));
+    const result = await t.query(api.search.search, { raw: "apple tree", sort: "top" });
+    expect(result.results[0]?.tweetId).toBe("exact");
+    expect(result.results.find((row) => row.tweetId === "exact")?.matchedVia).toBe("L0");
+  }, 30_000);
+
+  test("Top ranks the exact two-term hit above a viral one-term related post", async () => {
+    const t = convexTest(schema, modules);
+    const exact = tweet("exact", "apple tree", ["apple", "tree"]);
+    const viral = {
+      ...tweet("viral", "apple", ["apple"]),
+      metrics: { likes: 1_000_000, retweets: 0, replies: 0, quotes: 0 },
+    };
+    await t.mutation(internal.ingest.ingestBatch, batch([exact, viral]));
+    const result = await t.query(api.search.search, { raw: "apple tree", sort: "top" });
+    expect(result.results[0]?.tweetId).toBe("exact");
+    expect(result.results.find((row) => row.tweetId === "viral")?.matchedVia).not.toBe("L0");
+  });
+
+  test("suggest completes handles for from: and blends authors into term prefixes", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(internal.ingest.ingestBatch, batch());
+    const from = await t.query(api.search.suggest, { prefix: "th", mode: "author" });
+    expect(from.map((row) => row.term)).toContain("theo");
+    expect(from.every((row) => row.kind === "author")).toBe(true);
+    const both = await t.query(api.search.suggest, { prefix: "th", mode: "both" });
+    expect(both.some((row) => row.kind === "author" && row.term === "theo")).toBe(true);
   });
 
   test("exact hits keep their provenance after expansion", async () => {

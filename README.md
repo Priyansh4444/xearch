@@ -95,6 +95,16 @@ pnpm web                        # the SERP at http://localhost:5173 (uses .env.l
 cd indexer && cargo build --release && cd ..
 indexer/target/release/xearch-indexer \
   --data-dir data/old/<run-id>/ingress --checkpoint ./checkpoint.json backfill
+
+# tokenize without Convex (writes IngestBatch JSON), then upload:
+indexer/target/release/xearch-indexer \
+  --data-dir data/old/<run-id>/ingress --checkpoint ./checkpoint.json \
+  prepare --out-dir ./batches
+indexer/target/release/xearch-indexer upload --batch-dir ./batches
+
+# ingest tweets directly (ingress JSONL or loose/FxTwitter status lines):
+indexer/target/release/xearch-indexer ingest-tweets tweets.jsonl
+indexer/target/release/xearch-indexer ingest-tweets --out-dir ./batches tweets.jsonl
 pnpm typecheck                  # offline tsc over apps/, convex/, tests/ (no deployment needed)
 cd indexer && cargo test        # Rust golden tests (same fixture)
 ```

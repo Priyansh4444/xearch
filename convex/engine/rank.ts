@@ -3,6 +3,7 @@
 
 import { MediaType } from "../contracts/media";
 import type { Term, TweetId } from "../contracts/ids";
+import { isBigramTerm } from "./bigrams";
 import { LadderLevel } from "./plan";
 import { Intent, SortOrder, type XQuery } from "./xquery";
 
@@ -95,6 +96,7 @@ export function rerank(
     const c = candidates[i]!;
     let rel = 0;
     for (const [term, tf] of c.tf) {
+      if (isBigramTerm(term)) continue;
       rel += bm25(tf, stats.dfs.get(term) ?? 0, stats.totalDocs, c.tokenCount, stats.avgTokenCount);
     }
     const eng = Math.log1p(
@@ -144,10 +146,17 @@ export function rerank(
   const byId = new Map<string, Candidate>();
   for (const c of candidates) byId.set(c.tweetId, c);
   function compare(a: Scored, b: Scored): number {
+    const exactA = a.matchedVia === LadderLevel.L0;
+    const exactB = b.matchedVia === LadderLevel.L0;
+    if (exactA !== exactB) return exactA ? -1 : 1;
     if (xq.sort === SortOrder.Latest) {
       const time = byId.get(b.tweetId)!.createdAt - byId.get(a.tweetId)!.createdAt;
       if (time !== 0) return time;
+      return b.score - a.score || a.tweetId.localeCompare(b.tweetId);
     }
+    const coverA = mustCoverage(xq, byId.get(a.tweetId)!.tf);
+    const coverB = mustCoverage(xq, byId.get(b.tweetId)!.tf);
+    if (coverA !== coverB) return coverB - coverA;
     return b.score - a.score || a.tweetId.localeCompare(b.tweetId);
   }
   const best = new Map<string, Scored>();
@@ -172,11 +181,29 @@ function fitBonus(xq: XQuery, c: Candidate): number {
   }
   if (xq.phrases.length > 0 && coversAllPhrases(xq.phrases, c.tf)) {
     fit += 0.3; // serving verifies adjacency before reranking
+  } else if (hasQueryBigram(xq, c.tf)) {
+    fit += 0.3;
   }
   if (xq.should.length > 0 && hasAnyTerm(xq.should, c.tf)) {
     fit += 0.2;
   }
   return fit;
+}
+
+function mustCoverage(xq: XQuery, tf: Map<Term, number>): number {
+  if (xq.must.length === 0) return 1;
+  let hit = 0;
+  for (const term of xq.must) {
+    if (tf.has(term)) hit += 1;
+  }
+  return hit / xq.must.length;
+}
+
+function hasQueryBigram(xq: XQuery, tf: Map<Term, number>): boolean {
+  for (const [term] of tf) {
+    if (isBigramTerm(term)) return true;
+  }
+  return xq.must.length >= 2 && coversAllPhrases([xq.must], tf);
 }
 
 /** Every phrase fully covered by the candidate's matched terms. Loops, not

@@ -36,6 +36,31 @@ pub const SCORE_MAX: f64 = 42.0;
 /// Aspect token for `$` + digit / price lexicon hits (RISKS T4).
 pub const ASPECT_PRICE: &str = "~price";
 
+/// STX-prefixed adjacent pairs. Must match `convex/engine/bigrams.ts`.
+pub const BIGRAM_MARKER: char = '\u{0002}';
+
+/// Consecutive content-token pairs from an already-tokenized stream.
+#[must_use]
+pub fn adjacent_bigrams(tokens: &[Term]) -> Vec<Term> {
+    let mut out = Vec::new();
+    for pair in tokens.windows(2) {
+        let Some(left) = pair.first() else { continue };
+        let Some(right) = pair.get(1) else { continue };
+        if left.as_str().starts_with(BIGRAM_MARKER) || right.as_str().starts_with(BIGRAM_MARKER) {
+            continue;
+        }
+        if left.as_str().starts_with('~') || right.as_str().starts_with('~') {
+            continue;
+        }
+        out.push(Term(format!(
+            "{BIGRAM_MARKER}{}{BIGRAM_MARKER}{}",
+            left.as_str(),
+            right.as_str()
+        )));
+    }
+    out
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct EngagementWeights {
     pub like: f64,
@@ -131,6 +156,10 @@ impl BatchBuilder {
         let mut terms: BTreeMap<Term, u32> = BTreeMap::new();
         for (term, tf) in &tok.counts {
             terms.insert(term.clone(), *tf);
+        }
+        for bg in adjacent_bigrams(&tok.tokens) {
+            let count = terms.entry(bg).or_insert(0);
+            *count = count.saturating_add(1);
         }
         for aspect in aspects {
             terms.entry(aspect).or_insert(1);
@@ -382,5 +411,71 @@ mod tests {
             map_aspects(&toks("99 sale"), "only $99 sale", &lex),
             vec![Term(ASPECT_PRICE.to_string())]
         );
+    }
+
+    #[test]
+    fn quote_and_retweet_boosts_merge_at_half_weight() {
+        let w = EngagementWeights {
+            like: 1.0,
+            reply: 2.0,
+            retweet: 3.0,
+            quote: 4.0,
+        };
+        let source = Metrics {
+            likes: 10,
+            retweets: 0,
+            quotes: 0,
+            replies: 0,
+        };
+        let hot = Metrics {
+            likes: 0,
+            retweets: 0,
+            quotes: 0,
+            replies: 5,
+        };
+        let metrics = HashMap::from([
+            (TweetId("quote".to_string()), source),
+            (TweetId("retweet".to_string()), hot),
+            (TweetId("orphan".to_string()), source),
+        ]);
+        let edges = vec![
+            (
+                TweetId("quote".to_string()),
+                Some(TweetId("target".to_string())),
+                None,
+            ),
+            (
+                TweetId("retweet".to_string()),
+                None,
+                Some(TweetId("target".to_string())),
+            ),
+            // Missing metrics for the source: contributes nothing.
+            (
+                TweetId("gone".to_string()),
+                Some(TweetId("target".to_string())),
+                None,
+            ),
+            // A source with no edges contributes no target row.
+            (TweetId("orphan".to_string()), None, None),
+        ];
+        let boosts = propagate_boosts(&edges, &metrics, &w);
+        let expected = 0.5f64.mul_add(
+            engagement_ln1p(&hot, &w),
+            0.5 * engagement_ln1p(&source, &w),
+        );
+        let actual = boosts[&TweetId("target".to_string())];
+        assert!((actual - expected).abs() < 1e-9, "{actual} != {expected}");
+        assert_eq!(boosts.len(), 1);
+        assert!(!boosts.contains_key(&TweetId("orphan".to_string())));
+    }
+
+    #[test]
+    fn adjacent_bigrams_skip_aspects_and_encode_stx() {
+        let tokens = toks("apple tree ~price");
+        assert_eq!(
+            adjacent_bigrams(&tokens),
+            vec![Term("\u{0002}apple\u{0002}tree".to_string())]
+        );
+        assert_eq!(adjacent_bigrams(&toks("only ~price")), Vec::<Term>::new());
     }
 }

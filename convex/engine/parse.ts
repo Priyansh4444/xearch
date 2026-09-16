@@ -34,6 +34,23 @@ export interface TierBDeps {
   now(): number;
 }
 
+/** A standalone `or` outside quotes — the explicit-union marker. */
+function hasTopLevelOr(raw: string): boolean {
+  let inQuote = false;
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i]!;
+    if (ch === '"') {
+      inQuote = !inQuote;
+      continue;
+    }
+    if (inQuote || i === 0 || !/\s/.test(raw[i - 1]!)) continue;
+    if (raw.slice(i, i + 2).toLowerCase() !== "or") continue;
+    const after = raw[i + 2];
+    if (after !== undefined && /\s/.test(after)) return true;
+  }
+  return false;
+}
+
 /** Tier A: deterministic operator grammar. Total function — never throws. */
 export function tierA(raw: string): { xq: XQuery; trace: ParseTrace } {
   const xq = emptyXQuery();
@@ -44,6 +61,10 @@ export function tierA(raw: string): { xq: XQuery; trace: ParseTrace } {
     entityAmbiguous: false,
   };
   let rest = raw;
+
+  // Explicit OR is a union, not a stopword. Quoted branches stay phrases
+  // (adjacency-verified alternatives); bare branches become should terms.
+  const isOr = hasTopLevelOr(rest);
 
   // "quoted phrases"
   rest = rest.replace(/"([^"]+)"/g, (_m, phrase: string) => {
@@ -106,7 +127,23 @@ export function tierA(raw: string): { xq: XQuery; trace: ParseTrace } {
     return pre;
   });
 
-  xq.must = tokenize(rest).tokens;
+  // Explicit OR: bare branches are alternatives (should), quoted branches are
+  // alternatives (phrases), and `union` tells the planner and constraint check
+  // to gate on none of them. "apple OR tree" must not AND, and a tree-only
+  // post must not need to cover the phrase in `"apple pie" OR tree`.
+  if (isOr) {
+    const groups = rest.split(/\s+or\s+/i);
+    for (const group of groups) {
+      for (const tok of tokenize(group).tokens) {
+        if (!xq.should.includes(tok)) xq.should.push(tok);
+      }
+    }
+    trace.consumed["OR"] = "should";
+    xq.must = [];
+    xq.union = true;
+  } else {
+    xq.must = tokenize(rest).tokens;
+  }
   const px = xq as XQueryWithPending;
   px.pendingFromHandle = pendingFromHandle;
   px.pendingSince = pendingTime.since;
@@ -224,8 +261,14 @@ export async function tierB(
   ]);
   const tokensWithoutGlue = xq.must.filter((token) => !GLUE.has(token));
   // Aspect detection intentionally sees glue words such as "vs" before
-  // retrieval removes them.
-  const tokensForAspects = [...xq.must];
+  // retrieval removes them, and sees every explicit-OR branch: an aspect
+  // signal in a should term or quoted branch is the same signal as in must
+  // (e.g. "cheap OR phone" still carries ~price).
+  const tokensForAspects = [
+    ...xq.must,
+    ...xq.should,
+    ...(xq.union ? xq.phrases.flatMap((phrase) => tokenize(phrase.join(" ")).tokens) : []),
+  ];
 
   // 2e. Media lexicon: a leading media noun is a filter, not a term.
   const MEDIA_NOUNS: Record<string, MediaFilter> = {
@@ -315,10 +358,11 @@ export async function tierB(
       }
     }
     // G5 guard, query side: never let an aspect empty the whole must set — a
-    // bare attribute word ("cheap") stays a literal term.
+    // bare attribute word ("cheap") stays a literal term. A union query has no
+    // must to empty; its weak words are branches, so they stay alternatives.
     if (stay.length > 0) {
       xq.must = stay;
-    } else {
+    } else if (!xq.union) {
       xq.aspects = [];
       xq.should = xq.should.filter((t) => !weakWords.has(t));
     }

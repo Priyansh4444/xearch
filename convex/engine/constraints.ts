@@ -1,4 +1,6 @@
 import { tokenize } from "./tokenize";
+import { adjacentBigrams } from "./bigrams";
+import { mapAspects } from "./parse";
 import type { Term } from "../contracts/ids";
 import type { XQuery } from "./xquery";
 
@@ -22,8 +24,36 @@ interface FilterableTweet {
   text: string;
 }
 
+/** Token inventory for one tweet: unigrams, aspects, and adjacent bigrams. */
+export interface TweetAnalysis {
+  withStops: Term[];
+  indexed: Term[];
+  counts: Map<Term, number>;
+  present: Set<Term>;
+}
+
+export function analyzeTweet(text: string): TweetAnalysis {
+  const withStops = tokenize(text, true);
+  const indexed = tokenize(text);
+  const aspects = mapAspects(indexed.tokens, text);
+  const bigrams = adjacentBigrams(indexed.tokens);
+  const present = new Set<Term>(indexed.tokens);
+  for (const aspect of aspects) present.add(aspect);
+  for (const bigram of bigrams) present.add(bigram);
+  return {
+    withStops: withStops.tokens,
+    indexed: indexed.tokens,
+    counts: indexed.counts,
+    present,
+  };
+}
+
 /** Every retrieval path uses the same hard predicates before counting survivors. */
-export function matchesConstraints(tweet: FilterableTweet, xq: XQuery): boolean {
+export function matchesConstraints(
+  tweet: FilterableTweet,
+  xq: XQuery,
+  analysis: TweetAnalysis = analyzeTweet(tweet.text),
+): boolean {
   const f = xq.filters;
   if (f.authorId !== null && tweet.authorId !== f.authorId) return false;
   if (f.since !== null && tweet.createdAt < f.since) return false;
@@ -31,14 +61,43 @@ export function matchesConstraints(tweet: FilterableTweet, xq: XQuery): boolean 
   if (f.media !== null && tweet.mediaType !== f.media) return false;
   if (f.minLikes !== null && tweet.likeCount < f.minLikes) return false;
   if (f.lang !== null && tweet.lang !== f.lang) return false;
-  const tokens = tokenize(tweet.text, true).tokens;
+  const tokens = analysis.withStops;
   // Loops, not `.some`/nested `.every` closures: this runs per candidate
   // (≤200/query), so the callbacks were the hottest closures in the path.
   for (const term of xq.exclude) {
     if (tokens.includes(term)) return false;
   }
+  if (xq.union) {
+    // Explicit OR: one branch must match. Bare branches (should) are terms;
+    // quoted branches (phrases) are adjacency groups — `"apple pie" OR tree`
+    // must not accept a post that only says "apple".
+    let matched = false;
+    for (const term of xq.should) {
+      if (tokens.includes(term)) {
+        matched = true;
+        break;
+      }
+    }
+    if (!matched) {
+      for (const phrase of xq.phrases) {
+        if (coversPhrase(tokens, phrase)) {
+          matched = true;
+          break;
+        }
+      }
+    }
+    return matched;
+  }
   for (const phrase of xq.phrases) {
     if (!coversPhrase(tokens, phrase)) return false;
+  }
+  return true;
+}
+
+/** Remaining AND gates, checked against the tweet rather than a truncated posting list. */
+export function matchesGates(analysis: TweetAnalysis, gateTerms: Term[]): boolean {
+  for (const term of gateTerms) {
+    if (!analysis.present.has(term)) return false;
   }
   return true;
 }

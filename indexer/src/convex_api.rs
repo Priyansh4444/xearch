@@ -49,17 +49,27 @@ impl ConvexClient {
     /// Returns an error when serialization fails, Convex rejects the mutation,
     /// or all retry attempts fail.
     pub fn ingest_batch(&self, batch: &IngestBatch) -> Result<IngestAck> {
-        let args = serde_json::to_value(batch)?;
-        let value = self.mutation("ingest:ingestBatch", &args)?;
+        self.ingest_batch_json(&serde_json::to_value(batch)?)
+    }
+
+    /// Upload a previously serialized `IngestBatch` (offline prepare files).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when Convex rejects the mutation or the ack is malformed.
+    pub fn ingest_batch_json(&self, args: &serde_json::Value) -> Result<IngestAck> {
+        let value = self.mutation("ingest:ingestBatch", args)?;
         serde_json::from_value(value).context("ingestBatch ack shape")
     }
 
     /// # Errors
     ///
-    /// Returns an error when Convex rejects the mutation or all retries fail.
-    pub fn apply_metrics(&self, updates_json: &serde_json::Value) -> Result<()> {
-        self.mutation("ingest:applyMetrics", updates_json)?;
-        Ok(())
+    /// Returns an error when Convex rejects the mutation, all retries fail, or
+    /// the ack is malformed. A short `processed` is not an error: it means the
+    /// posting budget stopped the mutation and the caller re-sends the rest.
+    pub fn apply_metrics(&self, updates_json: &serde_json::Value) -> Result<ApplyAck> {
+        let value = self.mutation("ingest:applyMetrics", updates_json)?;
+        serde_json::from_value(value).context("applyMetrics ack shape")
     }
 
     /// # Errors
@@ -166,4 +176,15 @@ pub struct IngestAck {
     pub inserted: f64,
     pub updated: f64,
     pub skipped: f64,
+}
+
+/// Ack for `ingest:applyMetrics`.
+///
+/// `processed` is how many updates from the front of the sent slice landed; a
+/// short value means the posting budget stopped the mutation and the caller
+/// must re-send from that index.
+#[derive(Debug, Clone, Copy, serde::Deserialize)]
+pub struct ApplyAck {
+    pub patched: f64,
+    pub processed: f64,
 }

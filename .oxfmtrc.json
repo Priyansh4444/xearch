@@ -6,6 +6,7 @@
     "convex/_generated/**",
     "**/fixtures/**",
     "shared/lexicons/**",
-    "**/*.md"
+    "**/*.md",
+    "batches*/**"
   ]
 }

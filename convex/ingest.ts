@@ -11,6 +11,22 @@ import { TOKENIZER_VERSION } from "./engine/tokenize";
 import aspectsFile from "../shared/lexicons/aspects.json";
 import { mediaTypeValidator } from "./contracts/media";
 
+/**
+ * Postings per tweet are unbounded by the tokenizer, so this cap keeps every
+ * posting rewrite (refresh) a provably bounded read/write. The largest tweet in
+ * the archived corpus has 3,728 postings; a batch over this limit is rejected
+ * loudly rather than silently dropping index coverage.
+ */
+const MAX_POSTINGS_PER_TWEET = 4096;
+
+/**
+ * Postings one `applyMetrics` mutation may read/rewrite before it stops and the
+ * caller re-sends from `processed`. A 2,048 budget plus one over-budget tweet
+ * (≤ 4,096 postings) stays inside Convex's per-transaction read/write limits no
+ * matter how many updates the caller packs into `updates`.
+ */
+const POSTING_BUDGET_PER_MUTATION = 2048;
+
 const postingIn = v.object({
   term: v.string(),
   tf: v.number(),
@@ -108,8 +124,15 @@ export const ingestBatch = internalMutation({
     let skipped = 0;
     const insertedDfs = new Map<string, number>();
     for (const t of args.tweets) {
-      // scoreBucket is denormalized onto postings only; the tweets table keeps the raw staticScore.
-      const { postings, metrics, scoreBucket: _scoreBucket, ...row } = t;
+      if (t.postings.length > MAX_POSTINGS_PER_TWEET) {
+        throw new Error(
+          `Tweet ${t.tweetId} has ${t.postings.length} postings; the cap is ${MAX_POSTINGS_PER_TWEET}. ` +
+            "Raise MAX_POSTINGS_PER_TWEET deliberately — refresh rewrites postings in bounded batches.",
+        );
+      }
+      // scoreBucket rides on postings and mirrors on the tweet row so refresh can
+      // skip rewriting buckets that did not change (and detect legacy rows).
+      const { postings, metrics, scoreBucket, ...row } = t;
       const existing = await ctx.db
         .query("tweets")
         .withIndex("by_tweetId", (q) => q.eq("tweetId", t.tweetId))
@@ -140,6 +163,7 @@ export const ingestBatch = internalMutation({
           replyCount: metrics.replies,
           quoteCount: metrics.quotes,
           propagatedBoost: 0,
+          scoreBucket,
         });
         for (const p of postings) {
           await ctx.db.insert("postings", {
@@ -149,7 +173,7 @@ export const ingestBatch = internalMutation({
             authorId: t.authorId,
             createdAt: t.createdAt,
             mediaType: t.mediaType,
-            scoreBucket: t.scoreBucket,
+            scoreBucket,
           });
         }
         for (const term of new Set(postings.map((p) => p.term))) {
@@ -224,11 +248,71 @@ export const applyMetrics = internalMutation({
         newScoreBucket: v.optional(v.number()),
       }),
     ),
+    /** Override for tests; production uses POSTING_BUDGET_PER_MUTATION. */
+    postingBudget: v.optional(v.number()),
   },
-  handler: async (_ctx, _args) => {
-    // TODO(implement): patch tweets; when newScoreBucket present, patch the tweet's
-    // postings via by_tweet (the ONLY code path that ever rewrites postings, §6.1).
-    throw new Error("not implemented: applyMetrics");
+  handler: async (ctx, args) => {
+    let patched = 0;
+    let processed = 0; // updates fully applied from the front of args.updates
+    let budget = Math.max(0, args.postingBudget ?? POSTING_BUDGET_PER_MUTATION);
+    for (const update of args.updates) {
+      const existing = await ctx.db
+        .query("tweets")
+        .withIndex("by_tweetId", (q) => q.eq("tweetId", update.tweetId))
+        .unique();
+      if (existing === null) {
+        processed += 1;
+        continue;
+      }
+      const newBucket = update.newScoreBucket;
+      const bucketMoved =
+        newBucket !== undefined &&
+        update.metricsAt >= existing.metricsAt &&
+        existing.scoreBucket !== newBucket;
+      // Stop BEFORE touching this update; the caller re-sends from `processed`.
+      if (bucketMoved && budget <= 0) break;
+      const patch: {
+        likeCount?: number;
+        retweetCount?: number;
+        replyCount?: number;
+        quoteCount?: number;
+        metricsAt?: number;
+        propagatedBoost?: number;
+      } = {};
+      if (update.metricsAt >= existing.metricsAt) {
+        patch.likeCount = update.metrics.likes;
+        patch.retweetCount = update.metrics.retweets;
+        patch.replyCount = update.metrics.replies;
+        patch.quoteCount = update.metrics.quotes;
+        patch.metricsAt = update.metricsAt;
+      }
+      // The boost rides the same snapshot as the metrics: a stale recrawl must
+      // not overwrite a boost derived from newer input.
+      if (update.propagatedBoost !== undefined && update.metricsAt >= existing.metricsAt) {
+        patch.propagatedBoost = update.propagatedBoost;
+      }
+      if (Object.keys(patch).length > 0) {
+        await ctx.db.patch(existing._id, patch);
+        patched += 1;
+      }
+      if (bucketMoved) {
+        // One bounded read (the ingest cap), and only rows whose bucket moved
+        // are written — a refresh over an unchanged bucket costs one row read.
+        const postings = await ctx.db
+          .query("postings")
+          .withIndex("by_tweet", (q) => q.eq("tweetId", existing._id))
+          .take(MAX_POSTINGS_PER_TWEET);
+        budget -= postings.length;
+        for (const posting of postings) {
+          if (posting.scoreBucket !== newBucket) {
+            await ctx.db.patch(posting._id, { scoreBucket: newBucket });
+          }
+        }
+        await ctx.db.patch(existing._id, { scoreBucket: newBucket });
+      }
+      processed += 1;
+    }
+    return { patched, processed };
   },
 });
 

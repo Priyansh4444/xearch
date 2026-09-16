@@ -34,6 +34,14 @@ describe("query key stability", () => {
     }
   });
 
+  it("union is serialized only when set, and changes the key when it is", () => {
+    const base = emptyXQuery();
+    const union = { ...base, union: true, should: [t("apple"), t("tree")] };
+    expect(canonicalJson(base)).not.toContain("union");
+    expect(canonicalJson(union)).toContain('"union":true');
+    expect(queryKey(union)).not.toBe(queryKey({ ...base, should: [t("apple"), t("tree")] }));
+  });
+
   it("phrase order leaves the key unchanged", () => {
     const phrases = [
       [t("apple"), t("tree")],

@@ -8,7 +8,7 @@ that's a design conversation, not a patch.
 
 | # | What goes wrong | When it bites | Compromise we take |
 |---|---|---|---|
-| R1 | **Capped intersection misses a good doc** — impact-ordered caps drop a tweet that's mediocre for one term but great overall | Common-term + common-term queries (`ai agents`) on a large corpus | Accept approximate top-k (unsafe-up-to-cap, like practical WAND deployments). Mitigate: rarest-first, N=1000, ladder L2 union catches near-misses. We do NOT chase exactness — that's full list scans |
+| R1 | **Capped intersection misses a good doc** — impact-ordered caps drop a tweet that's mediocre for one term but great overall | Common-term + common-term queries (`ai agents`) on a large corpus | Do not intersect two truncated posting lists. Seed the rarest term (up to 1500 rows) and verify remaining gates against tweet text. Adjacent token pairs are extra postings so a two-word phrase can seed a rare list. L2 union still catches near-misses. We do NOT scan full common-term lists |
 | R2 | **Hot terms during live demo** — trending term's postings churn while thousands read | Demo day, ingest running | Convex OCC retries mutations; readers never block (MVCC). Accept transient extra mutation latency; df counters drift slightly (advisory only) |
 | R3 | **Index bloat: 5 indexes on postings ≈ 5× storage** | >5M tweets on a paid plan | Pay it until it hurts, then drop `by_term_media_score` → media filtering moves to rerank. Ordered drop list in DESIGN §9 |
 | R4 | **Deletes/edits leave dangling postings** | Ingesting takedowns/edits | `by_tweet` index + O(terms) cleanup mutation; accept eventual consistency (a deleted tweet can flash in results between crawl and cleanup) |

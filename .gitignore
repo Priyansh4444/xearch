@@ -4,6 +4,9 @@ convex/_generated/ai/
 apps/web/dist/
 indexer/target/
 checkpoint.json
+checkpoint-prepare.json
+prepare-full.log
+batches*/
 quarantine/
 data/
 done/

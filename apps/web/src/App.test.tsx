@@ -61,6 +61,11 @@ beforeEach(() => {
     switch (getFunctionName(reference as FunctionReference<"query">)) {
       case "search:search":
         return full;
+      case "search:suggest":
+        return [
+          { term: "theo", df: 4, kind: "author" },
+          { term: "thread", df: 80, kind: "term" },
+        ];
       case "feedback:canVote":
         return canVote;
       default:
@@ -124,6 +129,14 @@ it.each([
   },
 );
 
+test("all-stopword queries offer the literal lane instead of a dead end", async () => {
+  full = { ...response(), results: [] };
+  await render();
+  expect(container.textContent).toContain("dropped by the posting index");
+  await click("search the literal lane");
+  expect(container.querySelector(".lane-toggle")?.textContent).toContain("lane: baseline");
+});
+
 test("unknown author errors are recoverable in the search screen", async () => {
   full = response("Unknown author: missing.");
   await render();
@@ -146,6 +159,52 @@ test("anonymous users have no voting controls; failed writes never show success"
   mocks.vote.mockResolvedValue(undefined);
   await click("+1");
   expect(container.querySelector(".vote.on")?.textContent).toBe("+1");
+});
+
+test("related posts render under a Related heading after exact hits", async () => {
+  full = {
+    ...response(),
+    ladder: LadderLevel.L2,
+    results: [
+      {
+        ...(response().results[0] as object),
+        _id: "exact-1",
+        tweetId: "1",
+        text: "apple tree",
+        matchedVia: LadderLevel.L0,
+      },
+      {
+        ...(response().results[0] as object),
+        _id: "related-1",
+        tweetId: "2",
+        text: "just apple",
+        matchedVia: LadderLevel.L2,
+      },
+    ],
+  };
+  await render();
+  expect(container.querySelector('[aria-label="Exact matches"]')?.textContent).toContain(
+    "apple tree",
+  );
+  expect(container.querySelector("h2.related-label")?.textContent).toBe("Related");
+  expect(container.querySelector('[aria-label="Related posts"]')?.textContent).toContain(
+    "just apple",
+  );
+});
+
+test("from: typeahead offers account completions while the box is focused", async () => {
+  window.history.replaceState(null, "", "/?q=from:th");
+  full = response();
+  await render();
+  const box = container.querySelector("input");
+  expect(box?.value).toBe("from:th");
+  await act(async () => {
+    box?.focus();
+  });
+  const option = [...container.querySelectorAll('[role="option"]')].find((el) =>
+    el.textContent?.includes("@theo"),
+  );
+  expect(option).toBeDefined();
 });
 
 it.each(["+1", "-1"] as const)(
