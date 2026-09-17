@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Push the status of in-progress runs (data/runs/<run-id>/manifest.json and
 # report.json if present) to the R2 bucket under _live/<run-id>/ so the
-# dashboard (apps/dashboard) can show live progress. Only those two small files
+# retired dashboard (apps/dashboard removed 2026-09-17); this still records live status for ops. Only those two small files
 # are read, so this is safe to run every minute while acquisition is running.
 # Raw pages are never touched here; archived runs are mirrored by sync-runs.sh.
 #
