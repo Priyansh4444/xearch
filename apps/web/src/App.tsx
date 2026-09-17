@@ -11,6 +11,7 @@ import { SortOrder } from "../../../convex/engine/xquery";
 import pilotConfig from "../../../config/collection/pilot.json";
 import expansionConfig from "../../../config/collection/expansion.json";
 import influencersConfig from "../../../config/collection/influencers.json";
+import influencersBatch2Config from "../../../config/collection/influencers-batch2.json";
 
 type SearchReturn = FunctionReturnType<typeof api.search.search>;
 type BaselineResults = FunctionReturnType<typeof api.search.searchBaseline>;
@@ -41,8 +42,13 @@ const PAGE_SIZE = 20;
 type PageMeta = Pick<SearchReturn, "queryKey" | "ladder" | "appliedQuery" | "trace">;
 
 /** Configured seed timelines; derived from the collection configs so it cannot go stale. */
+// Discovered accounts (the theo-interactions guest cohort) stay out: the count
+// describes seeded timelines, not the discovered tail.
 const SEED_ACCOUNTS =
-  pilotConfig.accounts.length + expansionConfig.accounts.length + influencersConfig.accounts.length;
+  pilotConfig.accounts.length +
+  expansionConfig.accounts.length +
+  influencersConfig.accounts.length +
+  influencersBatch2Config.accounts.length;
 
 /** Known-dense corpus topics — each returns real posts from the archived run. */
 const DEMO_QUERIES = ["bun", "pricing", "rust", "react server components", "agents"];
