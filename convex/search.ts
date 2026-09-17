@@ -145,11 +145,9 @@ export const search = query({
     // Pinned rows are hydrated by doc id (≤ RERANK_CANDIDATES point gets), so a
     // row the user already saw survives leaving the live candidate window.
     const pinnedDocs = new Map<string, Doc<"tweets">>();
-    for (const ref of pinned) {
-      const doc = await ctx.db.get(ref.id);
-      if (doc === null) continue;
+    const applyPin = (ref: (typeof pinned)[number], doc: Doc<"tweets">): void => {
       const analysis = analyzeTweet(doc.text);
-      if (!matchesConstraints(doc, xq, analysis)) continue;
+      if (!matchesConstraints(doc, xq, analysis)) return;
       // Gates bind L0 rows only: rows surfaced by ladder widening (L1+) may
       // satisfy just the relaxed gates, and dropping them would delete a row
       // the user already saw.
@@ -158,9 +156,20 @@ export const search = query({
         gateTermsForPins.length > 0 &&
         !matchesGates(analysis, gateTermsForPins)
       ) {
-        continue;
+        return;
       }
       pinnedDocs.set(ref.id, doc);
+    };
+    // ≤ RERANK_CANDIDATES point gets, fetched concurrently in bounded chunks
+    // (same reads, one round trip per chunk instead of per row).
+    for (let pi = 0; pi < pinned.length; pi += GET_CHUNK) {
+      const chunk = pinned.slice(pi, pi + GET_CHUNK);
+      const docs = await Promise.all(chunk.map((ref) => ctx.db.get(ref.id)));
+      for (const [j, ref] of chunk.entries()) {
+        const doc = docs[j];
+        if (doc === null || doc === undefined) continue;
+        applyPin(ref, doc);
+      }
     }
     const pinnedLive = pinned.filter((ref) => pinnedDocs.has(ref.id));
     const pinnedChainKeys = new Set<string>();
@@ -183,12 +192,16 @@ export const search = query({
     if (userTerms.length > MAX_QUERY_TERMS)
       return invalidSearch("Use at most 12 search terms and aspects.");
     const dfs = new Map<Term, number>();
-    for (const term of uniqueTerms(userTerms, queryBigrams(xq))) {
-      const row = await ctx.db
-        .query("terms")
-        .withIndex("by_term", (q) => q.eq("term", term))
-        .unique();
-      if (row !== null) dfs.set(term, row.df);
+    const dfTerms = uniqueTerms(userTerms, queryBigrams(xq));
+    // Same point reads, fetched concurrently instead of sequentially.
+    const dfRows = await Promise.all(
+      dfTerms.map((term) =>
+        ctx.db.query("terms").withIndex("by_term", (q) => q.eq("term", term)).unique(),
+      ),
+    );
+    for (const [i, term] of dfTerms.entries()) {
+      const row = dfRows[i];
+      if (row !== null && row !== undefined) dfs.set(term, row.df);
     }
 
     // 4. Ladder: execute -> escalate while survivors < MIN_RESULTS (bounded loop).
@@ -203,7 +216,13 @@ export const search = query({
       gateTerms: Term[],
     ): Promise<Map<string, Match>> {
       const accepted = new Map<string, Match>();
+      // Only the first RERANK_CANDIDATES accepted rows are ever ranked or
+      // returned: the hydration step slices matches to RERANK_CANDIDATES, and
+      // escalation reads matches.size only against MIN_RESULTS (10) — so stop
+      // hydrating once 200 are accepted. First-200 accepted set and order are
+      // identical; tail hydration still happens when matches.size < 10.
       for (const [id] of found) {
+        if (accepted.size >= RERANK_CANDIDATES) break;
         const tweet = tweets.get(id) ?? (await ctx.db.get(id as Id<"tweets">));
         if (tweet === null) continue;
         tweets.set(id, tweet);
@@ -269,19 +288,27 @@ export const search = query({
       level = LadderLevel.L0;
     }
 
-    // 5. Hydrate candidates, with one exact feedback-total lookup per candidate.
+    // 5. Hydrate candidates. Feedback totals come from ONE bounded prefix read
+    //    over the same index the per-candidate lookups used (by_query_tweet,
+    //    equality on the queryKey prefix) — one query, typically 0 rows for a
+    //    fresh query, instead of RERANK_CANDIDATES awaited point reads. The
+    //    totals map is identical: at most one totals row per (queryKey, tweet).
     const ids = [...matches.keys()].slice(0, RERANK_CANDIDATES);
+    const feedbackTotals = new Map<string, number>();
+    for (const row of await ctx.db
+      .query("searchFeedbackTotals")
+      .withIndex("by_query_tweet", (q) => q.eq("queryKey", key))
+      .take(RERANK_CANDIDATES)) {
+      feedbackTotals.set(row.tweetId, row.total);
+    }
     const candidates: Candidate[] = [];
+    // Unique authors among the ranked window, fetched concurrently.
+    const authorIds = [...new Set(ids.map((tweetId) => tweets.get(tweetId)!.authorId))];
+    const authorRows = await Promise.all(authorIds.map((aid) => authorByAuthorId(ctx, aid)));
+    for (const [i, aid] of authorIds.entries()) authors.set(aid, authorRows[i] ?? null);
     for (const tweetId of ids) {
       // Postings denormalize the Convex doc id — hydration is a plain get.
       const t = tweets.get(tweetId)!;
-      if (!authors.has(t.authorId)) {
-        authors.set(t.authorId, await authorByAuthorId(ctx, t.authorId));
-      }
-      const feedback = await ctx.db
-        .query("searchFeedbackTotals")
-        .withIndex("by_query_tweet", (q) => q.eq("queryKey", key).eq("tweetId", t._id))
-        .unique();
       candidates.push({
         tweetId,
         tf: matches.get(tweetId)!.tf,
@@ -295,7 +322,7 @@ export const search = query({
         tokenCount: t.tokenCount,
         authorAuthority: authors.get(t.authorId)?.authority ?? 0,
         mediaType: t.mediaType,
-        feedbackVotes: feedback?.total ?? 0,
+        feedbackVotes: feedbackTotals.get(t._id) ?? 0,
         // Doc rows carry source ids as plain strings; assert the space once here.
         retweetOfTweetId: t.retweetOfTweetId as TweetId | undefined,
         quotedTweetId: t.quotedTweetId as TweetId | undefined,
@@ -332,12 +359,12 @@ export const search = query({
     );
     // Pinned rows can sit outside the hydrated window; make sure their authors
     // resolve for display.
-    for (const ref of pinnedLive) {
-      const doc = pinnedDocs.get(ref.id)!;
-      if (!authors.has(doc.authorId)) {
-        authors.set(doc.authorId, await authorByAuthorId(ctx, doc.authorId));
-      }
-    }
+    const missingPinAuthors = [...new Set(pinnedLive.map((ref) => pinnedDocs.get(ref.id)!.authorId))]
+      .filter((aid) => !authors.has(aid));
+    const pinAuthorRows = await Promise.all(
+      missingPinAuthors.map((aid) => authorByAuthorId(ctx, aid)),
+    );
+    for (const [i, aid] of missingPinAuthors.entries()) authors.set(aid, pinAuthorRows[i] ?? null);
     const results = ordered.map((s) => {
       const t = pinnedDocs.get(s.tweetId) ?? tweets.get(s.tweetId)!;
       const a = authors.get(t.authorId) ?? null;
@@ -377,6 +404,9 @@ export const search = query({
 
 /** Client clocks may drift slightly; anything further ahead is rejected. */
 const MAX_SNAPSHOT_SKEW_MS = 60_000;
+
+/** Concurrent ctx.db point reads per Promise.all batch. */
+const GET_CHUNK = 64;
 
 /**
  * `asOf` when the caller supplies a sane snapshot, else the current time. A
@@ -465,9 +495,12 @@ async function executePlan(
       if (!acc.has(p.tweetId)) acc.set(p.tweetId, { tf: new Map([[first.term, p.tf]]) });
     }
   }
+  // Union reads are independent (distinct terms by construction); fetch them
+  // concurrently. Same reads, same per-union fusion order.
+  const unionRows = await Promise.all(plan.unions.map((union) => read(union)));
   const lists: string[][] = [];
-  for (const union of plan.unions) {
-    const rows = await read(union);
+  for (const [ui, rows] of unionRows.entries()) {
+    const union = plan.unions[ui]!;
     lists.push(rows.map((p) => p.tweetId));
     for (const p of rows) {
       const entry = acc.get(p.tweetId);
@@ -513,13 +546,15 @@ async function minePrfTerms(
     .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
     .slice(0, 5)
     .map(([term]) => term);
-  for (const term of top) {
-    if (dfs.has(term)) continue;
-    const row = await ctx.db
-      .query("terms")
-      .withIndex("by_term", (q) => q.eq("term", term))
-      .unique();
-    if (row !== null) dfs.set(term, row.df);
+  const fresh = top.filter((term) => !dfs.has(term));
+  const prfRows = await Promise.all(
+    fresh.map((term) =>
+      ctx.db.query("terms").withIndex("by_term", (q) => q.eq("term", term)).unique(),
+    ),
+  );
+  for (const [i, term] of fresh.entries()) {
+    const row = prfRows[i];
+    if (row !== null && row !== undefined) dfs.set(term, row.df);
   }
   return top;
 }
