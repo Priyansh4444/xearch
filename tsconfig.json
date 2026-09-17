@@ -22,7 +22,8 @@
     "config/**/*.json",
     "convex/**/*.ts",
     "tests/**/*.ts",
-    "shared/**/*.json"
+    "shared/**/*.json",
+    "bench/**/*.ts"
   ],
   "exclude": ["apps/web"]
 }
