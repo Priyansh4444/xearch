@@ -61,6 +61,9 @@ enum Mode {
         #[arg(long)]
         batch_dir: PathBuf,
     },
+    /// Fold staged dfPending rows into the terms table (run after the last
+    /// upload chunk of a run; each upload chunk already folds at its end).
+    Fold,
     /// Ingest tweet JSONL (ingress records or loose tweets) from files or stdin.
     IngestTweets {
         /// JSONL files; omit to read stdin.
@@ -80,6 +83,9 @@ fn main() -> Result<()> {
         Mode::Refresh => refresh(&cli),
         Mode::Prepare { out_dir } => backfill(&cli, Some(out_dir)),
         Mode::Upload { batch_dir } => upload(batch_dir),
+        Mode::Fold => {
+            ConvexClient::from_env()?.fold_df_pending(true)
+        }
         Mode::IngestTweets { files, out_dir } => ingest_tweets(&cli, files, out_dir.as_ref()),
     }
 }
@@ -606,7 +612,11 @@ fn upload(batch_dir: &Path) -> Result<()> {
             ack.skipped
         );
     }
-    Ok(())
+    // Fold the staged df of this chunk (dfPending rewrite): batches stage one
+    // pending row each; folding here keeps the table small and amortizes the
+    // per-term read/write over every batch in the chunk. Best-effort — unapplied
+    // pending rows persist server-side until the next fold (df is advisory).
+    client.fold_df_pending(false)
 }
 
 fn gate_parsed(parsed: ParsedLine) -> std::result::Result<ParsedLine, String> {

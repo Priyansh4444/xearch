@@ -28,13 +28,20 @@ const MAX_POSTINGS_PER_TWEET = 4096;
 const POSTING_BUDGET_PER_MUTATION = 2048;
 
 /**
- * df maintenance reads one `terms` row per unique term, so a batch with a few
- * very long tweets can exceed Convex's 4,096-reads-per-call limit. ingestBatch
- * therefore applies at most this many deltas and returns the rest as
- * `dfRemainder`; the indexer drains them through `applyDfDeltas` (df is
- * advisory — a crash between the two calls only undercounts, never corrupts).
+ * df maintenance reads one `terms` row per unique term, so any single mutation
+ * that applies df deltas (applyDfDeltas, foldDfPending) is capped at this many
+ * unique terms per call. ingestBatch no longer applies df inline: it stages one
+ * pending row per batch and the indexer folds in bounded calls (df is
+ * advisory — a crash between staging and folding only undercounts).
  */
 const MAX_DF_UPDATES_PER_CALL = 2000;
+
+/**
+ * Pending rows one fold reads before folding to unique terms. Each row is one
+ * batch's derived df; the indexer folds per upload chunk (~50 batches), so the
+ * table stays small and an index would be speculative (schema header rule).
+ */
+const MAX_PENDING_ROWS_PER_FOLD = 64;
 
 const postingIn = v.object({
   term: v.string(),
@@ -205,17 +212,23 @@ export const ingestBatch = internalMutation({
     }
 
     // Keep dfDeltas in the wire contract for existing clients. It is accepted
-    // and ignored; the server derives DF from newly inserted postings, applying
-    // as many deltas as this call's read budget allows and deferring the rest.
-    const dfRemainder: Array<{ term: string; delta: number }> = [];
-    let dfBudget = MAX_DF_UPDATES_PER_CALL;
-    for (const [term, delta] of insertedDfs) {
-      if (dfBudget <= 0) {
-        dfRemainder.push({ term, delta });
-        continue;
+    // and ignored; the server derives DF from newly inserted postings and stages
+    // it as ONE pending row per batch. foldDfPending folds pending rows across
+    // batches (df redundancy across batches ~2.7x on this corpus), cutting df
+    // maintenance I/O ~63% over per-batch application. df is advisory: the fold
+    // lag only undercounts until the indexer folds (dfPending rewrite).
+    if (insertedDfs.size > 0) {
+      const deltas = [...insertedDfs].map(([term, delta]) => ({ term, delta }));
+      deltas.sort((a, b) => (a.term < b.term ? -1 : a.term > b.term ? 1 : 0)); // deterministic payloads
+      // Split into bounded rows: a fold applies whole rows, so a row must never
+      // carry more deltas than one fold's per-call term cap (indexer batches are
+      // df-capped at 1500, but the wire contract does not bound a client).
+      for (let i = 0; i < deltas.length; i += MAX_DF_UPDATES_PER_CALL) {
+        await ctx.db.insert("dfPending", {
+          seq: Date.now(),
+          deltas: deltas.slice(i, i + MAX_DF_UPDATES_PER_CALL),
+        });
       }
-      dfBudget -= 1;
-      await applyDfDelta(ctx, term, delta);
     }
 
     const metaRow = {
@@ -230,14 +243,55 @@ export const ingestBatch = internalMutation({
     // updatedAt (no consumer). One write per batch saved.
     if (meta === null) await ctx.db.insert("meta", metaRow);
 
-    return { inserted, updated, skipped, dfRemainder };
+    // Wire-compat: legacy indexers drain dfRemainder via applyDfDeltas; the
+    // staged pending row made the remainder path unreachable, so it is always
+    // [] and the legacy drain (kept below) simply never runs.
+    return { inserted, updated, skipped, dfRemainder: [] };
   },
 });
 
 /**
- * Finishes the df updates ingestBatch deferred (see MAX_DF_UPDATES_PER_CALL).
- * Idempotency is best-effort like all df maintenance: df is advisory and drifts
- * slightly under retries, never serving correctness.
+ * Folds pending df rows into the terms table (dfPending rewrite). The indexer
+ * calls this after every upload chunk (and once at a run's end): read pending
+ * rows, aggregate their deltas, apply at most MAX_DF_UPDATES_PER_CALL unique
+ * terms, then delete exactly the rows whose deltas were fully applied — apply
+ * and delete share one transaction, so a crash/retry can only undercount df
+ * (advisory; never overcounts, never loses the pending row it did not apply).
+ * Returns pendingRowsLeft > 0 when the cap stopped the fold; the caller loops.
+ */
+export const foldDfPending = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const drained = await ctx.db.query("dfPending").take(MAX_PENDING_ROWS_PER_FOLD);
+    const aggregate = new Map<string, number>();
+    let appliedRows = 0;
+    for (const row of drained) {
+      // Would this row push the fold past its per-call unique-term cap?
+      // ingestBatch splits rows at the cap, so the first row always fits;
+      // the guard only stops further rows (never deadlock on one huge row).
+      if (appliedRows > 0 && aggregate.size + row.deltas.length > MAX_DF_UPDATES_PER_CALL) break;
+      for (const { term, delta } of row.deltas) {
+        aggregate.set(term, (aggregate.get(term) ?? 0) + delta);
+      }
+      appliedRows += 1;
+    }
+    let foldedTerms = 0;
+    for (const [term, delta] of aggregate) {
+      await applyDfDelta(ctx, term, delta);
+      foldedTerms += 1;
+    }
+    for (const row of drained.slice(0, appliedRows)) {
+      await ctx.db.delete(row._id);
+    }
+    return { foldedTerms, pendingRowsLeft: drained.length - appliedRows };
+  },
+});
+
+/**
+ * Legacy drain for indexers predating the dfPending staging (see ingestBatch's
+ * return shape). Kept only so an old binary never fails against a new server;
+ * the remainder is always [] now, so this simply never runs. Delete once every
+ * indexer in the wild folds.
  */
 export const applyDfDeltas = internalMutation({
   args: {

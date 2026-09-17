@@ -57,7 +57,7 @@ that's a design conversation, not a patch.
 | # | What goes wrong | When it bites | Compromise we take |
 |---|---|---|---|
 | O1 | **Indexer crash mid-batch** | Always, eventually | Atomic batch mutation + checkpoint-after-ack + idempotent upserts → re-run is safe. Accept duplicate *work*, never duplicate *data* |
-| O2 | **OCC contention on `terms.df` hot keys** | Backfill at full speed | Per-batch df aggregation (one write per term per batch) + jittered backoff; if still hot, shard df into K counter rows summed at read. Stage 2 only if measured |
+| O2 | **OCC contention on `terms.df` hot keys** | Backfill at full speed | dfPending staging (one pending row per batch, no per-term I/O in ingestBatch) + cross-batch folding in `ingest:foldDfPending` (one read+write per UNIQUE term per fold), + jittered backoff; if still hot, shard df into K counter rows summed at read. Stage 2 only if measured |
 | O3 | **Convex function limits** (16k reads/query, 1MiB doc, 8k array) | Big OR queries, giant batches | Every read path carries an explicit `limit` (ReadPlan type); batches sized ~100 tweets. Limits are inputs to the design, not surprises |
 | O4 | **Config drift** — which lexicon/weights indexed this corpus? | Debugging relevance a week later | `meta` holds ONE active-config row (config hash + tokenizer/lexicon versions); a batch under a different config is rejected, not recorded. Adding to a corpus therefore requires the same index configuration — a config change (bigrams, lexicons, buckets, weights) means a deliberate reindex, not a mixed append. Accept manual reindex when the config changes materially (no auto-migration) |
 
