@@ -475,14 +475,16 @@ describe("search serving flow", () => {
     });
     expect(beforeFold).toBeNull();
 
-    // First fold merges two whole rows (2 x 2000 = the 4000-term cap) and
-    // stops there; the third row stays pending.
+    // First fold admits one 2,000-delta row (adding the second would breach
+    // the 3,500-term cap); the second row stays pending. The fold takes up to
+    // 8 rows, so pendingRowsLeft counts the 7 unprocessed rows of its window.
     const fold1 = await t.mutation(internal.ingest.foldDfPending, {});
-    expect(fold1.foldedTerms).toBe(4000);
-    expect(fold1.pendingRowsLeft).toBe(1);
-    // Second fold drains the tail.
+    expect(fold1.foldedTerms).toBe(2000);
+    expect(fold1.pendingRowsLeft).toBe(2);
+    // Second fold admits the next row AND the 1-term tail row (2,001 fresh
+    // terms fit the 3,500 cap) — everything drains.
     const fold2 = await t.mutation(internal.ingest.foldDfPending, {});
-    expect(fold2.foldedTerms).toBe(1);
+    expect(fold2.foldedTerms).toBe(2001);
     expect(fold2.pendingRowsLeft).toBe(0);
 
     const dfs = await t.run(async (ctx) => {
@@ -501,9 +503,9 @@ describe("search serving flow", () => {
 
     // A small batch folds in one fold with nothing left over.
     await t.mutation(internal.ingest.ingestBatch, batch([tweet("s1", "solo", ["solo"])]));
-    const fold3 = await t.mutation(internal.ingest.foldDfPending, {});
-    expect(fold3.foldedTerms).toBe(1);
-    expect(fold3.pendingRowsLeft).toBe(0);
+    const fold4 = await t.mutation(internal.ingest.foldDfPending, {});
+    expect(fold4.foldedTerms).toBe(1);
+    expect(fold4.pendingRowsLeft).toBe(0);
   }, 30_000);
 
   test("fold merges row deltas across batches before hitting its term cap", async () => {
