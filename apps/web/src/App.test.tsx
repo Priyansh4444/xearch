@@ -427,3 +427,10 @@ it.each(["+1", "-1"] as const)(
     expect(container.querySelector(".vote.on")?.textContent).toBe(label);
   },
 );
+
+test("search box does not show a hardcoded corpus total", async () => {
+  await render();
+  const box = container.querySelector('input[aria-label="Search posts"]');
+  expect(box?.getAttribute("placeholder")).toBe("Search posts");
+  expect(box?.getAttribute("placeholder")).not.toMatch(/\d/);
+});

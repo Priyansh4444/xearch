@@ -107,6 +107,6 @@ export const GOLDEN_QUERIES = [
   "load more",
   "to:theo",
   '"founders" pricing cheap expensive',
-  "retard finder",
+  "react server components",
   "from:@sama",
 ];
