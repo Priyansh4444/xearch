@@ -575,7 +575,7 @@ function SearchBox({
           window.setTimeout(() => setOpen(false), 0);
         }}
         onKeyDown={onKey}
-        placeholder="search 164,959 posts"
+        placeholder="Search posts"
         aria-label="Search posts"
         aria-autocomplete="list"
         aria-expanded={open && rows.length > 0}
