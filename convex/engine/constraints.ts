@@ -1,4 +1,4 @@
-import { tokenize } from "./tokenize";
+import { tokenize, isStopword } from "./tokenize";
 import { adjacentBigrams } from "./bigrams";
 import { mapAspects } from "./parse";
 import type { Term } from "../contracts/ids";
@@ -33,8 +33,19 @@ export interface TweetAnalysis {
 }
 
 export function analyzeTweet(text: string): TweetAnalysis {
-  const withStops = tokenize(text, true);
-  const indexed = tokenize(text);
+  // One tokenizer pass: the indexed stream is exactly the keepStopwords stream
+  // minus stopwords (same emission order, same pushToken predicate), so a
+  // second full NFKC+scan per candidate is redundant work. isStopword reads the
+  // same module-level Set the tokenizer filters with.
+  const full = tokenize(text, true);
+  const indexedTokens = full.tokens.filter((t) => !isStopword(t));
+  const withStops = full;
+  const indexed = {
+    tokens: indexedTokens as Term[],
+    counts: new Map<Term, number>(),
+    hasLink: full.hasLink,
+  };
+  for (const t of indexedTokens) indexed.counts.set(t, (indexed.counts.get(t) ?? 0) + 1);
   const aspects = mapAspects(indexed.tokens, text);
   const bigrams = adjacentBigrams(indexed.tokens);
   const present = new Set<Term>(indexed.tokens);

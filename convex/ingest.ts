@@ -225,8 +225,10 @@ export const ingestBatch = internalMutation({
       tokenizerVersion: TOKENIZER_VERSION,
       updatedAt: Date.now(),
     };
+    // The guard above already threw on any config mismatch, so at this point
+    // the row's config fields are identical; rewriting it only churns
+    // updatedAt (no consumer). One write per batch saved.
     if (meta === null) await ctx.db.insert("meta", metaRow);
-    else await ctx.db.patch(meta._id, metaRow);
 
     return { inserted, updated, skipped, dfRemainder };
   },
@@ -317,6 +319,7 @@ export const applyMetrics = internalMutation({
         quoteCount?: number;
         metricsAt?: number;
         propagatedBoost?: number;
+        scoreBucket?: number;
       } = {};
       if (update.metricsAt >= existing.metricsAt) {
         patch.likeCount = update.metrics.likes;
@@ -330,6 +333,8 @@ export const applyMetrics = internalMutation({
       if (update.propagatedBoost !== undefined && update.metricsAt >= existing.metricsAt) {
         patch.propagatedBoost = update.propagatedBoost;
       }
+      // One patch per tweet row: fold the bucket move into the same write.
+      if (bucketMoved) patch.scoreBucket = newBucket;
       if (Object.keys(patch).length > 0) {
         await ctx.db.patch(existing._id, patch);
         patched += 1;
@@ -347,7 +352,6 @@ export const applyMetrics = internalMutation({
             await ctx.db.patch(posting._id, { scoreBucket: newBucket });
           }
         }
-        await ctx.db.patch(existing._id, { scoreBucket: newBucket });
       }
       processed += 1;
     }

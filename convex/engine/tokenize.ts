@@ -96,6 +96,13 @@ function pushToken(tokens: Term[], keepStopwords: boolean, t: string): void {
 
 export { adjacentBigrams, isBigramTerm } from "./bigrams";
 
+/** Module-level stopword probe: lets one-pass callers (analyzeTweet) derive the
+ * stopword-free stream from a keepStopwords pass instead of running a second
+ * full tokenize() scan. Same Set, same predicate as pushToken. */
+export function isStopword(t: string): boolean {
+  return STOP.has(t);
+}
+
 function isCjkChar(c: string): boolean {
   return CJK_RE.test(c);
 }
