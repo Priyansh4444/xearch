@@ -190,18 +190,32 @@ export default {
 };
 
 async function buildSnapshot(bucket: R2Bucket): Promise<Snapshot> {
-  const [bucketTotals, runIds] = await Promise.all([countBucket(bucket), discoverRuns(bucket)]);
-  const runs = await Promise.all(runIds.map((run) => loadRun(bucket, run.runId, run.kind)));
+  const totals = await scanBucket(bucket);
+  const runs = await Promise.all(totals.runs.map((run) => loadRun(bucket, run.runId, run.kind)));
   runs.sort((a, b) => {
     if (a.kind !== b.kind) return a.kind === "live" ? -1 : 1;
     return (b.updatedAt ?? 0) - (a.updatedAt ?? 0);
   });
-  return { generatedAt: Date.now(), bucket: bucketTotals, runs };
+  return {
+    generatedAt: Date.now(),
+    bucket: { objects: totals.objects, bytes: totals.bytes },
+    runs,
+  };
 }
 
-async function countBucket(bucket: R2Bucket): Promise<{ objects: number; bytes: number }> {
+// One paginated scan over the whole bucket yields object totals and run
+// discovery together. rclone never writes directory-marker keys, so a first
+// segment exists as a run directory iff some key carries it; deriving prefixes
+// here replaces the two extra delimiter listings per request (same output).
+async function scanBucket(bucket: R2Bucket): Promise<{
+  objects: number;
+  bytes: number;
+  runs: { runId: string; kind: "live" | "archived" }[];
+}> {
   let objects = 0;
   let bytes = 0;
+  const live = new Set<string>();
+  const archived = new Set<string>();
   let cursor: string | undefined;
   do {
     const page = await bucket.list(
@@ -210,41 +224,27 @@ async function countBucket(bucket: R2Bucket): Promise<{ objects: number; bytes: 
     for (const object of page.objects) {
       objects += 1;
       bytes += object.size;
+      const slash = object.key.indexOf("/");
+      if (slash === -1) continue;
+      const first = object.key.slice(0, slash);
+      if (first === "_live") {
+        const rest = object.key.slice(slash + 1);
+        const runSlash = rest.indexOf("/");
+        if (runSlash !== -1) live.add(rest.slice(0, runSlash));
+      } else {
+        archived.add(first);
+      }
     }
     cursor = page.truncated ? page.cursor : undefined;
   } while (cursor !== undefined);
-  return { objects, bytes };
-}
-
-async function listPrefixes(bucket: R2Bucket, prefix: string): Promise<string[]> {
-  const prefixes: string[] = [];
-  let cursor: string | undefined;
-  do {
-    const page = await bucket.list(
-      cursor === undefined
-        ? { prefix, delimiter: "/", limit: 1000 }
-        : { prefix, delimiter: "/", cursor, limit: 1000 },
-    );
-    prefixes.push(...page.delimitedPrefixes);
-    cursor = page.truncated ? page.cursor : undefined;
-  } while (cursor !== undefined);
-  return prefixes;
-}
-
-async function discoverRuns(
-  bucket: R2Bucket,
-): Promise<{ runId: string; kind: "live" | "archived" }[]> {
-  const [top, live] = await Promise.all([listPrefixes(bucket, ""), listPrefixes(bucket, "_live/")]);
-  const runs: { runId: string; kind: "live" | "archived" }[] = [];
-  for (const prefix of live) {
-    runs.push({ runId: prefix.slice("_live/".length).replace(/\/$/, ""), kind: "live" });
-  }
-  for (const prefix of top) {
-    const runId = prefix.replace(/\/$/, "");
-    if (runId === "_live" || runId === "") continue;
-    runs.push({ runId, kind: "archived" });
-  }
-  return runs;
+  // discoverRuns' order is the R2 key order within each kind; reproduce it so
+  // equal-updatedAt ties resolve the same way in buildSnapshot's stable sort.
+  const byKey = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+  const runs = [
+    ...[...live].sort(byKey).map((runId) => ({ runId, kind: "live" as const })),
+    ...[...archived].sort(byKey).map((runId) => ({ runId, kind: "archived" as const })),
+  ];
+  return { objects, bytes, runs };
 }
 
 async function readJson<T>(
