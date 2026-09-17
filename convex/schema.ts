@@ -129,13 +129,15 @@ export default defineSchema({
     sessionId: v.string(),
     // Absent on legacy anonymous votes, which no longer affect ranking.
     voterId: v.optional(v.string()),
-  })
-    .index("by_query_tweet", ["queryKey", "tweetId"])
-    .index("by_query_session", ["queryKey", "sessionId"]) // dedupe: one vote/session
-    .index("by_query_voter_tweet", ["queryKey", "voterId", "tweetId"])
-    .index("by_tweet", ["tweetId"]),
+    // Only by_query_voter_tweet is load-bearing (vote dedupe in feedback.ts).
+    // by_query_session / by_tweet had zero consumers ever; by_query_tweet on
+    // THIS table died when PR #34 moved totals serving to searchFeedbackTotals.
+    // Indexes are full copies — three of them on an append-only table were pure
+    // write amplification (votes pay ~2x the write bytes they need).
+  }).index("by_query_voter_tweet", ["queryKey", "voterId", "tweetId"]),
 
-  // Atomically maintained from trusted votes only; one point read per candidate.
+  // Atomically maintained from trusted votes only; serving reads it with ONE
+  // bounded prefix read per query (PR #34), not per-candidate point reads.
   searchFeedbackTotals: defineTable({
     queryKey: v.string(),
     tweetId: v.id("tweets"),
