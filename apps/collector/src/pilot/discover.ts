@@ -126,14 +126,23 @@ export function discoverFromPages(
   };
 
   // Pass 1: learn every handle -> id pair the pages expose, so reply handles resolve.
+  // Row parses are cached here; pass 2 consumes them instead of decoding twice.
+  interface ParsedRow {
+    status: ProviderStatus | null;
+    quote: ProviderStatus | null;
+    repostedBy: ProviderAuthor | null;
+  }
+  const parsedRows: ParsedRow[] = [];
   for (const page of pages) {
     for (const row of page.results) {
       const status = parseProviderStatus(row);
+      const quote = status === null ? null : parseProviderStatus(status.quote);
+      const repostedBy = status === null ? null : parseProviderAuthor(status.reposted_by);
+      parsedRows.push({ status, quote, repostedBy });
       if (status === null) continue;
       learn(status.author);
-      const quote = parseProviderStatus(status.quote);
       learn(quote?.author);
-      learn(parseProviderAuthor(status.reposted_by));
+      learn(repostedBy);
       for (const facet of facets(status)) {
         if (parseProviderFacetType(facet.type) === ProviderFacetType.Mention) {
           const id = parseNonEmptyString(facet.id);
@@ -145,14 +154,20 @@ export function discoverFromPages(
   }
 
   // Pass 2: evidence. Only rows authored by the seed (or reposted by it) count.
+  // parsedRows is aligned row-for-row with pages/results from pass 1; the cursor
+  // walks the same sequence, so an undefined entry here is a code bug, not input.
+  let parsedCursor = 0;
   for (const page of pages) {
     const seed = page.accountUserId;
-    for (const row of page.results) {
-      const status = parseProviderStatus(row);
+    for (const _row of page.results) {
+      const cached = parsedRows[parsedCursor];
+      parsedCursor += 1;
+      if (cached === undefined) throw new Error("discover pass 2 cursor desync");
+      const status = cached.status;
       const author = status?.author;
       if (status === null || author === null || author === undefined) continue;
       const authorId = parseNonEmptyString(author.id);
-      const repostedAuthor = parseProviderAuthor(status.reposted_by);
+      const repostedAuthor = cached.repostedBy;
       const reposted = repostedAuthor !== null && repostedAuthor.id === seed;
       if (reposted) {
         record(
@@ -169,7 +184,7 @@ export function discoverFromPages(
         const handle = normalizeHandle(parseNonEmptyString(status.replying_to.screen_name));
         record(bucketFor(null, handle), seed, InteractionKind.Reply);
       }
-      const quote = parseProviderStatus(status.quote);
+      const quote = cached.quote;
       if (
         quote !== null &&
         isStatusRow(quote.type) &&
