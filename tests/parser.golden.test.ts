@@ -7,6 +7,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test, it } from "vitest";
 import { mapAspects, tierA, tierB, type TierBDeps } from "../convex/engine/parse";
+import { tokenize } from "../convex/engine/tokenize";
 import type { AuthorId, Term } from "../convex/contracts/ids";
 import { COMMON_DF_FLOOR } from "../convex/search";
 
@@ -60,6 +61,34 @@ it.each(["$5", "price is $100", "costs $0"])(
     expect(mapAspects(["laptop"] as Term[], raw)).toContain("~price");
   },
 );
+
+// Real-tweet regression pins for the aspect matcher: whole-token matching (no
+// substring hits), multi-word spans, $-digits, and case folding, end to end
+// through the real tokenizer. Exact outputs — the matcher is a pure function.
+it.each([
+  {
+    text: "my macbook's battery life has become almost half of what it was",
+    aspects: ["~spec"],
+  },
+  {
+    text: "fable 5.1 being cheaper is cool, but why is it so stupidly good at frontend animations lol",
+    aspects: [],
+  },
+  {
+    text: "I hit them in one day of use... on the $300 tier btw",
+    aspects: ["~price"],
+  },
+  {
+    text: "remember when we used to follow 20 hr coding tutorials",
+    aspects: [],
+  },
+  {
+    text: "Benchmarks are so dumb and no one can convince me otherwise",
+    aspects: ["~perf"],
+  },
+])("real tweet text %j maps to $aspects", ({ text, aspects }) => {
+  expect(mapAspects(tokenize(text).tokens, text)).toEqual(aspects);
+});
 
 it.each([
   "since:2026-13-45",

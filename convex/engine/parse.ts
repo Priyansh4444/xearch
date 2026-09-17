@@ -507,53 +507,102 @@ function stripTokens(xq: XQuery, fragment: string) {
  */
 export function mapAspects(tokens: Term[], rawText: string): Term[] {
   const found = new Set<Term>();
-  const joined = " " + tokens.join(" ") + " ";
-  for (const [aspect, patterns] of ASPECT_ENTRIES) {
-    if (hasPaddedHit(joined, patterns.strong)) {
-      found.add(aspect);
+  // Single-word patterns are whole tokens or nothing: tokenizer output never
+  // contains spaces, and the padded join separates tokens with single spaces,
+  // so `" word "` membership is exactly token-set membership — no scan.
+  const tokenSet = new Set<string>(tokens);
+  let joined: string | null = null;
+  const padded = (): string => (joined ??= " " + tokens.join(" ") + " ");
+  for (const entry of ASPECT_ENTRIES) {
+    let hit = false;
+    for (const s of entry.strongSingle) {
+      if (tokenSet.has(s)) {
+        hit = true;
+        break;
+      }
+    }
+    if (!hit) {
+      const j = padded();
+      for (const m of entry.strongMultiPadded) {
+        if (j.includes(m)) {
+          hit = true;
+          break;
+        }
+      }
+    }
+    if (hit) {
+      found.add(entry.aspect);
       continue;
     }
-    if (hasPaddedHit(joined, patterns.weak) && hasContentToken(tokens, patterns.weak)) {
-      found.add(aspect);
+    let weakHit = false;
+    for (const w of entry.weakSingle) {
+      if (tokenSet.has(w)) {
+        weakHit = true;
+        break;
+      }
+    }
+    if (!weakHit && entry.weakMultiPadded.length > 0) {
+      const j = padded();
+      for (const m of entry.weakMultiPadded) {
+        if (j.includes(m)) {
+          weakHit = true;
+          break;
+        }
+      }
+    }
+    if (weakHit) {
+      for (const tok of tokens) {
+        if (!tok.startsWith("~") && !entry.weakSet.has(tok)) {
+          found.add(entry.aspect);
+          break;
+        }
+      }
     }
   }
   if (DOLLAR_DIGIT_RE.test(rawText)) found.add(ASPECT_PRICE);
   return [...found].sort();
 }
 
-/** Lexicon rows parsed once at module load, not on every query. Patterns stay
- * raw strings; only the aspect keys enter the Term space. */
+/**
+ * Lexicon rows indexed once at module load, not on every query. Mirrors the
+ * Rust indexer's config-load precompute (pipeline.rs `strong_padded` /
+ * `weak_set`): single-word patterns resolve through O(1) set membership and
+ * only multi-word phrases pay a substring scan; the padded forms are built
+ * once instead of per aspect per query. Only the aspect keys enter Term space.
+ */
 const ASPECT_PRICE = "~price" as Term;
-const ASPECT_ENTRIES: Array<[Term, { strong: string[]; weak: string[] }]> = (
+
+interface AspectIndex {
+  aspect: Term;
+  strongSingle: Set<string>;
+  /** Precomputed `" phrase "` forms so matching allocates nothing per call. */
+  strongMultiPadded: string[];
+  weakSingle: Set<string>;
+  weakMultiPadded: string[];
+  weakSet: Set<string>;
+  weak: string[];
+}
+const ASPECT_ENTRIES: AspectIndex[] = (
   Object.entries(aspectsFile.aspects) as Array<[string, { strong: string[]; weak: string[] }]>
-).map(([aspect, patterns]) => [aspect as Term, patterns]);
+).map(([aspect, patterns]) => ({
+  aspect: aspect as Term,
+  strongSingle: new Set(patterns.strong.filter((p) => !p.includes(" "))),
+  strongMultiPadded: patterns.strong.filter((p) => p.includes(" ")).map((p) => ` ${p} `),
+  weakSingle: new Set(patterns.weak.filter((p) => !p.includes(" "))),
+  weakMultiPadded: patterns.weak.filter((p) => p.includes(" ")).map((p) => ` ${p} `),
+  weakSet: new Set(patterns.weak),
+  weak: patterns.weak,
+}));
 
 /** Weak trigger words for one aspect (Tier B moves them to `should`). */
 function weakWordsFor(aspect: Term): string[] {
-  for (const [name, patterns] of ASPECT_ENTRIES) {
-    if (name === aspect) return patterns.weak;
+  for (const entry of ASPECT_ENTRIES) {
+    if (entry.aspect === aspect) return entry.weak;
   }
   return [];
 }
 
 const DOLLAR_DIGIT_RE = /\$\d/;
-
-/** Any pattern present as a whitespace-delimited phrase. Plain loops: the
- * `.some`/`.filter` closures this replaces were built per aspect, per query. */
-function hasPaddedHit(joined: string, patterns: string[]): boolean {
-  for (const p of patterns) {
-    if (joined.includes(" " + p + " ")) return true;
-  }
-  return false;
-}
-
-/** A non-aspect content token co-occurs (G5 guard against bare triggers). */
-function hasContentToken(tokens: Term[], weak: string[]): boolean {
-  for (const t of tokens) {
-    if (!t.startsWith("~") && !weak.includes(t)) return true;
-  }
-  return false;
-}
 
 /** Interrogative-shape detector (question intent, PARSER golden rows). */
 export function detectQuestionIntent(raw: string, tokens: string[]): Intent | null {
