@@ -157,7 +157,7 @@ test("load more grows the page and keeps the previous rows while loading", async
   }));
   full = { ...response(), results: rows(20), candidateCount: 60, nextPrefix: refs };
   await render();
-  expect(container.textContent).toContain("20 of 60 posts");
+  expect(container.textContent).toContain("20 of 60 ranked posts");
   expect(container.querySelector(".load-more")?.textContent).toContain("40 left");
 
   // The next page is in flight: previous rows stay on screen, button shows loading.
@@ -191,7 +191,7 @@ test("load more grows the page and keeps the previous rows while loading", async
 
   full = { ...response(), results: rows(40), candidateCount: 60, nextPrefix: refs };
   await render();
-  expect(container.textContent).toContain("40 of 60 posts");
+  expect(container.textContent).toContain("40 of 60 ranked posts");
   expect(container.querySelectorAll(".results li").length).toBe(40);
 });
 
