@@ -101,6 +101,32 @@ pub struct Config {
 pub struct AspectPatterns {
     pub strong: Vec<String>,
     pub weak: Vec<String>,
+    /// Precomputed `" {strong} "` forms — `map_aspects` searches the joined
+    /// token string with these; building them per tweet was the allocation
+    /// hotspot (117 `format!` calls per tweet at 10 aspects). Derived data:
+    /// keep in sync with `strong`/`weak` via `AspectPatterns::new`.
+    pub strong_padded: Vec<String>,
+    /// Precomputed `" {weak} "` forms (see `strong_padded`).
+    pub weak_padded: Vec<String>,
+    /// Weak words as a set for the co-occurrence check (G5): "is this token an
+    /// aspect weak word?" without a linear scan per token.
+    pub weak_set: std::collections::HashSet<String>,
+}
+
+impl AspectPatterns {
+    /// Single construction point so the derived copies cannot drift from
+    /// `strong`/`weak` (same rule as `config_hash`).
+    #[must_use]
+    pub fn new(strong: Vec<String>, weak: Vec<String>) -> Self {
+        let weak_set = weak.iter().cloned().collect();
+        Self {
+            strong_padded: strong.iter().map(|p| format!(" {p} ")).collect(),
+            weak_padded: weak.iter().map(|w| format!(" {w} ")).collect(),
+            weak_set,
+            strong,
+            weak,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -269,21 +295,21 @@ pub fn map_aspects(tokens: &[Term], raw_text: &str, lexicon: &AspectLexicon) -> 
     let mut found: Vec<Term> = Vec::new();
     for (aspect, patterns) in &lexicon.aspects {
         if patterns
-            .strong
+            .strong_padded
             .iter()
-            .any(|p| joined.contains(&format!(" {p} ")))
+            .any(|p| joined.contains(p.as_str()))
         {
             found.push(aspect.clone());
             continue;
         }
         let weak_hits = patterns
-            .weak
+            .weak_padded
             .iter()
-            .filter(|w| joined.contains(&format!(" {w} ")))
+            .filter(|w| joined.contains(w.as_str()))
             .count();
         let has_content = tokens
             .iter()
-            .any(|t| !t.starts_with('~') && !patterns.weak.iter().any(|w| w == t.as_str()));
+            .any(|t| !t.starts_with('~') && !patterns.weak_set.contains(t.as_str()));
         if weak_hits > 0 && has_content {
             found.push(aspect.clone());
         }
@@ -376,10 +402,10 @@ mod tests {
         let mut aspects = HashMap::new();
         aspects.insert(
             Term(ASPECT_PRICE.to_string()),
-            AspectPatterns {
-                strong: vec!["pricing".to_string(), "too expensive".to_string()],
-                weak: vec!["cheap".to_string(), "expensive".to_string()],
-            },
+            AspectPatterns::new(
+                vec!["pricing".to_string(), "too expensive".to_string()],
+                vec!["cheap".to_string(), "expensive".to_string()],
+            ),
         );
         AspectLexicon { aspects }
     }

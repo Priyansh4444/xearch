@@ -739,10 +739,7 @@ fn load_config(lexicons: &Path) -> Result<Config> {
         };
         aspects.insert(
             Term(name.clone()),
-            AspectPatterns {
-                strong: list("strong"),
-                weak: list("weak"),
-            },
+            AspectPatterns::new(list("strong"), list("weak")),
         );
     }
 
