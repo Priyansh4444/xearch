@@ -10,5 +10,6 @@ pub mod loose;
 pub mod model;
 pub mod num;
 pub mod pipeline;
+pub mod second_source;
 pub mod tokenizer;
 pub mod tweepcred;

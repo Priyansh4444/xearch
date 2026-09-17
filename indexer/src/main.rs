@@ -64,6 +64,21 @@ enum Mode {
     /// Fold staged dfPending rows into the terms table (run after the last
     /// upload chunk of a run; each upload chunk already folds at its end).
     Fold,
+    /// Second fast source of truth (self-hosted Elasticsearch/Lucene);
+    /// Convex remains the primary source of truth. Bulk-push the given
+    /// ingress JSONL files (READ-ONLY) into the ES index.
+    IndexSecond {
+        /// Ingress JSONL files to read (read-only).
+        files: Vec<PathBuf>,
+    },
+    /// Second fast source of truth (self-hosted Elasticsearch/Lucene);
+    /// Convex remains the primary source of truth. Serve GET /search +
+    /// GET /stats on 127.0.0.1, proxying `ELASTICSEARCH_URL`.
+    ServeSecond {
+        /// Port to bind on 127.0.0.1.
+        #[arg(long, default_value_t = xearch_indexer::second_source::PROXY_DEFAULT_PORT)]
+        port: u16,
+    },
     /// Ingest tweet JSONL (ingress records or loose tweets) from files or stdin.
     IngestTweets {
         /// JSONL files; omit to read stdin.
@@ -84,6 +99,8 @@ fn main() -> Result<()> {
         Mode::Prepare { out_dir } => backfill(&cli, Some(out_dir)),
         Mode::Upload { batch_dir } => upload(batch_dir),
         Mode::Fold => ConvexClient::from_env()?.fold_df_pending(true),
+        Mode::IndexSecond { files } => index_second(files),
+        Mode::ServeSecond { port } => serve_second(*port),
         Mode::IngestTweets { files, out_dir } => ingest_tweets(&cli, files, out_dir.as_ref()),
     }
 }
@@ -799,6 +816,39 @@ fn fnv1a64(parts: &[&[u8]]) -> u64 {
         }
     }
     hash
+}
+
+/// `index-second`: bulk-push ingress JSONL into self-hosted Elasticsearch.
+fn index_second(files: &[PathBuf]) -> Result<()> {
+    let client = xearch_indexer::second_source::EsConfig::from_env()?.transport()?;
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .wrap_err("tokio runtime")?;
+    let started = std::time::Instant::now();
+    let stats = runtime.block_on(xearch_indexer::second_source::build_from_files(
+        files, &client,
+    ))?;
+    println!(
+        "second fast source of truth (self-hosted Elasticsearch/Lucene; Convex remains the \
+         primary source of truth): pushed {tweets} tweets ({authors} author records, \
+         {malformed} malformed lines) in {secs:.1}s",
+        tweets = stats.tweets,
+        authors = stats.authors,
+        malformed = stats.malformed,
+        secs = started.elapsed().as_secs_f64(),
+    );
+    Ok(())
+}
+
+/// `serve-second`: local proxy on 127.0.0.1 over self-hosted Elasticsearch.
+fn serve_second(port: u16) -> Result<()> {
+    let cfg = xearch_indexer::second_source::EsConfig::from_env()?;
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .wrap_err("tokio runtime")?;
+    runtime.block_on(xearch_indexer::second_source::serve(port, &cfg))
 }
 
 #[cfg(test)]
