@@ -1,166 +1,122 @@
-//! Second fast source of truth — a self-hosted Elasticsearch/Lucene lane.
+//! Second fast source of truth — embedded Tantivy, on this machine.
 //!
 //! Convex remains the primary source of truth. This module is an ISOLATED,
 //! optional lane: it reads the same ingress JSONL the pipeline already reads
-//! and pushes it into a self-hosted Elasticsearch index, then serves local
-//! queries through a thin proxy. It never writes to Convex and no existing
-//! pipeline path (prepare / upload / fold / refresh) depends on anything here.
+//! (READ-ONLY) and builds a local Tantivy inverted index — no JVM, no server
+//! process, no network hop. The index lives in a directory (memory-mapped
+//! readers page it in on demand), and `serve-second` answers queries from it.
+//! It never writes to Convex and no existing pipeline path (prepare / upload /
+//! fold / refresh) depends on anything here.
 //!
-//! Subcommands: `index-second` (bulk-push corpus to ES), `serve-second`
-//! (axum proxy on 127.0.0.1). See docs/SECOND-SOURCE.md.
+//! Subcommands: `index-second` (build the Tantivy index), `serve-second`
+//! (axum proxy on 127.0.0.1 over the local index). See docs/SECOND-SOURCE.md.
 
 use crate::model::IngressRecord;
 use color_eyre::eyre::{bail, Context, Result};
-use elasticsearch::{BulkIndexOperation, BulkOperation, Elasticsearch};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
-use std::time::Duration;
+use std::ops::Bound;
+use std::path::{Path, PathBuf};
+use tantivy::collector::TopDocs;
+use tantivy::directory::MmapDirectory;
+use tantivy::query::{BooleanQuery, Occur, QueryParser, RangeQuery, TermQuery};
+use tantivy::schema::{
+    Field, IndexRecordOption, Schema, SchemaBuilder, FAST, INDEXED, STORED, STRING, TEXT,
+};
+use tantivy::{Index, IndexReader, ReloadPolicy, TantivyDocument, Term};
 
-/// Default index name (`SECOND_SOURCE_INDEX` overrides, e.g. for tests).
-pub const INDEX_DEFAULT: &str = "xearch_tweets_v1";
-/// Default ES endpoint (`ELASTICSEARCH_URL` overrides).
-pub const DEFAULT_URL: &str = "http://127.0.0.1:9200";
+/// Default index directory (`SECOND_SOURCE_INDEX_DIR` overrides, e.g. tests).
+pub const INDEX_DIR_DEFAULT: &str = "./second-source-index";
 /// Proxied local interface for the web lane (`--port` overrides).
 pub const PROXY_DEFAULT_PORT: u16 = 9201;
-/// Bulk batch size (docs). Modest: the machine may host the live pipeline.
-pub const BULK_BATCH: usize = 1_000;
+/// Index-writer heap budget (bytes). Modest: the machine may host the live pipeline.
+pub const WRITER_HEAP_BYTES: usize = 100_000_000;
+/// Writer threads for the build. Modest: the machine may host the live pipeline.
+pub const WRITER_THREADS: usize = 2;
+/// Max hits per query (matches the Convex rerank window).
+pub const MAX_LIMIT: usize = 200;
 
-/// Index name for this process (tests set `SECOND_SOURCE_INDEX`).
-#[must_use]
-pub fn index_name() -> &'static str {
-    static CELL: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
-    CELL.get_or_init(|| {
-        Box::leak(
-            std::env::var("SECOND_SOURCE_INDEX")
-                .unwrap_or_else(|_| INDEX_DEFAULT.to_owned())
-                .into_boxed_str(),
-        )
-    })
+/// Index directory for this process (tests point it at a temp dir).
+///
+/// # Errors
+///
+/// Never: the default always parses.
+pub fn index_dir() -> Result<PathBuf> {
+    Ok(PathBuf::from(
+        std::env::var("SECOND_SOURCE_INDEX_DIR").unwrap_or_else(|_| INDEX_DIR_DEFAULT.to_owned()),
+    ))
 }
 
-/// ES endpoint/API-key config shared by both subcommands.
-pub struct EsConfig {
-    pub url: String,
-    pub api_key: Option<String>,
+/// Tantivy schema for one tweet document.
+pub struct LaneSchema {
+    pub schema: Schema,
+    pub text: Field,
+    pub tweet_id: Field,
+    pub author_id: Field,
+    pub author_handle: Field,
+    pub created_at: Field,
 }
 
-impl EsConfig {
-    /// From `ELASTICSEARCH_URL` / `ELASTICSEARCH_API_KEY` /
-    /// `ELASTICSEARCH_RETRIES`.
-    ///
-    /// # Errors
-    ///
-    /// Never: env fallbacks keep this infallible.
-    pub fn from_env() -> Result<Self> {
-        Ok(Self {
-            url: std::env::var("ELASTICSEARCH_URL").unwrap_or_else(|_| DEFAULT_URL.to_owned()),
-            api_key: std::env::var("ELASTICSEARCH_API_KEY").ok(),
-        })
-    }
-
-    /// Build the HTTP client.
-    ///
-    /// # Errors
-    ///
-    /// Fails when the transport cannot be built (bad URL, TLS).
-    pub fn transport(&self) -> Result<Elasticsearch> {
-        let pool = elasticsearch::http::transport::SingleNodeConnectionPool::new(
-            self.url.parse().wrap_err("parse ELASTICSEARCH_URL")?,
-        );
-        let mut builder = elasticsearch::http::transport::TransportBuilder::new(pool);
-        if let Some(key) = &self.api_key {
-            builder = builder.auth(elasticsearch::auth::Credentials::EncodedApiKey(key.clone()));
-        }
-        let transport = builder
-            .timeout(default_timeout())
-            .build()
-            .wrap_err("build ES transport")?;
-        Ok(Elasticsearch::new(transport))
-    }
-}
-
-#[must_use]
-pub(crate) const fn default_timeout() -> Duration {
-    Duration::from_secs(30)
-}
-
-/// Create the index with the mapping (idempotent: `resource_already_exists` is
-/// fine). english analyzer = Lucene tokenized + stemmed.
-async fn ensure_index(client: &Elasticsearch) -> Result<()> {
-    let name = index_name();
-    let exists = client
-        .indices()
-        .exists(elasticsearch::indices::IndicesExistsParts::Index(&[name]))
-        .send()
-        .await
-        .wrap_err("ES exists check")?;
-    if exists.status_code().is_success() {
-        return Ok(());
-    }
-    let resp = client
-        .indices()
-        .create(elasticsearch::indices::IndicesCreateParts::Index(name))
-        .body(json!({
-            "settings": {
-                "number_of_shards": 1,
-                "number_of_replicas": 0,
-                "refresh_interval": "1s"
-            },
-            "mappings": {
-                "properties": {
-                    "text": {"type": "text", "analyzer": "english"},
-                    "authorId": {"type": "keyword"},
-                    "authorHandle": {"type": "keyword"},
-                    "createdAt": {"type": "date", "format": "epoch_millis"},
-                    "likeCount": {"type": "long"},
-                    "retweetCount": {"type": "long"},
-                    "quoteCount": {"type": "long"},
-                    "replyCount": {"type": "long"},
-                    "tweetId": {"type": "keyword"}
-                }
-            }
-        }))
-        .send()
-        .await
-        .wrap_err("create ES index")?;
-    let status = resp.status_code().as_u16();
-    let body: Value = resp.json().await.unwrap_or(Value::Null);
-    if !(200..300).contains(&status) {
-        // "resource_already_exists_exception" = a previous run created it.
-        let already = body
-            .pointer("/error/type")
-            .and_then(Value::as_str)
-            .is_some_and(|t| t.contains("already_exists"));
-        if !already {
-            bail!("create ES index failed ({status}): {body}");
+impl LaneSchema {
+    /// Build the schema: full-text `text` (BM25), keyword ids/handles,
+    /// range-capable `createdAt`. `text` is STORED so the lane can render
+    /// results; STORED fields load per hit, not into resident memory.
+    #[must_use]
+    pub fn build() -> Self {
+        let mut builder = SchemaBuilder::new();
+        let text = builder.add_text_field("text", TEXT | STORED);
+        let tweet_id = builder.add_text_field("tweet_id", STRING | STORED);
+        let author_id = builder.add_text_field("author_id", STRING | STORED);
+        let author_handle = builder.add_text_field("author_handle", STRING | STORED);
+        let created_at = builder.add_u64_field("created_at", FAST | STORED | INDEXED);
+        Self {
+            schema: builder.build(),
+            text,
+            tweet_id,
+            author_id,
+            author_handle,
+            created_at,
         }
     }
-    Ok(())
 }
 
-/// Progress counters from a bulk push.
+/// Open the index directory (creating it), with memory-mapped readers so the
+/// OS pages index data in and out on demand instead of pinning it in RSS.
+///
+/// # Errors
+///
+/// Fails when the directory cannot be created or opened.
+pub fn open_index(dir: &Path, lane: &LaneSchema) -> Result<Index> {
+    std::fs::create_dir_all(dir).wrap_err_with(|| format!("create {}", dir.display()))?;
+    let mmap = MmapDirectory::open(dir).wrap_err_with(|| format!("open {}", dir.display()))?;
+    Index::open_or_create(mmap, lane.schema.clone())
+        .wrap_err_with(|| format!("open {}", dir.display()))
+}
+
+/// Progress counters from an index build.
 pub struct BuildStats {
     pub tweets: u64,
     pub authors: u64,
     pub malformed: u64,
 }
 
-/// Read ingress JSONL files (READ-ONLY) and bulk-push tweets into ES.
-/// Author records build the id -> handle map; tweets referencing an unseen
-/// author id get an empty handle (raw id shows at query time).
+/// Read ingress JSONL files (READ-ONLY) and index tweets locally.
+/// Rebuilds are idempotent: each tweet is deleted by `tweet_id` first
+/// (same doc count, no duplicates).
 ///
 /// # Errors
 ///
-/// Fails on unreadable files, failed bulk batches, or failed batch items.
-pub async fn build_from_files(files: &[PathBuf], client: &Elasticsearch) -> Result<BuildStats> {
-    ensure_index(client).await?;
+/// Fails on unreadable files or index errors. A malformed line is counted to
+/// stderr, never a crash: same failure policy as the pipeline.
+pub fn build_from_files(dir: &Path, files: &[PathBuf]) -> Result<BuildStats> {
+    let lane = LaneSchema::build();
+    let index = open_index(dir, &lane)?;
+    let mut writer = index
+        .writer_with_num_threads(WRITER_THREADS, WRITER_HEAP_BYTES)
+        .wrap_err("tantivy writer")?;
     let mut author_map: HashMap<String, String> = HashMap::new();
-    // (tweetId, source doc): indexed with _id = tweetId so a re-push is
-    // idempotent (same id -> overwrite, not duplicate).
-    let mut buffer: Vec<(String, Value)> = Vec::with_capacity(BULK_BATCH);
     let mut stats = BuildStats {
         tweets: 0,
         authors: 0,
@@ -170,9 +126,9 @@ pub async fn build_from_files(files: &[PathBuf], client: &Elasticsearch) -> Resu
         let reader = BufReader::new(
             std::fs::File::open(file).wrap_err_with(|| format!("open {}", file.display()))?,
         );
-        for line in reader.lines() {
-            let line = line.wrap_err("read line")?;
-            let trimmed = line.trim();
+        for maybe_text in reader.lines() {
+            let text = maybe_text.wrap_err("read line")?;
+            let trimmed = text.trim();
             if trimmed.is_empty() {
                 continue;
             }
@@ -186,93 +142,50 @@ pub async fn build_from_files(files: &[PathBuf], client: &Elasticsearch) -> Resu
                         .get(tweet.author_id.as_str())
                         .cloned()
                         .unwrap_or_default();
-                    buffer.push((
-                        tweet.id.as_str().to_string(),
-                        json!({
-                            "text": tweet.text,
-                            "authorId": tweet.author_id.as_str(),
-                            "authorHandle": handle,
-                            "createdAt": tweet.created_at,
-                            "likeCount": tweet.metrics.likes,
-                            "retweetCount": tweet.metrics.retweets,
-                            "quoteCount": tweet.metrics.quotes,
-                            "replyCount": tweet.metrics.replies,
-                            "tweetId": tweet.id.as_str(),
-                        }),
-                    ));
+                    let id_term = Term::from_field_text(lane.tweet_id, tweet.id.as_str());
+                    writer.delete_term(id_term);
+                    let mut doc = TantivyDocument::default();
+                    doc.add_text(lane.text, tweet.text);
+                    doc.add_text(lane.tweet_id, tweet.id.as_str());
+                    doc.add_text(lane.author_id, tweet.author_id.as_str());
+                    doc.add_text(lane.author_handle, handle);
+                    doc.add_u64(
+                        lane.created_at,
+                        u64::try_from(tweet.created_at).unwrap_or(u64::MAX),
+                    );
+                    writer.add_document(doc).wrap_err("add tweet doc")?;
                     stats.tweets = stats.tweets.saturating_add(1);
-                    if buffer.len() >= BULK_BATCH {
-                        flush(client, &mut buffer).await?;
-                    }
                 }
                 Err(err) => {
-                    // Same failure policy as the pipeline: never crash the
-                    // loop, never drop silently. Quarantine stays the
-                    // pipeline's mechanism (this lane is READ-ONLY on data/);
-                    // a stderr line + counter keeps the lane honest.
                     stats.malformed = stats.malformed.saturating_add(1);
                     eprintln!("malformed ingress line: {err}");
                 }
             }
         }
     }
-    flush(client, &mut buffer).await?;
-    refresh(client).await?;
+    writer.commit().wrap_err("commit index")?;
     Ok(stats)
 }
 
-/// One bulk request for the current buffer; retries/backoff live in the
-/// Transport, and a failed batch or item is an error, never a silent drop.
-async fn flush(client: &Elasticsearch, buffer: &mut Vec<(String, Value)>) -> Result<()> {
-    if buffer.is_empty() {
-        return Ok(());
-    }
-    let ops: Vec<BulkOperation<Value>> = buffer
-        .iter()
-        .map(|(id, doc)| BulkOperation::from(BulkIndexOperation::new(json!(doc)).id(id.as_str())))
-        .collect();
-    let resp = client
-        .bulk(elasticsearch::BulkParts::Index(index_name()))
-        .body(ops)
-        .send()
-        .await
-        .wrap_err("ES bulk request")?;
-    let status = resp.status_code().as_u16();
-    let body: Value = resp.json().await.unwrap_or(Value::Null);
-    if !(200..300).contains(&status) {
-        bail!("ES bulk failed ({status}): {body}");
-    }
-    if body
-        .pointer("/errors")
-        .and_then(Value::as_bool)
-        .unwrap_or(true)
-    {
-        let first = body.pointer("/items/0").cloned().unwrap_or(Value::Null);
-        bail!("ES bulk item error: {first}");
-    }
-    buffer.clear();
-    Ok(())
-}
-
-async fn refresh(client: &Elasticsearch) -> Result<()> {
-    let resp = client
-        .indices()
-        .refresh(elasticsearch::indices::IndicesRefreshParts::Index(&[
-            index_name(),
-        ]))
-        .send()
-        .await
-        .wrap_err("ES refresh")?;
-    if !resp.status_code().is_success() {
-        bail!("ES refresh failed: {}", resp.status_code().as_u16());
-    }
-    Ok(())
+/// Open a reader with on-commit reloads for serving.
+///
+/// # Errors
+///
+/// Fails when the index directory cannot be opened.
+pub fn open_reader(dir: &Path, lane: &LaneSchema) -> Result<(Index, IndexReader)> {
+    let index = open_index(dir, lane)?;
+    let reader = index
+        .reader_builder()
+        .reload_policy(ReloadPolicy::OnCommitWithDelay)
+        .try_into()
+        .wrap_err("tantivy reader")?;
+    Ok((index, reader))
 }
 
 /// Query parameters accepted by the HTTP lane.
 #[derive(Debug, Default, Deserialize)]
 pub struct SearchParams {
-    /// Free-text query (english-analyzed BM25 over tweet text).
+    /// Free-text query (BM25 over tweet text, terms `AND`ed).
     pub q: Option<String>,
     /// Author handle OR author id filter (keyword exact match).
     pub author: Option<String>,
@@ -280,20 +193,32 @@ pub struct SearchParams {
     pub since: Option<u64>,
     /// Unix ms upper bound (inclusive).
     pub until: Option<u64>,
-    /// Max hits (clamped to 200).
+    /// Max hits (clamped to the rerank window).
     pub limit: Option<usize>,
 }
 
-/// Execute `params` against ES, returning the stable proxy response.
+/// Execute `params` against the local index, returning the stable proxy
+/// response (same shape as the Convex lane so a web lane can point at either).
 ///
 /// # Errors
 ///
-/// Fails on empty queries, `since > until`, or an ES error response.
-pub async fn serve_query(client: &Elasticsearch, params: &SearchParams) -> Result<Value> {
-    let limit = params.limit.unwrap_or(20).clamp(1, 200);
-    let mut must: Vec<Value> = Vec::new();
+/// Fails on empty queries, `since > until`, or an index error.
+pub fn serve_query(
+    index: &Index,
+    reader: &IndexReader,
+    lane: &LaneSchema,
+    params: &SearchParams,
+) -> Result<Value> {
+    let limit = params.limit.unwrap_or(20).clamp(1, MAX_LIMIT);
+    let searcher = reader.searcher();
+    let mut clauses: Vec<(Occur, Box<dyn tantivy::query::Query>)> = Vec::new();
     if let Some(q) = params.q.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
-        must.push(json!({"match": {"text": {"query": q, "operator": "and"}}}));
+        let mut parser = QueryParser::for_index(index, vec![lane.text]);
+        parser.set_conjunction_by_default();
+        let text_query = parser
+            .parse_query(q)
+            .wrap_err_with(|| format!("parse query {q:?}"))?;
+        clauses.push((Occur::Must, text_query));
     }
     if let Some(author) = params
         .author
@@ -301,104 +226,108 @@ pub async fn serve_query(client: &Elasticsearch, params: &SearchParams) -> Resul
         .map(str::trim)
         .filter(|a| !a.is_empty())
     {
-        must.push(json!({"bool": {"should": [
-            {"term": {"authorHandle": author}},
-            {"term": {"authorId": author}},
-        ], "minimum_should_match": 1}}));
+        let handle_q: Box<dyn tantivy::query::Query> = Box::new(TermQuery::new(
+            Term::from_field_text(lane.author_handle, author),
+            IndexRecordOption::Basic,
+        ));
+        let id_q: Box<dyn tantivy::query::Query> = Box::new(TermQuery::new(
+            Term::from_field_text(lane.author_id, author),
+            IndexRecordOption::Basic,
+        ));
+        let author_q: Box<dyn tantivy::query::Query> = Box::new(BooleanQuery::new(vec![
+            (Occur::Should, handle_q),
+            (Occur::Should, id_q),
+        ]));
+        clauses.push((Occur::Must, author_q));
     }
     match (params.since, params.until) {
         (Some(since), Some(until)) if since > until => bail!("since must be <= until"),
         (since, until) => {
-            // Only the bounds the caller supplied: u64::MAX is not a valid
-            // epoch_millis date, so an unbounded side must stay out of the
-            // range clause entirely.
-            let mut range = serde_json::Map::new();
-            if let Some(since) = since {
-                range.insert("gte".to_owned(), json!(since));
-            }
-            if let Some(until) = until {
-                range.insert("lte".to_owned(), json!(until));
-            }
-            if !range.is_empty() {
-                must.push(json!({"range": {"createdAt": range}}));
+            if since.is_some() || until.is_some() {
+                let lower = since.map_or(Bound::Unbounded, |v| {
+                    Bound::Included(Term::from_field_u64(lane.created_at, v))
+                });
+                let upper = until.map_or(Bound::Unbounded, |v| {
+                    Bound::Included(Term::from_field_u64(lane.created_at, v))
+                });
+                let range_q: Box<dyn tantivy::query::Query> =
+                    Box::new(RangeQuery::new(lower, upper));
+                clauses.push((Occur::Must, range_q));
             }
         }
     }
-    if must.is_empty() {
+    if clauses.is_empty() {
         bail!("empty query: provide q, author, or a time range");
     }
-    let resp = client
-        .search(elasticsearch::SearchParts::Index(&[index_name()]))
-        .from(0)
-        .size(i64::from(u32::try_from(limit).unwrap_or(u32::MAX)))
-        .body(json!({
-            "query": {"bool": {"must": must}},
-            "_source": ["tweetId", "text", "authorHandle", "createdAt"],
-            "track_total_hits": true,
-        }))
-        .send()
-        .await
-        .wrap_err("ES search")?;
-    let status = resp.status_code().as_u16();
-    let body: Value = resp.json().await.unwrap_or(Value::Null);
-    if !(200..300).contains(&status) {
-        bail!("ES search failed ({status}): {body}");
-    }
-    let total = body
-        .pointer("/hits/total/value")
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
-    let results = body
-        .pointer("/hits/hits")
-        .and_then(Value::as_array)
-        .map_or_else(Vec::new, Clone::clone)
-        .into_iter()
-        .map(|hit| {
-            let src = hit.get("_source").cloned().unwrap_or(Value::Null);
-            json!({
-                "tweetId": src.get("tweetId").cloned().unwrap_or(Value::Null),
-                "text": src.get("text").cloned().unwrap_or(Value::Null),
-                "authorHandle": src.get("authorHandle").cloned().unwrap_or(Value::Null),
-                "createdAt": src.get("createdAt").cloned().unwrap_or(Value::Null),
-                "score": hit.get("_score").cloned().unwrap_or(Value::Null),
+    let query = BooleanQuery::new(clauses);
+    let mut multi = tantivy::collector::MultiCollector::new();
+    let top_handle = multi.add_collector(TopDocs::with_limit(limit).order_by_score());
+    let count_handle = multi.add_collector(tantivy::collector::Count);
+    let mut fruits = searcher.search(&query, &multi).wrap_err("tantivy search")?;
+    let total_hits: usize = count_handle.extract(&mut fruits);
+    let top_docs: Vec<(f32, tantivy::DocAddress)> = top_handle.extract(&mut fruits);
+    let mut results = Vec::with_capacity(top_docs.len());
+    for (score, addr) in top_docs {
+        let doc: TantivyDocument = searcher.doc(addr).wrap_err("read doc")?;
+        let get = |f: Field| -> Value {
+            doc.get_first(f).map_or(Value::Null, |v| {
+                let owned: tantivy::schema::OwnedValue = v.into();
+                match owned {
+                    tantivy::schema::OwnedValue::Str(s) => Value::String(s),
+                    tantivy::schema::OwnedValue::U64(n) => Value::from(n),
+                    other => Value::String(format!("{other:?}")),
+                }
             })
-        })
-        .collect::<Vec<_>>();
+        };
+        results.push(json!({
+            "tweetId": get(lane.tweet_id),
+            "text": get(lane.text),
+            "authorHandle": get(lane.author_handle),
+            "createdAt": get(lane.created_at),
+            "score": score,
+        }));
+    }
     Ok(json!({
-        "total": total,
+        "total": total_hits,
         "count": results.len(),
         "results": results,
-        "source": "second fast source of truth (self-hosted Elasticsearch/Lucene); Convex remains the primary source of truth",
+        "source": "second fast source of truth (embedded Tantivy on this machine); Convex remains the primary source of truth",
     }))
 }
 
 /// Serve GET /search and GET /stats on 127.0.0.1 — one stable local interface
-/// so the web lane never needs to know ES internals.
+/// so the web lane never needs to know index internals.
 ///
 /// # Errors
 ///
-/// Fails when the transport cannot be built, ES is unreachable, or the port
-/// is taken.
-pub async fn serve(port: u16, cfg: &EsConfig) -> Result<()> {
+/// Fails when the index directory cannot be opened or the port is taken.
+pub async fn serve(dir: &Path, port: u16) -> Result<()> {
     use axum::extract::{Query, State};
     use axum::response::IntoResponse;
     use axum::routing::get;
     use axum::{Json, Router};
     use std::sync::Arc;
 
-    let client = Arc::new(cfg.transport()?);
-    let ping = client.ping().send().await.wrap_err("ES ping")?;
-    if !ping.status_code().is_success() {
-        bail!("ES ping failed: {}", ping.status_code().as_u16());
+    struct Lane {
+        index: Index,
+        reader: IndexReader,
+        schema: LaneSchema,
     }
+    let schema = LaneSchema::build();
+    let (index, reader) = open_reader(dir, &schema)?;
+    let lane = Arc::new(Lane {
+        index,
+        reader,
+        schema,
+    });
     let app = Router::new()
         .route(
             "/search",
             get(
-                |State(state): State<Arc<Elasticsearch>>,
+                |State(lane): State<Arc<Lane>>,
                  Query(params): Query<SearchParams>| async move {
-                    match serve_query(&state, &params).await {
-                        Ok(value) => axum::response::IntoResponse::into_response(Json(value)),
+                    match serve_query(&lane.index, &lane.reader, &lane.schema, &params) {
+                        Ok(value) => Json(value).into_response(),
                         Err(err) => (
                             axum::http::StatusCode::BAD_REQUEST,
                             Json(json!({"error": err.to_string()})),
@@ -410,42 +339,107 @@ pub async fn serve(port: u16, cfg: &EsConfig) -> Result<()> {
         )
         .route(
             "/stats",
-            get(|State(state): State<Arc<Elasticsearch>>| async move {
-                let docs = match state
-                    .indices()
-                    .stats(elasticsearch::indices::IndicesStatsParts::Index(&[
-                        index_name(),
-                    ]))
-                    .send()
-                    .await
-                {
-                    Ok(r) => {
-                        let body: Value = r.json().await.unwrap_or(Value::Null);
-                        body.pointer("/_all/primaries/docs/count")
-                            .and_then(Value::as_u64)
-                            .unwrap_or(0)
-                    }
-                    Err(_) => 0,
-                };
+            get(|State(lane): State<Arc<Lane>>| async move {
+                let count = lane
+                    .reader
+                    .searcher()
+                    .num_docs();
                 Json(json!({
-                    "docs": docs,
-                    "index": index_name(),
-                    "source": "second fast source of truth (self-hosted Elasticsearch/Lucene); Convex remains the primary source of truth",
+                    "docs": count,
+                    "source": "second fast source of truth (embedded Tantivy on this machine); Convex remains the primary source of truth",
                 }))
             }),
-        );
-    let app = app.with_state(client);
+        )
+        .with_state(lane);
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .wrap_err_with(|| format!("bind {addr}"))?;
-    eprintln!(
-        "second fast source of truth (self-hosted Elasticsearch/Lucene) on http://{addr} — Convex remains the primary source of truth"
-    );
+    eprintln!("second fast source of truth (embedded Tantivy) on http://{addr} — Convex remains the primary source of truth");
     axum::serve(listener, app)
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;
         })
         .await
         .wrap_err("serve")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn sample_records(path: &Path) {
+        let mut f = std::fs::File::create(path).unwrap();
+        writeln!(
+            f,
+            r#"{{"kind":"author","id":"7","handle":"theo","displayName":"Theo","createdAt":1700000000000,"followerCount":10,"followingCount":0,"verified":false}}"#
+        )
+        .unwrap();
+        writeln!(
+            f,
+            r#"{{"kind":"tweet","id":"9","text":"apple tree pricing","authorId":"7","createdAt":1700000000000,"metrics":{{"likes":1,"retweets":0,"quotes":0,"replies":0}},"metricsAt":1700000100000,"media":[],"quotedTweetId":null,"retweetOfTweetId":null,"inReplyToTweetId":null}}"#
+        )
+        .unwrap();
+        writeln!(
+            f,
+            r#"{{"kind":"tweet","id":"10","text":"rust systems talk","authorId":"7","createdAt":1700000200000,"metrics":{{"likes":2,"retweets":0,"quotes":0,"replies":0}},"metricsAt":1700000300000,"media":[],"quotedTweetId":null,"retweetOfTweetId":null,"inReplyToTweetId":null}}"#
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn tantivy_round_trip_and_idempotent_rebuild() {
+        let dir = std::env::temp_dir().join(format!("xearch-lane-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let idx = dir.join("index");
+        let recs = dir.join("recs.jsonl");
+        sample_records(&recs);
+        let stats = build_from_files(&idx, std::slice::from_ref(&recs)).unwrap();
+        assert_eq!(stats.tweets, 2);
+        let lane = LaneSchema::build();
+        let (index, reader) = open_reader(&idx, &lane).unwrap();
+        let ask = |q: Option<&str>| {
+            serve_query(
+                &index,
+                &reader,
+                &lane,
+                &SearchParams {
+                    q: q.map(str::to_owned),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        assert_eq!(ask(Some("pricing"))["results"].as_array().unwrap().len(), 1);
+        assert_eq!(ask(Some("rust"))["results"][0]["tweetId"], json!("10"));
+        // Author filter by handle.
+        let by_author = serve_query(
+            &index,
+            &reader,
+            &lane,
+            &SearchParams {
+                author: Some("theo".to_owned()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(by_author["results"].as_array().unwrap().len(), 2);
+        // Rebuild over the same files: same doc count, no duplicates.
+        let _ = build_from_files(&idx, std::slice::from_ref(&recs)).unwrap();
+        reader.reload().unwrap();
+        let after = serve_query(
+            &index,
+            &reader,
+            &lane,
+            &SearchParams {
+                author: Some("theo".to_owned()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(after["results"].as_array().unwrap().len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

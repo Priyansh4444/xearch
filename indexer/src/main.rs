@@ -64,20 +64,26 @@ enum Mode {
     /// Fold staged dfPending rows into the terms table (run after the last
     /// upload chunk of a run; each upload chunk already folds at its end).
     Fold,
-    /// Second fast source of truth (self-hosted Elasticsearch/Lucene);
+    /// Second fast source of truth (embedded Tantivy on this machine);
     /// Convex remains the primary source of truth. Bulk-push the given
-    /// ingress JSONL files (READ-ONLY) into the ES index.
+    /// ingress JSONL files (READ-ONLY) into the local Tantivy index.
     IndexSecond {
         /// Ingress JSONL files to read (read-only).
         files: Vec<PathBuf>,
+        /// Index directory ( overrides).
+        #[arg(long)]
+        index_dir: Option<PathBuf>,
     },
-    /// Second fast source of truth (self-hosted Elasticsearch/Lucene);
+    /// Second fast source of truth (embedded Tantivy on this machine);
     /// Convex remains the primary source of truth. Serve GET /search +
-    /// GET /stats on 127.0.0.1, proxying `ELASTICSEARCH_URL`.
+    /// GET /stats on 127.0.0.1 over the local Tantivy index.
     ServeSecond {
         /// Port to bind on 127.0.0.1.
         #[arg(long, default_value_t = xearch_indexer::second_source::PROXY_DEFAULT_PORT)]
         port: u16,
+        /// Index directory ( overrides).
+        #[arg(long)]
+        index_dir: Option<PathBuf>,
     },
     /// Ingest tweet JSONL (ingress records or loose tweets) from files or stdin.
     IngestTweets {
@@ -99,8 +105,8 @@ fn main() -> Result<()> {
         Mode::Prepare { out_dir } => backfill(&cli, Some(out_dir)),
         Mode::Upload { batch_dir } => upload(batch_dir),
         Mode::Fold => ConvexClient::from_env()?.fold_df_pending(true),
-        Mode::IndexSecond { files } => index_second(files),
-        Mode::ServeSecond { port } => serve_second(*port),
+        Mode::IndexSecond { files, index_dir } => index_second(files, index_dir.as_deref()),
+        Mode::ServeSecond { port, index_dir } => serve_second(*port, index_dir.as_deref()),
         Mode::IngestTweets { files, out_dir } => ingest_tweets(&cli, files, out_dir.as_ref()),
     }
 }
@@ -818,37 +824,34 @@ fn fnv1a64(parts: &[&[u8]]) -> u64 {
     hash
 }
 
-/// `index-second`: bulk-push ingress JSONL into self-hosted Elasticsearch.
-fn index_second(files: &[PathBuf]) -> Result<()> {
-    let client = xearch_indexer::second_source::EsConfig::from_env()?.transport()?;
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .wrap_err("tokio runtime")?;
+/// Resolve the index directory: explicit flag wins, else the env default.
+fn lane_dir(index_dir: Option<&Path>) -> Result<PathBuf> {
+    index_dir.map_or_else(xearch_indexer::second_source::index_dir, |dir| {
+        Ok(dir.to_path_buf())
+    })
+}
+
+/// `index-second`: build the local Tantivy index from ingress JSONL.
+fn index_second(files: &[PathBuf], index_dir: Option<&Path>) -> Result<()> {
+    let dir = lane_dir(index_dir)?;
     let started = std::time::Instant::now();
-    let stats = runtime.block_on(xearch_indexer::second_source::build_from_files(
-        files, &client,
-    ))?;
+    let stats = xearch_indexer::second_source::build_from_files(&dir, files)?;
     println!(
-        "second fast source of truth (self-hosted Elasticsearch/Lucene; Convex remains the \
-         primary source of truth): pushed {tweets} tweets ({authors} author records, \
-         {malformed} malformed lines) in {secs:.1}s",
-        tweets = stats.tweets,
-        authors = stats.authors,
-        malformed = stats.malformed,
-        secs = started.elapsed().as_secs_f64(),
+        "second fast source of truth (embedded Tantivy): indexed {} tweets in {:.1}s",
+        stats.tweets,
+        started.elapsed().as_secs_f64()
     );
     Ok(())
 }
 
-/// `serve-second`: local proxy on 127.0.0.1 over self-hosted Elasticsearch.
-fn serve_second(port: u16) -> Result<()> {
-    let cfg = xearch_indexer::second_source::EsConfig::from_env()?;
+/// `serve-second`: local proxy on 127.0.0.1 over the local Tantivy index.
+fn serve_second(port: u16, index_dir: Option<&Path>) -> Result<()> {
+    let dir = lane_dir(index_dir)?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .wrap_err("tokio runtime")?;
-    runtime.block_on(xearch_indexer::second_source::serve(port, &cfg))
+    runtime.block_on(xearch_indexer::second_source::serve(&dir, port))
 }
 
 #[cfg(test)]
