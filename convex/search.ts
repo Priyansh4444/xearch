@@ -193,8 +193,13 @@ export const search = query({
     const userTerms = uniqueTerms(xq.must, xq.should, xq.aspects, phraseTerms(xq));
     if (userTerms.length > MAX_QUERY_TERMS)
       return invalidSearch("Use at most 12 search terms and aspects.");
+    // Query-side bigram candidates are a pure function of the parsed query:
+    // hoist them out of eligible(), which runs per accepted candidate (up to
+    // RERANK_CANDIDATES recomputations of the same arrays and phrase
+    // tokenizations per query).
+    const qBigrams = queryBigrams(xq);
     const dfs = new Map<Term, number>();
-    const dfTerms = uniqueTerms(userTerms, queryBigrams(xq));
+    const dfTerms = uniqueTerms(userTerms, qBigrams);
     // Same point reads, fetched concurrently instead of sequentially.
     const dfRows = await Promise.all(
       dfTerms.map((term) =>
@@ -241,7 +246,7 @@ export const search = query({
           if (n !== undefined) tf.set(term, n);
           else if (analysis.present.has(term)) tf.set(term, 1);
         }
-        for (const term of queryBigrams(xq)) {
+        for (const term of qBigrams) {
           if (analysis.present.has(term)) tf.set(term, 1);
         }
         accepted.set(id, { tf });
@@ -279,7 +284,11 @@ export const search = query({
         .sort((a, b) => b.length - a.length)
         .slice(0, 2);
       for (const bad of broken) {
-        const neighbors = repairNeighbors(bad);
+        // Bound the probe: repairNeighbors is 2L-1, so a long df-0 token
+        // (pathological input, not a typo) would fire thousands of point
+        // reads. 64 neighbors covers every realistic typo (delete/transpose
+        // on the token's head) at <=64 reads per broken token.
+        const neighbors = repairNeighbors(bad).slice(0, 64);
         if (neighbors.length === 0) continue;
         const rows = await Promise.all(
           neighbors.map((n) =>

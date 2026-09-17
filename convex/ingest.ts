@@ -41,7 +41,7 @@ const MAX_DF_UPDATES_PER_CALL = 2000;
  * batch's derived df; the indexer folds per upload chunk (~50 batches), so the
  * table stays small and an index would be speculative (schema header rule).
  */
-const MAX_PENDING_ROWS_PER_FOLD = 64;
+const MAX_PENDING_ROWS_PER_FOLD = 8;
 
 const postingIn = v.object({
   term: v.string(),
@@ -262,13 +262,17 @@ export const ingestBatch = internalMutation({
  */
 /**
  * Per-call unique-term cap for foldDfPending. Bounds the transaction's op
- * count: reads ≤ pending rows (64) + folded terms (4000) = 4064; writes ≤
- * folded terms (4000) + row deletes (64) = 4064 — inside the per-transaction
- * limits the read side already assumes. ingestBatch still splits staged rows
- * at MAX_DF_UPDATES_PER_CALL (2000), so a single staged row always fits under
- * this cap. applyDfDeltas (legacy drain) keeps its own 2000-delta cap.
+ * count against Convex's hard 4,096-reads limit — PROVEN on the live
+ * deployment: a pending row holding ~2,000 deltas is a large document and its
+ * read cost is KB-weighted (not 1 unit per row), so rows-per-fold must stay
+ * small. 3,500 terms + 8 rows ≈ 3,600 reads worst case (live probe: 4,000
+ * terms + 64 rows breached the limit). Writes ≤ folded terms (3,500) + row
+ * deletes (8) + 1 staging insert. ingestBatch still splits staged rows at
+ * MAX_DF_UPDATES_PER_CALL (2,000), so a single staged row always fits. The
+ * indexer's fold loop drains the rest. applyDfDeltas (legacy drain) keeps its
+ * own 2,000-delta cap.
  */
-const MAX_DF_TERMS_PER_FOLD = 4000;
+const MAX_DF_TERMS_PER_FOLD = 3500;
 
 export const foldDfPending = internalMutation({
   args: {},
