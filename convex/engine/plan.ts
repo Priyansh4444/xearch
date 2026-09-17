@@ -281,6 +281,34 @@ function escalateToL2(xq: XQuery, dfs: Map<Term, number>): ReadPlan | null {
   };
 }
 
+/**
+ * L5 repair (DESIGN §4.3/§5.2): edit-distance-1 neighbors of a df-0 token —
+ * single-character deletes and adjacent transposes (the two most common typo
+ * classes). Pure: neighbors are PROBED against the terms table by the caller,
+ * never assumed to exist. Aspects ride `~` prefixes and bigrams join tokens
+ * with `\u0002`; neither is user-typo territory, so both are skipped.
+ */
+export function repairNeighbors(term: Term): Term[] {
+  const t = term as string;
+  if (t.startsWith("~") || t.length < 4) return [];
+  if (t.includes("\u0002")) return [];
+  const out: Term[] = [];
+  const seen = new Set<string>();
+  const add = (n: string) => {
+    if (n.length > 0 && !seen.has(n)) {
+      seen.add(n);
+      out.push(n as Term);
+    }
+  };
+  for (let i = 0; i < t.length; i++) add(t.slice(0, i) + t.slice(i + 1)); // delete
+  for (let i = 0; i < t.length - 1; i++) {
+    // transpose adjacent pair
+    if (t[i] === t[i + 1]) continue;
+    add(t.slice(0, i) + t[i + 1]! + t[i]! + t.slice(i + 2));
+  }
+  return out;
+}
+
 /** Stopwords stay in phrase verification, but have no index postings. */
 export function phraseTerms(xq: XQuery): Term[] {
   return xq.phrases.flatMap((phrase) => tokenize(phrase.join(" ")).tokens);

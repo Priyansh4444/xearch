@@ -29,6 +29,7 @@ function response(error: string | null = null) {
     ladder: LadderLevel.L0,
     appliedQuery: emptyXQuery(),
     trace: { consumed: {} },
+    didYouMean: null,
     candidateCount: error === null ? 1 : 0,
     asOf: 1_700_000_000_000,
     nextPrefix: [],
@@ -155,7 +156,13 @@ test("load more grows the page and keeps the previous rows while loading", async
     score: 1 + i,
     parts: { rel: 1 },
   }));
-  full = { ...response(), results: rows(20), candidateCount: 60, nextPrefix: refs };
+  full = {
+    ...response(),
+    results: rows(20),
+    didYouMean: null,
+    candidateCount: 60,
+    nextPrefix: refs,
+  };
   await render();
   expect(container.textContent).toContain("20 of 60 ranked posts");
   expect(container.querySelector(".load-more")?.textContent).toContain("40 left");
@@ -189,7 +196,13 @@ test("load more grows the page and keeps the previous rows while loading", async
   // The prefix is bound to the query interpretation that minted it.
   expect(continuation?.prefixQueryKey).toBe("0000000000000001");
 
-  full = { ...response(), results: rows(40), candidateCount: 60, nextPrefix: refs };
+  full = {
+    ...response(),
+    results: rows(40),
+    didYouMean: null,
+    candidateCount: 60,
+    nextPrefix: refs,
+  };
   await render();
   expect(container.textContent).toContain("40 of 60 ranked posts");
   expect(container.querySelectorAll(".results li").length).toBe(40);
@@ -213,6 +226,7 @@ test("paged results keep first-page metadata and drop chain duplicates", async (
     ...response(),
     ladder: LadderLevel.L2,
     results: rows(20),
+    didYouMean: null,
     candidateCount: 60,
     nextPrefix: refs,
   };
@@ -231,6 +245,7 @@ test("paged results keep first-page metadata and drop chain duplicates", async (
       { ...(response().results[0] as object), _id: "dup", tweetId: "0", quotedTweetId: "0" },
       { ...(response().results[0] as object), _id: "new", tweetId: "999", text: "apple new" },
     ],
+    didYouMean: null,
     candidateCount: 60,
     nextPrefix: refs,
   };
@@ -260,6 +275,7 @@ test("a dropped prefix falls back to the fresh ranking metadata", async () => {
     ...response(),
     ladder: LadderLevel.L2,
     results: rows(20),
+    didYouMean: null,
     candidateCount: 60,
     nextPrefix: refs,
   };
@@ -272,6 +288,7 @@ test("a dropped prefix falls back to the fresh ranking metadata", async () => {
     ladder: LadderLevel.L0,
     prefixDropped: true,
     results: rows(20),
+    didYouMean: null,
     candidateCount: 20,
     nextPrefix: [],
   };
