@@ -51,10 +51,7 @@ fn load_config() -> color_eyre::Result<Config> {
     for (name, slot) in aspects_file.aspects {
         aspects.insert(
             Term(name),
-            AspectPatterns {
-                strong: slot.strong,
-                weak: slot.weak,
-            },
+            AspectPatterns::new(slot.strong, slot.weak),
         );
     }
     Ok(Config {
