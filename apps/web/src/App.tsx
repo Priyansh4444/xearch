@@ -361,7 +361,9 @@ function SearchBody({
   const count = shown.results.length;
   const more = count < candidateCount;
   let countLabel = `${count} post${count === 1 ? "" : "s"}`;
-  if (more) countLabel = `${count} of ${candidateCount} posts`;
+  // "of N ranked posts" describes the reranked window, not the corpus total;
+  // the window itself is capped (RERANK_CANDIDATES) by design.
+  if (more) countLabel = `${count} of ${candidateCount} ranked posts`;
   let notice = "";
   if (shown.ladder !== null && shown.ladder !== LadderLevel.L0) {
     notice = ` — exact matches were thin; widened to related posts (${shown.ladder})`;
