@@ -466,7 +466,10 @@ describe("search serving flow", () => {
     expect(ack.dfRemainder).toEqual([]); // staging made the remainder path unreachable
     // Nothing applied yet: terms table is empty right after the batch.
     const beforeFold = await t.run(async (ctx) => {
-      const first = await ctx.db.query("terms").withIndex("by_term", (q) => q.eq("term", "word0")).unique();
+      const first = await ctx.db
+        .query("terms")
+        .withIndex("by_term", (q) => q.eq("term", "word0"))
+        .unique();
       return first?.df ?? null;
     });
     expect(beforeFold).toBeNull();

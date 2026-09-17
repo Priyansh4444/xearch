@@ -49,10 +49,7 @@ fn load_config() -> color_eyre::Result<Config> {
         serde_json::from_str(include_str!("../../shared/lexicons/aspects.json"))?;
     let mut aspects = HashMap::new();
     for (name, slot) in aspects_file.aspects {
-        aspects.insert(
-            Term(name),
-            AspectPatterns::new(slot.strong, slot.weak),
-        );
+        aspects.insert(Term(name), AspectPatterns::new(slot.strong, slot.weak));
     }
     Ok(Config {
         stopwords: stopwords_file.stopwords.into_iter().collect(),

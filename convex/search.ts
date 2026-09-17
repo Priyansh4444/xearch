@@ -196,7 +196,10 @@ export const search = query({
     // Same point reads, fetched concurrently instead of sequentially.
     const dfRows = await Promise.all(
       dfTerms.map((term) =>
-        ctx.db.query("terms").withIndex("by_term", (q) => q.eq("term", term)).unique(),
+        ctx.db
+          .query("terms")
+          .withIndex("by_term", (q) => q.eq("term", term))
+          .unique(),
       ),
     );
     for (const [i, term] of dfTerms.entries()) {
@@ -359,8 +362,9 @@ export const search = query({
     );
     // Pinned rows can sit outside the hydrated window; make sure their authors
     // resolve for display.
-    const missingPinAuthors = [...new Set(pinnedLive.map((ref) => pinnedDocs.get(ref.id)!.authorId))]
-      .filter((aid) => !authors.has(aid));
+    const missingPinAuthors = [
+      ...new Set(pinnedLive.map((ref) => pinnedDocs.get(ref.id)!.authorId)),
+    ].filter((aid) => !authors.has(aid));
     const pinAuthorRows = await Promise.all(
       missingPinAuthors.map((aid) => authorByAuthorId(ctx, aid)),
     );
@@ -549,7 +553,10 @@ async function minePrfTerms(
   const fresh = top.filter((term) => !dfs.has(term));
   const prfRows = await Promise.all(
     fresh.map((term) =>
-      ctx.db.query("terms").withIndex("by_term", (q) => q.eq("term", term)).unique(),
+      ctx.db
+        .query("terms")
+        .withIndex("by_term", (q) => q.eq("term", term))
+        .unique(),
     ),
   );
   for (const [i, term] of fresh.entries()) {

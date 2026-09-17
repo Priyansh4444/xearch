@@ -83,9 +83,7 @@ fn main() -> Result<()> {
         Mode::Refresh => refresh(&cli),
         Mode::Prepare { out_dir } => backfill(&cli, Some(out_dir)),
         Mode::Upload { batch_dir } => upload(batch_dir),
-        Mode::Fold => {
-            ConvexClient::from_env()?.fold_df_pending(true)
-        }
+        Mode::Fold => ConvexClient::from_env()?.fold_df_pending(true),
         Mode::IngestTweets { files, out_dir } => ingest_tweets(&cli, files, out_dir.as_ref()),
     }
 }
