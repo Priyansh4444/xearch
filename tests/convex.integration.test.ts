@@ -61,6 +61,10 @@ describe("ingestion transactions", () => {
     await t.mutation(internal.ingest.ingestBatch, batch());
     await t.mutation(internal.ingest.ingestBatch, batch());
     await t.mutation(internal.ingest.ingestBatch, batch([tweet("1"), tweet("2")]));
+    // df is staged as pending rows; fold drains them (the indexer does this
+    // after every upload chunk).
+    let fold = await t.mutation(internal.ingest.foldDfPending, {});
+    while (fold.pendingRowsLeft > 0) fold = await t.mutation(internal.ingest.foldDfPending, {});
     const rows = await t.run(async (ctx) => ({
       terms: await ctx.db.query("terms").collect(),
       tweets: await ctx.db.query("tweets").collect(),
@@ -452,19 +456,30 @@ describe("search serving flow", () => {
     );
   });
 
-  test("df updates are deferred past the per-call read budget and drainable", async () => {
+  test("df updates stage as pending rows and fold across batches", async () => {
     const t = convexTest(schema, modules);
-    // More unique terms than one mutation's df budget: the tail is deferred
-    // instead of blowing Convex's per-call read limit.
+    // More unique terms than one fold's term cap: ingestBatch splits the
+    // staging into two pending rows and foldDfPending drains them over calls.
     const many = Array.from({ length: 2001 }, (_, i) => tweet(`d${i}`, `word${i}`, [`word${i}`]));
     const ack = await t.mutation(internal.ingest.ingestBatch, batch(many));
     expect(ack.inserted).toBe(2001);
-    expect(ack.dfRemainder.length).toBe(1);
-
-    const drained = await t.mutation(internal.ingest.applyDfDeltas, {
-      deltas: ack.dfRemainder,
+    expect(ack.dfRemainder).toEqual([]); // staging made the remainder path unreachable
+    // Nothing applied yet: terms table is empty right after the batch.
+    const beforeFold = await t.run(async (ctx) => {
+      const first = await ctx.db.query("terms").withIndex("by_term", (q) => q.eq("term", "word0")).unique();
+      return first?.df ?? null;
     });
-    expect(drained.applied).toBe(1);
+    expect(beforeFold).toBeNull();
+
+    // First fold applies the cap (2000 unique terms = the first pending row);
+    // the split tail row remains pending.
+    const fold1 = await t.mutation(internal.ingest.foldDfPending, {});
+    expect(fold1.foldedTerms).toBe(2000);
+    expect(fold1.pendingRowsLeft).toBe(1);
+    // Second fold drains the tail.
+    const fold2 = await t.mutation(internal.ingest.foldDfPending, {});
+    expect(fold2.pendingRowsLeft).toBe(0);
+
     const dfs = await t.run(async (ctx) => {
       const first = await ctx.db
         .query("terms")
@@ -479,14 +494,12 @@ describe("search serving flow", () => {
     expect(dfs.first).toBe(1);
     expect(dfs.last).toBe(1);
 
-    // A normal batch defers nothing.
-    const small = await t.mutation(
-      internal.ingest.ingestBatch,
-      batch([tweet("s1", "solo", ["solo"])]),
-    );
-    expect(small.dfRemainder).toEqual([]);
+    // A small batch folds in one fold with nothing left over.
+    await t.mutation(internal.ingest.ingestBatch, batch([tweet("s1", "solo", ["solo"])]));
+    const fold3 = await t.mutation(internal.ingest.foldDfPending, {});
+    expect(fold3.foldedTerms).toBe(1);
+    expect(fold3.pendingRowsLeft).toBe(0);
   }, 30_000);
-
   test("OR branches drop glue and temporal words the same way must does", async () => {
     const t = convexTest(schema, modules);
     await t.mutation(internal.ingest.ingestBatch, batch());
@@ -643,6 +656,8 @@ describe("search serving flow", () => {
       staticScore: 1,
     };
     await t.mutation(internal.ingest.ingestBatch, batch([...apples, ...trees, exact]));
+    // df seeding feeds the planner; fold the staged pending rows first.
+    await t.mutation(internal.ingest.foldDfPending, {});
     const result = await t.query(api.search.search, { raw: "apple tree", sort: "top" });
     expect(result.results[0]?.tweetId).toBe("exact");
     expect(result.results.find((row) => row.tweetId === "exact")?.matchedVia).toBe("L0");

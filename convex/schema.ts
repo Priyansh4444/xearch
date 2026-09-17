@@ -63,6 +63,19 @@ export default defineSchema({
     df: v.number(), // advisory; drifts slightly under concurrency, never authoritative
   }).index("by_term", ["term"]),
 
+  // df maintenance staging (dfPending rewrite, ARCHITECTURE ingest invariants).
+  // ingestBatch stores one row per batch's derived df instead of paying one
+  // indexed read + one write per unique term per batch; foldDfPending drains
+  // rows, folds them to per-term deltas, and deletes what it applied — apply
+  // and delete are one transaction, so a crash or retry can only leave the
+  // row unapplied (df undercounts, never overcounts; still advisory).
+  // Kept small by design: the indexer folds after every upload chunk, so no
+  // index — the drain always take()s the whole table.
+  dfPending: defineTable({
+    seq: v.number(), // batch sequence timestamp; drains in insertion order
+    deltas: v.array(v.object({ term: v.string(), delta: v.number() })),
+  }),
+
   authors: defineTable({
     authorId: v.string(),
     handle: v.string(), // lowercase, no @

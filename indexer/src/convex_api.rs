@@ -12,6 +12,9 @@ const BACKOFF_CAP_MS: u64 = 30_000;
 const MAX_ATTEMPTS: u32 = 8;
 /// Deferred df deltas per follow-up call; matches the server's per-call cap.
 const MAX_DF_DELTAS_PER_CALL: usize = 1500;
+/// Upper bound on fold calls per upload invocation; each call applies up to
+/// the server's per-call term cap.
+const MAX_FOLD_CALLS: u32 = 256;
 
 pub struct ConvexClient {
     pub deployment_url: String, // e.g. https://something.convex.cloud
@@ -62,9 +65,9 @@ impl ConvexClient {
     pub fn ingest_batch_json(&self, args: &serde_json::Value) -> Result<IngestAck> {
         let value = self.mutation("ingest:ingestBatch", args)?;
         let ack: IngestAck = serde_json::from_value(value).context("ingestBatch ack shape")?;
-        // Batches with a few very long tweets blow past Convex's per-call read
-        // limit inside ingestBatch's df maintenance; finish the deferred deltas
-        // in bounded follow-up calls.
+        // Legacy-server compat: current servers always answer dfRemainder: []
+        // (df is staged in dfPending and folded via fold_df_pending); old
+        // servers still defer, so keep the bounded legacy drain.
         let mut pending = ack.df_remainder.clone();
         while !pending.is_empty() {
             let take = pending.len().min(MAX_DF_DELTAS_PER_CALL);
@@ -86,6 +89,44 @@ impl ConvexClient {
             }
         }
         Ok(ack)
+    }
+
+    /// Folds staged `dfPending` rows into `terms` until drained (dfPending
+    /// rewrite). The server applies at most `MAX_DF_UPDATES_PER_CALL` unique
+    /// terms per call and deletes exactly the rows it applied in the same
+    /// transaction, so pending rows are never lost — a failed fold leaves the
+    /// rows unapplied for the next fold call to drain.
+    ///
+    /// With `strict = false` (post-upload path) a fold that cannot complete is
+    /// logged, not failed: df is advisory and the rows persist server-side.
+    /// # Errors
+    ///
+    /// Strict mode returns an error when the fold cannot finish.
+    pub fn fold_df_pending(&self, strict: bool) -> Result<()> {
+        for _ in 0..MAX_FOLD_CALLS {
+            let reply = match self.mutation("ingest:foldDfPending", &serde_json::json!({})) {
+                Ok(reply) => reply,
+                Err(e) => {
+                    if strict {
+                        return Err(e.wrap_err("ingest:foldDfPending"));
+                    }
+                    eprintln!("foldDfPending failed (pending rows persist server-side): {e}");
+                    return Ok(());
+                }
+            };
+            let left = reply
+                .get("pendingRowsLeft")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
+            if left == 0 {
+                return Ok(());
+            }
+        }
+        if strict {
+            bail!("foldDfPending did not drain pending rows after {MAX_FOLD_CALLS} calls");
+        }
+        eprintln!("foldDfPending left pending rows after {MAX_FOLD_CALLS} calls; they persist until the next fold");
+        Ok(())
     }
 
     /// # Errors

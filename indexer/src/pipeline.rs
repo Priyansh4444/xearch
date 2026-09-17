@@ -129,6 +129,11 @@ impl AspectPatterns {
     }
 }
 
+/// Postings summed per batch before a forced flush. Convex's transaction write
+/// budget must cover every posting insert plus authors/tweets/df staging; ~8000
+/// keeps a batch safely inside it while a few ultra-dense tweets stay possible.
+const MAX_POSTINGS_PER_BATCH: usize = 8_000;
+
 #[derive(Clone)]
 pub struct AspectLexicon {
     /// aspect -> strong phrase patterns / weak single words. Same semantics as
@@ -142,6 +147,12 @@ pub struct BatchBuilder {
     tweets: Vec<TweetOut>,
     authors: Vec<AuthorOut>,
     df: HashMap<Term, i64>, // aggregated per batch — the OCC mitigation (O2)
+    /// Postings summed over `tweets` in the CURRENT batch (reset by `take_batch`).
+    /// A pathological dense batch (100 x up-to-4096 postings) would otherwise
+    /// blow the transaction write budget; the batch fails, retries wholesale,
+    /// and quarantines — never dropped, but the pipeline stalls. Flush early
+    /// instead (robustness M2 in the ingest perf review).
+    total_postings: usize,
     /// authorId -> handle, fed by `push_author` and kept across `take_batch` calls.
     /// A read-through denorm cache, not batch state: authors precede their tweets
     /// in file order (INGRESS §3.3); main.rs re-warms it on checkpoint resume.
@@ -156,6 +167,7 @@ impl BatchBuilder {
             tweets: Vec::new(),
             authors: Vec::new(),
             df: HashMap::new(),
+            total_postings: 0,
             handles: HashMap::new(),
         }
     }
@@ -250,9 +262,13 @@ impl BatchBuilder {
     #[must_use]
     pub fn is_full(&self) -> bool {
         // ~100 tweets per batch (ingest.ts header), AND a df-term budget: ingestBatch
-        // does one indexed read per df delta and Convex caps a mutation at 4096
-        // reads, so dense/unique-vocab stretches flush early.
-        self.tweets.len() >= 100 || self.authors.len() >= 100 || self.df.len() >= 1500
+        // stages one pending row per batch and each batch's postings insert one
+        // document per posting row, so dense/unique-vocab stretches flush early.
+        // total_postings bounds the per-transaction write count.
+        self.tweets.len() >= 100
+            || self.authors.len() >= 100
+            || self.df.len() >= 1500
+            || self.total_postings >= MAX_POSTINGS_PER_BATCH
     }
 
     #[must_use]
