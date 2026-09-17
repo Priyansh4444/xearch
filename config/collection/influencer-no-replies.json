@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "source": "fxtwitter",
+  "apiBaseUrl": "https://api.fxtwitter.com",
+  "apiVersion": "2",
+  "specificationUrl": "https://api.fxtwitter.com/2/openapi.json",
+  "historyDays": 183,
+  "withReplies": false,
+  "requestedPageSize": 100,
+  "delayMs": 500,
+  "coverageFloor": 500,
+  "selectedOn": "2026-09-16",
+  "accounts": [
+    { "handle": "paulg", "expectedUserId": "183749519", "cohort": "bigger" },
+    { "handle": "sama", "expectedUserId": "1605", "cohort": "bigger" }
+  ]
+}

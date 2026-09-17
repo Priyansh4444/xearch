@@ -27,6 +27,15 @@ const MAX_POSTINGS_PER_TWEET = 4096;
  */
 const POSTING_BUDGET_PER_MUTATION = 2048;
 
+/**
+ * df maintenance reads one `terms` row per unique term, so a batch with a few
+ * very long tweets can exceed Convex's 4,096-reads-per-call limit. ingestBatch
+ * therefore applies at most this many deltas and returns the rest as
+ * `dfRemainder`; the indexer drains them through `applyDfDeltas` (df is
+ * advisory — a crash between the two calls only undercounts, never corrupts).
+ */
+const MAX_DF_UPDATES_PER_CALL = 2000;
+
 const postingIn = v.object({
   term: v.string(),
   tf: v.number(),
@@ -196,17 +205,17 @@ export const ingestBatch = internalMutation({
     }
 
     // Keep dfDeltas in the wire contract for existing clients. It is accepted
-    // and ignored; the server derives DF from newly inserted postings.
+    // and ignored; the server derives DF from newly inserted postings, applying
+    // as many deltas as this call's read budget allows and deferring the rest.
+    const dfRemainder: Array<{ term: string; delta: number }> = [];
+    let dfBudget = MAX_DF_UPDATES_PER_CALL;
     for (const [term, delta] of insertedDfs) {
-      const existing = await ctx.db
-        .query("terms")
-        .withIndex("by_term", (q) => q.eq("term", term))
-        .unique();
-      if (existing === null) {
-        await ctx.db.insert("terms", { term, df: Math.max(0, delta) });
-      } else {
-        await ctx.db.patch(existing._id, { df: Math.max(0, existing.df + delta) });
+      if (dfBudget <= 0) {
+        dfRemainder.push({ term, delta });
+        continue;
       }
+      dfBudget -= 1;
+      await applyDfDelta(ctx, term, delta);
     }
 
     const metaRow = {
@@ -219,9 +228,39 @@ export const ingestBatch = internalMutation({
     if (meta === null) await ctx.db.insert("meta", metaRow);
     else await ctx.db.patch(meta._id, metaRow);
 
-    return { inserted, updated, skipped };
+    return { inserted, updated, skipped, dfRemainder };
   },
 });
+
+/**
+ * Finishes the df updates ingestBatch deferred (see MAX_DF_UPDATES_PER_CALL).
+ * Idempotency is best-effort like all df maintenance: df is advisory and drifts
+ * slightly under retries, never serving correctness.
+ */
+export const applyDfDeltas = internalMutation({
+  args: {
+    deltas: v.array(v.object({ term: v.string(), delta: v.number() })),
+  },
+  handler: async (ctx, args) => {
+    if (args.deltas.length > MAX_DF_UPDATES_PER_CALL) {
+      throw new Error(`applyDfDeltas accepts at most ${MAX_DF_UPDATES_PER_CALL} deltas per call.`);
+    }
+    for (const delta of args.deltas) await applyDfDelta(ctx, delta.term, delta.delta);
+    return { applied: args.deltas.length };
+  },
+});
+
+async function applyDfDelta(ctx: MutationCtx, term: string, delta: number): Promise<void> {
+  const existing = await ctx.db
+    .query("terms")
+    .withIndex("by_term", (q) => q.eq("term", term))
+    .unique();
+  if (existing === null) {
+    await ctx.db.insert("terms", { term, df: Math.max(0, delta) });
+  } else {
+    await ctx.db.patch(existing._id, { df: Math.max(0, existing.df + delta) });
+  }
+}
 
 function authorByAuthorId(ctx: MutationCtx, authorId: string) {
   return ctx.db
