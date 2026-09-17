@@ -7,6 +7,7 @@ import {
   escalate,
   indexedBigrams,
   planL0,
+  repairNeighbors,
   uniqueTerms,
   MIN_RESULTS,
   PER_TERM_CAP,
@@ -726,5 +727,25 @@ describe("pinned prefix paging", () => {
     const pinnedFirst = mergePinned([pin("p", 1)], tail, new Set(), (id) => id, 2);
     expect(pinnedFirst.ordered.map((row) => row.tweetId)).toEqual(["p", "a"]);
     expect(pinnedFirst.candidateCount).toBe(4);
+  });
+});
+
+describe("L5 repairNeighbors", () => {
+  it("emits deletes and transposes, deduped", () => {
+    expect(repairNeighbors("abcd" as Term)).toEqual([
+      "bcd",
+      "acd",
+      "abd",
+      "abc",
+      "bacd",
+      "acbd",
+      "abdc",
+    ]);
+  });
+
+  it("skips short tokens, aspects, and bigrams", () => {
+    expect(repairNeighbors("abc" as Term)).toEqual([]);
+    expect(repairNeighbors("~price" as Term)).toEqual([]);
+    expect(repairNeighbors("\u0002a\u0002b" as Term)).toEqual([]);
   });
 });

@@ -848,3 +848,26 @@ describe("trusted feedback", () => {
     await voter.mutation(api.feedback.vote, { ...args, vote: -1 });
   });
 });
+
+describe("L5 spelling repair", () => {
+  test("a df-0 typo in a starved query offers an edit-distance-1 repair", async () => {
+    const t = convexTest(schema, modules);
+    const rustTweets = Array.from({ length: 40 }, (_, i) =>
+      tweet(`rust-${i}`, `rust systems programming post ${i}`, ["rust", "systems", "programming"]),
+    );
+    await t.mutation(internal.ingest.ingestBatch, batch(rustTweets));
+    await t.mutation(internal.ingest.foldDfPending, {});
+    // df 0 for "rusts" (typo), high df for "rust" — delete-distance 1.
+    const result = await t.query(api.search.search, { raw: "rusts", sort: "top" });
+    expect(result.results.length).toBeLessThan(10);
+    expect(result.didYouMean).toBe("rust");
+  });
+
+  test("healthy queries get no repair offer", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(internal.ingest.ingestBatch, batch());
+    await t.mutation(internal.ingest.foldDfPending, {});
+    const result = await t.query(api.search.search, { raw: "apple", sort: "top" });
+    expect(result.didYouMean).toBeNull();
+  });
+});

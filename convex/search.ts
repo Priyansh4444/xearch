@@ -10,6 +10,7 @@ import { tokenize } from "./engine/tokenize";
 import {
   planL0,
   escalate,
+  repairNeighbors,
   LadderLevel,
   type PostingsRead,
   type ReadPlan,
@@ -56,6 +57,7 @@ function invalidSearch(error: string) {
     asOf: 0, // invalid queries never rank
     nextPrefix: [],
     prefixDropped: false,
+    didYouMean: null,
   };
 }
 
@@ -265,6 +267,46 @@ export const search = query({
       plan = escalate(plan, matches.size, xq, dfs, prfTerms);
     }
 
+    // L5 repair (DESIGN §4.3/§5.2): when the ladder bottomed out short of
+    // MIN_RESULTS, offer an edit-distance-1 repair for up to two df-0 query
+    // tokens. Bounded: only starved queries pay the ~2*len point reads, one
+    // chunked Promise.all per token. We never rewrite the query silently —
+    // the repair is a suggestion the user clicks.
+    let didYouMean: string | null = null;
+    if (matches.size < MIN_RESULTS) {
+      const broken = uniqueTerms(userTerms)
+        .filter((t) => (dfs.get(t) ?? 0) <= 0 && !t.startsWith("~"))
+        .sort((a, b) => b.length - a.length)
+        .slice(0, 2);
+      for (const bad of broken) {
+        const neighbors = repairNeighbors(bad);
+        if (neighbors.length === 0) continue;
+        const rows = await Promise.all(
+          neighbors.map((n) =>
+            ctx.db
+              .query("terms")
+              .withIndex("by_term", (q) => q.eq("term", n))
+              .unique(),
+          ),
+        );
+        let best: Term | null = null;
+        let bestDf = 0;
+        for (const [i, n] of neighbors.entries()) {
+          const row = rows[i];
+          const df = row?.df ?? 0;
+          if (df > bestDf) {
+            bestDf = df;
+            best = n;
+          }
+        }
+        if (best !== null) {
+          const needle = new RegExp(`\\b${bad.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i");
+          didYouMean = args.raw.replace(needle, best);
+          break; // one repair per query: the strongest token is the offer
+        }
+      }
+    }
+
     // Term-less author query ("from:@theo" alone): read the author's timeline
     // directly — the postings index has nothing to gate on.
     if (userTerms.length === 0 && xq.filters.authorId !== null) {
@@ -402,6 +444,7 @@ export const search = query({
       // True when the echoed prefix was minted under a different interpretation
       // and was dropped; the client refreshes its frozen metadata.
       prefixDropped: prefixDrift,
+      didYouMean,
     };
   },
 });

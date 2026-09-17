@@ -30,6 +30,8 @@ interface Shown {
   termless: boolean;
   /** Rows the reranker produced; `results.length < candidateCount` means more. */
   candidateCount: number;
+  /** L5 repair offer: a corrected raw query for a starved result set. */
+  didYouMean: string | null;
 }
 
 /** Rows per "Load more" click; the server clamps to the rerank window. */
@@ -203,6 +205,7 @@ function presentResults(
           terms: query.split(/\s+/),
           termless: false,
           candidateCount: baseline.length,
+          didYouMean: null,
         };
   }
   if (full === undefined) return undefined;
@@ -238,6 +241,7 @@ function presentResults(
     terms: [...q.must, ...q.should, ...q.phrases.flat(), ...q.exclude.map((term) => `-${term}`)],
     termless,
     candidateCount: full.candidateCount,
+    didYouMean: full.didYouMean ?? null,
   };
 }
 
@@ -383,12 +387,28 @@ function SearchBody({
       ))}
     </ol>
   );
+  const onDidYouMean = shown.didYouMean !== null ? () => onPick(shown.didYouMean!) : null;
   return (
     <main aria-busy={searching || loadingMore}>
       <p className="count-line">
         {countLabel}
         {notice}
       </p>
+      {onDidYouMean !== null ? (
+        <p className="count-line">
+          Did you mean{" "}
+          <a
+            href="#"
+            onClick={(e) => {
+              e.preventDefault();
+              onDidYouMean();
+            }}
+          >
+            {shown.didYouMean}
+          </a>
+          ?
+        </p>
+      ) : null}
       {exact.length > 0 ? renderList(exact, "Exact matches") : null}
       {related.length > 0 ? (
         <>
