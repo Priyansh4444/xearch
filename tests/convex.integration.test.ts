@@ -482,7 +482,7 @@ describe("search serving flow", () => {
     expect(fold1.foldedTerms).toBe(2000);
     expect(fold1.pendingRowsLeft).toBe(2);
     // Second fold admits the next row AND the 1-term tail row (2,001 fresh
-    // terms fit the 3,500 cap) — everything drains.
+    // terms fit the 2,500 cap) — everything drains.
     const fold2 = await t.mutation(internal.ingest.foldDfPending, {});
     expect(fold2.foldedTerms).toBe(2001);
     expect(fold2.pendingRowsLeft).toBe(0);
@@ -514,18 +514,18 @@ describe("search serving flow", () => {
     // union of merged rows against its cap (the per-row slot count would
     // reject the second row and fold it alone).
     const first = Array.from({ length: 2000 }, (_, i) => tweet(`a${i}`, `word${i}`, [`word${i}`]));
-    // Second batch repeats the first 1000 terms (new tweet ids -> new df
-    // deltas on the same terms) and adds 1000 fresh ones.
+    // Second batch: 500 slots repeat first-batch terms (new tweet ids -> new
+    // df deltas on the same terms), 500 slots are fresh. Per-ROW slots
+    // (2,000 + 1,000 = 3,000) breach the 2,500 cap, but the REAL fresh union
+    // (2,000 + 500 = 2,500) fits — exact-overlap counting must admit it.
     const second = [
-      ...Array.from({ length: 1000 }, (_, i) => tweet(`b${i}`, `word${i}`, [`word${i}`])),
-      ...Array.from({ length: 1000 }, (_, i) => tweet(`c${i}`, `new${i}`, [`new${i}`])),
+      ...Array.from({ length: 500 }, (_, i) => tweet(`b${i}`, `word${i}`, [`word${i}`])),
+      ...Array.from({ length: 500 }, (_, i) => tweet(`c${i}`, `new${i}`, [`new${i}`])),
     ];
     await t.mutation(internal.ingest.ingestBatch, batch(first));
     await t.mutation(internal.ingest.ingestBatch, batch(second));
     const fold = await t.mutation(internal.ingest.foldDfPending, {});
-    // 2000 first-batch terms + 1000 fresh second-batch terms = the union;
-    // the 1000 overlapping terms re-merge into their existing rows.
-    expect(fold.foldedTerms).toBe(3000);
+    expect(fold.foldedTerms).toBe(2500);
     expect(fold.pendingRowsLeft).toBe(0);
     const dfs = await t.run(async (ctx) => {
       const dup = await ctx.db
