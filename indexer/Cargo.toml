@@ -25,7 +25,7 @@ as_conversions = "deny"
 # --- Second fast source of truth (self-hosted Elasticsearch/Lucene lane) ---
 # Convex remains the primary source of truth; these deps serve ONLY the
 # `index-second` / `serve-second` subcommands and touch no existing pipeline path.
-elasticsearch = { version = "9.1.0-alpha.1", default-features = false, features = ["rustls-tls"] }
+tantivy = { version = "0.26", default-features = false, features = ["mmap"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json", "query"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
 serde = { version = "1", features = ["derive"] }
