@@ -10,6 +10,8 @@ use color_eyre::eyre::{bail, eyre, Context, Result};
 const BACKOFF_BASE_MS: u64 = 200;
 const BACKOFF_CAP_MS: u64 = 30_000;
 const MAX_ATTEMPTS: u32 = 8;
+/// Deferred df deltas per follow-up call; matches the server's per-call cap.
+const MAX_DF_DELTAS_PER_CALL: usize = 1500;
 
 pub struct ConvexClient {
     pub deployment_url: String, // e.g. https://something.convex.cloud
@@ -59,7 +61,31 @@ impl ConvexClient {
     /// Returns an error when Convex rejects the mutation or the ack is malformed.
     pub fn ingest_batch_json(&self, args: &serde_json::Value) -> Result<IngestAck> {
         let value = self.mutation("ingest:ingestBatch", args)?;
-        serde_json::from_value(value).context("ingestBatch ack shape")
+        let ack: IngestAck = serde_json::from_value(value).context("ingestBatch ack shape")?;
+        // Batches with a few very long tweets blow past Convex's per-call read
+        // limit inside ingestBatch's df maintenance; finish the deferred deltas
+        // in bounded follow-up calls.
+        let mut pending = ack.df_remainder.clone();
+        while !pending.is_empty() {
+            let take = pending.len().min(MAX_DF_DELTAS_PER_CALL);
+            let batch: Vec<DfDeltaAck> = pending.drain(..take).collect();
+            let reply = self.mutation(
+                "ingest:applyDfDeltas",
+                &serde_json::json!({ "deltas": batch }),
+            )?;
+            if reply
+                .get("applied")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0)
+                == 0
+            {
+                bail!(
+                    "applyDfDeltas made no progress on {} deferred deltas",
+                    batch.len()
+                );
+            }
+        }
+        Ok(ack)
     }
 
     /// # Errors
@@ -176,6 +202,16 @@ pub struct IngestAck {
     pub inserted: f64,
     pub updated: f64,
     pub skipped: f64,
+    /// df deltas the server deferred; drained via `ingest:applyDfDeltas`.
+    #[serde(default)]
+    pub df_remainder: Vec<DfDeltaAck>,
+}
+
+/// One deferred df delta, mirroring convex/ingest.ts's `dfRemainder` shape.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct DfDeltaAck {
+    pub term: String,
+    pub delta: i64,
 }
 
 /// Ack for `ingest:applyMetrics`.

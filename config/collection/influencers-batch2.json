@@ -1,0 +1,125 @@
+{
+  "version": 2,
+  "source": "fxtwitter",
+  "apiBaseUrl": "https://api.fxtwitter.com",
+  "apiVersion": "2",
+  "specificationUrl": "https://api.fxtwitter.com/2/openapi.json",
+  "historyDays": 183,
+  "withReplies": true,
+  "requestedPageSize": 100,
+  "delayMs": 500,
+  "coverageFloor": 500,
+  "selectedOn": "2026-09-16",
+  "accounts": [
+    {
+      "handle": "ThePrimeagen",
+      "expectedUserId": "291797158",
+      "cohort": "bigger"
+    },
+    {
+      "handle": "fireship_dev",
+      "expectedUserId": "850333483339730945",
+      "cohort": "bigger"
+    },
+    {
+      "handle": "shadcn",
+      "expectedUserId": "31206819",
+      "cohort": "bigger"
+    },
+    {
+      "handle": "TannerLinsley",
+      "expectedUserId": "50136899",
+      "cohort": "bigger"
+    },
+    {
+      "handle": "kentcdodds",
+      "expectedUserId": "389681470",
+      "cohort": "bigger"
+    },
+    {
+      "handle": "ryanflorence",
+      "expectedUserId": "1661132710679826432",
+      "cohort": "bigger"
+    },
+    {
+      "handle": "Rich_Harris",
+      "expectedUserId": "19487837",
+      "cohort": "bigger"
+    },
+    {
+      "handle": "swyx",
+      "expectedUserId": "33521530",
+      "cohort": "bigger"
+    },
+    {
+      "handle": "cassidoo",
+      "expectedUserId": "400286802",
+      "cohort": "bigger"
+    },
+    {
+      "handle": "sarah_edo",
+      "expectedUserId": "813333008",
+      "cohort": "bigger"
+    },
+    {
+      "handle": "jessfraz",
+      "expectedUserId": "285428413",
+      "cohort": "bigger"
+    },
+    {
+      "handle": "mattpocockuk",
+      "expectedUserId": "346640777",
+      "cohort": "bigger"
+    },
+    {
+      "handle": "jherr",
+      "expectedUserId": "6978362",
+      "cohort": "bigger"
+    },
+    {
+      "handle": "simonw",
+      "expectedUserId": "12497",
+      "cohort": "bigger"
+    },
+    {
+      "handle": "dwarkesh_sp",
+      "expectedUserId": "1209960539390201864",
+      "cohort": "bigger"
+    },
+    {
+      "handle": "garrytan",
+      "expectedUserId": "11768582",
+      "cohort": "bigger"
+    },
+    {
+      "handle": "eladgil",
+      "expectedUserId": "6535212",
+      "cohort": "bigger"
+    },
+    {
+      "handle": "natfriedman",
+      "expectedUserId": "13235832",
+      "cohort": "bigger"
+    },
+    {
+      "handle": "miramurati",
+      "expectedUserId": "180115578",
+      "cohort": "bigger"
+    },
+    {
+      "handle": "swizec",
+      "expectedUserId": "15353121",
+      "cohort": "bigger"
+    },
+    {
+      "handle": "rachelnabors",
+      "expectedUserId": "9550352",
+      "cohort": "bigger"
+    },
+    {
+      "handle": "brad_frost",
+      "expectedUserId": "11855482",
+      "cohort": "bigger"
+    }
+  ]
+}

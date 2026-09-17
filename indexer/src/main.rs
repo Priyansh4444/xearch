@@ -123,6 +123,7 @@ impl Destination {
                     inserted: u64_as_f64(u64::try_from(batch.tweets.len()).unwrap_or(u64::MAX)),
                     updated: 0.0,
                     skipped: 0.0,
+                    df_remainder: Vec::new(),
                 })
             }
         }

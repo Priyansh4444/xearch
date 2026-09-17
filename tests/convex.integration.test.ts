@@ -452,6 +452,41 @@ describe("search serving flow", () => {
     );
   });
 
+  test("df updates are deferred past the per-call read budget and drainable", async () => {
+    const t = convexTest(schema, modules);
+    // More unique terms than one mutation's df budget: the tail is deferred
+    // instead of blowing Convex's per-call read limit.
+    const many = Array.from({ length: 2001 }, (_, i) => tweet(`d${i}`, `word${i}`, [`word${i}`]));
+    const ack = await t.mutation(internal.ingest.ingestBatch, batch(many));
+    expect(ack.inserted).toBe(2001);
+    expect(ack.dfRemainder.length).toBe(1);
+
+    const drained = await t.mutation(internal.ingest.applyDfDeltas, {
+      deltas: ack.dfRemainder,
+    });
+    expect(drained.applied).toBe(1);
+    const dfs = await t.run(async (ctx) => {
+      const first = await ctx.db
+        .query("terms")
+        .withIndex("by_term", (q) => q.eq("term", "word0"))
+        .unique();
+      const last = await ctx.db
+        .query("terms")
+        .withIndex("by_term", (q) => q.eq("term", "word2000"))
+        .unique();
+      return { first: first?.df ?? null, last: last?.df ?? null };
+    });
+    expect(dfs.first).toBe(1);
+    expect(dfs.last).toBe(1);
+
+    // A normal batch defers nothing.
+    const small = await t.mutation(
+      internal.ingest.ingestBatch,
+      batch([tweet("s1", "solo", ["solo"])]),
+    );
+    expect(small.dfRemainder).toEqual([]);
+  }, 30_000);
+
   test("OR branches drop glue and temporal words the same way must does", async () => {
     const t = convexTest(schema, modules);
     await t.mutation(internal.ingest.ingestBatch, batch());
