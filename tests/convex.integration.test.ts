@@ -459,10 +459,11 @@ describe("search serving flow", () => {
   test("df updates stage as pending rows and fold across batches", async () => {
     const t = convexTest(schema, modules);
     // More unique terms than one fold's term cap: ingestBatch splits the
-    // staging into two pending rows and foldDfPending drains them over calls.
-    const many = Array.from({ length: 2001 }, (_, i) => tweet(`d${i}`, `word${i}`, [`word${i}`]));
+    // staging into 2000-delta rows and foldDfPending merges rows up to its
+    // own (higher) term cap, then drains the tail over calls.
+    const many = Array.from({ length: 4001 }, (_, i) => tweet(`d${i}`, `word${i}`, [`word${i}`]));
     const ack = await t.mutation(internal.ingest.ingestBatch, batch(many));
-    expect(ack.inserted).toBe(2001);
+    expect(ack.inserted).toBe(4001);
     expect(ack.dfRemainder).toEqual([]); // staging made the remainder path unreachable
     // Nothing applied yet: terms table is empty right after the batch.
     const beforeFold = await t.run(async (ctx) => {
@@ -474,13 +475,14 @@ describe("search serving flow", () => {
     });
     expect(beforeFold).toBeNull();
 
-    // First fold applies the cap (2000 unique terms = the first pending row);
-    // the split tail row remains pending.
+    // First fold merges two whole rows (2 x 2000 = the 4000-term cap) and
+    // stops there; the third row stays pending.
     const fold1 = await t.mutation(internal.ingest.foldDfPending, {});
-    expect(fold1.foldedTerms).toBe(2000);
+    expect(fold1.foldedTerms).toBe(4000);
     expect(fold1.pendingRowsLeft).toBe(1);
     // Second fold drains the tail.
     const fold2 = await t.mutation(internal.ingest.foldDfPending, {});
+    expect(fold2.foldedTerms).toBe(1);
     expect(fold2.pendingRowsLeft).toBe(0);
 
     const dfs = await t.run(async (ctx) => {
@@ -490,7 +492,7 @@ describe("search serving flow", () => {
         .unique();
       const last = await ctx.db
         .query("terms")
-        .withIndex("by_term", (q) => q.eq("term", "word2000"))
+        .withIndex("by_term", (q) => q.eq("term", "word4000"))
         .unique();
       return { first: first?.df ?? null, last: last?.df ?? null };
     });
@@ -502,6 +504,40 @@ describe("search serving flow", () => {
     const fold3 = await t.mutation(internal.ingest.foldDfPending, {});
     expect(fold3.foldedTerms).toBe(1);
     expect(fold3.pendingRowsLeft).toBe(0);
+  }, 30_000);
+
+  test("fold merges row deltas across batches before hitting its term cap", async () => {
+    const t = convexTest(schema, modules);
+    // Two batches whose terms overlap: the fold must count only the REAL
+    // union of merged rows against its cap (the per-row slot count would
+    // reject the second row and fold it alone).
+    const first = Array.from({ length: 2000 }, (_, i) => tweet(`a${i}`, `word${i}`, [`word${i}`]));
+    // Second batch repeats the first 1000 terms (new tweet ids -> new df
+    // deltas on the same terms) and adds 1000 fresh ones.
+    const second = [
+      ...Array.from({ length: 1000 }, (_, i) => tweet(`b${i}`, `word${i}`, [`word${i}`])),
+      ...Array.from({ length: 1000 }, (_, i) => tweet(`c${i}`, `new${i}`, [`new${i}`])),
+    ];
+    await t.mutation(internal.ingest.ingestBatch, batch(first));
+    await t.mutation(internal.ingest.ingestBatch, batch(second));
+    const fold = await t.mutation(internal.ingest.foldDfPending, {});
+    // 2000 first-batch terms + 1000 fresh second-batch terms = the union;
+    // the 1000 overlapping terms re-merge into their existing rows.
+    expect(fold.foldedTerms).toBe(3000);
+    expect(fold.pendingRowsLeft).toBe(0);
+    const dfs = await t.run(async (ctx) => {
+      const dup = await ctx.db
+        .query("terms")
+        .withIndex("by_term", (q) => q.eq("term", "word0"))
+        .unique();
+      const fresh = await ctx.db
+        .query("terms")
+        .withIndex("by_term", (q) => q.eq("term", "new0"))
+        .unique();
+      return { dup: dup?.df ?? null, fresh: fresh?.df ?? null };
+    });
+    expect(dfs.dup).toBe(2);
+    expect(dfs.fresh).toBe(1);
   }, 30_000);
   test("OR branches drop glue and temporal words the same way must does", async () => {
     const t = convexTest(schema, modules);

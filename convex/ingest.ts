@@ -253,23 +253,43 @@ export const ingestBatch = internalMutation({
 /**
  * Folds pending df rows into the terms table (dfPending rewrite). The indexer
  * calls this after every upload chunk (and once at a run's end): read pending
- * rows, aggregate their deltas, apply at most MAX_DF_UPDATES_PER_CALL unique
- * terms, then delete exactly the rows whose deltas were fully applied — apply
- * and delete share one transaction, so a crash/retry can only undercount df
- * (advisory; never overcounts, never loses the pending row it did not apply).
- * Returns pendingRowsLeft > 0 when the cap stopped the fold; the caller loops.
+ * rows, aggregate their deltas ACROSS rows, apply at most
+ * MAX_DF_TERMS_PER_FOLD unique terms, then delete exactly the rows whose
+ * deltas were fully applied — apply and delete share one transaction, so a
+ * crash/retry can only undercount df (advisory; never overcounts, never loses
+ * the pending row it did not apply). Returns pendingRowsLeft > 0 when the cap
+ * stopped the fold; the caller loops.
  */
+/**
+ * Per-call unique-term cap for foldDfPending. Bounds the transaction's op
+ * count: reads ≤ pending rows (64) + folded terms (4000) = 4064; writes ≤
+ * folded terms (4000) + row deletes (64) = 4064 — inside the per-transaction
+ * limits the read side already assumes. ingestBatch still splits staged rows
+ * at MAX_DF_UPDATES_PER_CALL (2000), so a single staged row always fits under
+ * this cap. applyDfDeltas (legacy drain) keeps its own 2000-delta cap.
+ */
+const MAX_DF_TERMS_PER_FOLD = 4000;
+
 export const foldDfPending = internalMutation({
   args: {},
   handler: async (ctx) => {
     const drained = await ctx.db.query("dfPending").take(MAX_PENDING_ROWS_PER_FOLD);
+    // Cross-row aggregation: rows merge in order until the per-call
+    // unique-term cap stops the fold, counted against the REAL union size.
+    // The previous guard counted a whole row's delta slots, which on
+    // df-dense batches (~1,500 slots/batch, the is_full flush cap) rejected
+    // every second row and degenerated to one-row-per-call — harvesting none
+    // of the cross-batch df redundancy the staging was built for (adjacent
+    // batches share only ~13% of their terms on this corpus; the redundancy
+    // is long-range).
     const aggregate = new Map<string, number>();
     let appliedRows = 0;
     for (const row of drained) {
-      // Would this row push the fold past its per-call unique-term cap?
-      // ingestBatch splits rows at the cap, so the first row always fits;
-      // the guard only stops further rows (never deadlock on one huge row).
-      if (appliedRows > 0 && aggregate.size + row.deltas.length > MAX_DF_UPDATES_PER_CALL) break;
+      if (appliedRows > 0) {
+        let fresh = 0;
+        for (const { term } of row.deltas) if (!aggregate.has(term)) fresh += 1;
+        if (aggregate.size + fresh > MAX_DF_TERMS_PER_FOLD) break;
+      }
       for (const { term, delta } of row.deltas) {
         aggregate.set(term, (aggregate.get(term) ?? 0) + delta);
       }

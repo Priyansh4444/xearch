@@ -339,17 +339,20 @@ export const search = query({
     //    fresh query, instead of RERANK_CANDIDATES awaited point reads. The
     //    totals map is identical: at most one totals row per (queryKey, tweet).
     const ids = [...matches.keys()].slice(0, RERANK_CANDIDATES);
-    const feedbackTotals = new Map<string, number>();
-    for (const row of await ctx.db
-      .query("searchFeedbackTotals")
-      .withIndex("by_query_tweet", (q) => q.eq("queryKey", key))
-      .take(RERANK_CANDIDATES)) {
-      feedbackTotals.set(row.tweetId, row.total);
-    }
-    const candidates: Candidate[] = [];
-    // Unique authors among the ranked window, fetched concurrently.
+    // Unique authors among the ranked window and the feedback totals prefix
+    // read are independent fetches — fire them together (same reads, one
+    // round trip fewer).
     const authorIds = [...new Set(ids.map((tweetId) => tweets.get(tweetId)!.authorId))];
-    const authorRows = await Promise.all(authorIds.map((aid) => authorByAuthorId(ctx, aid)));
+    const [feedbackRows, authorRows] = await Promise.all([
+      ctx.db
+        .query("searchFeedbackTotals")
+        .withIndex("by_query_tweet", (q) => q.eq("queryKey", key))
+        .take(RERANK_CANDIDATES),
+      Promise.all(authorIds.map((aid) => authorByAuthorId(ctx, aid))),
+    ]);
+    const feedbackTotals = new Map<string, number>();
+    for (const row of feedbackRows) feedbackTotals.set(row.tweetId, row.total);
+    const candidates: Candidate[] = [];
     for (const [i, aid] of authorIds.entries()) authors.set(aid, authorRows[i] ?? null);
     for (const tweetId of ids) {
       // Postings denormalize the Convex doc id — hydration is a plain get.
@@ -531,20 +534,27 @@ async function executePlan(
   };
 
   const acc = new Map<string, { tf: Map<Term, number> }>();
-  if (plan.gates.length > 0) {
+  // Seed and union reads are independent (distinct terms by construction):
+  // fire them together. Seed rows are still fused into `acc` FIRST (same
+  // insertion order as the sequential shape), then each union in plan order.
+  // Same reads, one round trip fewer per executed plan.
+  const first = plan.gates[0];
+  const seed =
+    first !== undefined && plan.gates.length > 1 && first.limit < SEED_CAP
+      ? { ...first, limit: SEED_CAP }
+      : first;
+  const [seedRows, unionRows] = await Promise.all([
+    seed === undefined ? Promise.resolve<Doc<"postings">[]>([]) : read(seed),
+    Promise.all(plan.unions.map((union) => read(union))),
+  ]);
+  if (first !== undefined) {
     // Seed from the rarest gate only. Intersecting two truncated posting lists
     // drops the rare hit when it sits outside the common term's impact window
     // (RISKS R1). Remaining gates are verified against tweet text in eligible().
-    const first = plan.gates[0]!;
-    const seed =
-      plan.gates.length > 1 && first.limit < SEED_CAP ? { ...first, limit: SEED_CAP } : first;
-    for (const p of await read(seed)) {
+    for (const p of seedRows) {
       if (!acc.has(p.tweetId)) acc.set(p.tweetId, { tf: new Map([[first.term, p.tf]]) });
     }
   }
-  // Union reads are independent (distinct terms by construction); fetch them
-  // concurrently. Same reads, same per-union fusion order.
-  const unionRows = await Promise.all(plan.unions.map((union) => read(union)));
   const lists: string[][] = [];
   for (const [ui, rows] of unionRows.entries()) {
     const union = plan.unions[ui]!;
