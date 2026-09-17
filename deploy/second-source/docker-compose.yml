@@ -1,0 +1,18 @@
+# Second fast source of truth (self-hosted Elasticsearch/Lucene).
+# Convex remains the primary source of truth. Single-node, dev-grade security
+# settings — bind ONLY to loopback / a trusted network.
+services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.1.0
+    container_name: xearch-second-source
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx1g
+    ports:
+      - "127.0.0.1:9200:9200"
+    volumes:
+      - es-data:/usr/share/elasticsearch/data
+    mem_limit: 2g
+volumes:
+  es-data:
