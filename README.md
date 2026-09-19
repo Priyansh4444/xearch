@@ -1,5 +1,8 @@
 # Xearch
 
+> **⚠️ Archived — no longer maintained.** This project is now hosted on
+> [github.com/pc-style/xearch](https://github.com/pc-style/xearch).
+
 A search engine for tweets, better than the bird's. Convex holds every byte of
 serving state; a Rust indexer feeds it 24/7; React 19 renders a reactive SERP that
 upgrades itself as smarter interpretations land.
